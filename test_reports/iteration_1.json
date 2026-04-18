@@ -1,0 +1,50 @@
+{
+  "summary": "Comprehensive backend + frontend testing of Trust Intake & Client Portal. 27/28 backend tests pass. Only failure: brute-force lockout test — RCA: server uses request.client.host which is the K8s ingress proxy IP and rotates across pods, so the per-IP counter never reaches 5 on a single pod. Frontend: admin login redirects to /admin, client register→portal→Single Trust→wizard flow works, hard-stop validation enforced (Next disabled when incomplete, future steps locked), messaging in wizard works.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "/api/auth/login (brute force)", "issue": "Lockout never triggers in deployed env because check_lockout/record_failure key on request.client.host — behind K8s ingress this is the ingress/proxy pod IP which rotates across requests (observed 10.64.130.9 and 10.64.129.166 for the same browser). Counter is split, user can attempt unlimited logins. Fix: derive real client IP from X-Forwarded-For (first entry) or X-Real-IP header before falling back to request.client.host. Key identifier by email alone for a secondary global lock, or use email-only as identifier.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "All /api/*", "issue": "CORS middleware uses allow_origins=[FRONTEND_URL] only; if FRONTEND_URL env is missing or differs from actual origin, credentialed requests will silently fail. Current env is correct but worth documenting."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AddressFields (used in Grantor, Trustee, Successor, Beneficiary)", "issues": ["Address inputs (line1/city/state/zip/country) have no data-testid attributes — they use only DOM ids like g-addr-line1. Not a blocker since ids work, but inconsistent with the rest of the wizard which uses data-testid everywhere. Recommend adding testId pass-through in _shared.jsx AddressFields for uniform testability."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix brute-force lockout to derive the real client IP from X-Forwarded-For (or key the identifier on email only). Current implementation is effectively bypassed behind the K8s ingress.",
+    "(Nice to have) Add data-testid attributes to AddressFields inputs via a testIdPrefix prop for consistent E2E selectors."
+  ],
+  "critical_code_review_comments": [
+    "server.py line ~332: `ip = request.client.host` — K8s ingress proxy IP rotates per request across backend pods. Use request.headers.get('x-forwarded-for','').split(',')[0].strip() or x-real-ip as the primary identifier, fall back to request.client.host.",
+    "server.py line ~809: CORSMiddleware allow_origins=[FRONTEND_URL] — should read from CORS_ORIGINS env var which is already declared in backend/.env (currently set to '*') but never used. Today credentials cookies work because FRONTEND_URL matches; future misconfiguration risk.",
+    "server.py line ~42: `mongo_url = os.environ[\"MONGO_URL\"]` and line 44 `db = client[os.environ[\"DB_NAME\"]]` — fail-fast is good, but startup event also runs create_index which will crash the ASGI app if Mongo is briefly unavailable. Consider lazy index creation or try/except with warning.",
+    "server.py put_object/get_object use synchronous `requests` inside async endpoints — will block the event loop on large uploads/downloads. Consider httpx.AsyncClient or asyncio.to_thread.",
+    "The /api/trust-cases/{id}/documents/{doc_id}/download endpoint requires login even for simple admin downloads — fine; but there's no link-expiry/signed URL. OK for MVP.",
+    "Admin EIN letter upload flow is implicit via doc_type='ein_letter' in the shared upload endpoint; works, but consider a dedicated admin endpoint for clarity.",
+    "There's no server-side percentage-sum validation for beneficiaries (>100% allowed). UX validation should be mirrored server-side."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (new)"
+  ],
+  "success_rate": {"backend": "96% (27/28)", "frontend": "100% of smoke flows"},
+  "test_credentials": "Admin: support@igcfirm.com / Wllorenzo03! (seeded). Clients created dynamically per-test.",
+  "seed_data_creation": "Tests create throwaway TEST_/uitest_ clients and trust cases. Admin is seeded by the backend startup.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reuse /app/backend/tests/backend_test.py. If brute-force fix lands, the test_brute_force_lockout case will validate it. For UI, key flows verified: register→portal→Single Trust card→wizard, hard-stop + step lock, grantor save unlocks Trustee step, wizard messaging. Not yet exercised end-to-end in UI: full 8-step completion + document upload + EIN auth + Review submit + admin case detail page + branding update from UI. Backend tests already cover each of these per-endpoint.",
+  "rca of the issue": {
+    "bug": "Brute force lockout does not activate after 5 failed attempts.",
+    "reproduction": "curl /api/auth/login with bad password 6 times for the same (non-existent) email. Expected: 5 × 401 then 429. Actual: 6 × 401. Verified in MongoDB: two login_attempts records were created for the same email under two different IP keys.",
+    "root_cause": "server.py uses `ip = request.client.host` to key the per-IP counter. Behind the K8s ingress the request.client.host is the ingress/proxy pod's IP, and there are multiple proxy pods round-robining requests, so attacks are trivially split across keys.",
+    "mitigation": "Use X-Forwarded-For (first entry) as the client IP source. Or key on email alone (simpler and still privacy-safe). Ideally use (real_ip, email) with real_ip derived from trusted proxy headers."
+  }
+}

@@ -1,0 +1,251 @@
+import React, { useEffect, useState, useRef } from "react";
+import { useParams, Link } from "react-router-dom";
+import Layout from "@/components/Layout";
+import api, { formatApiError } from "@/lib/api";
+import StatusTracker from "@/components/StatusTracker";
+import MessageThread from "@/components/MessageThread";
+import { toast } from "sonner";
+import { ArrowLeft, Upload, Download, FileText, StickyNote } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { displaySSN } from "@/pages/intake/_shared";
+
+const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
+                  "Drafting Trust", "Ready for Signing", "Completed"];
+
+function Section({ title, children }) {
+  return (
+    <section className="bg-white border border-[#E2E0DA] rounded-xl p-6">
+      <h3 className="font-serif text-2xl text-navy mb-4">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+const KV = ({ k, v }) => (
+  <div className="grid grid-cols-[160px_1fr] gap-2 text-sm py-1 border-b border-dashed border-[#E2E0DA]">
+    <span className="text-[#64748B] uppercase text-xs tracking-wide font-semibold">{k}</span>
+    <span className="text-navy break-words">{v || "—"}</span>
+  </div>
+);
+
+export default function AdminCaseDetail() {
+  const { caseId } = useParams();
+  const [c, setC] = useState(null);
+  const [note, setNote] = useState("");
+  const einInputRef = useRef();
+  const [uploadingEin, setUploadingEin] = useState(false);
+
+  const load = async () => {
+    try {
+      const { data } = await api.get(`/admin/trust-cases/${caseId}`);
+      setC(data);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [caseId]);
+
+  if (!c) return <Layout><p>Loading…</p></Layout>;
+
+  const setStatus = async (s) => {
+    try {
+      await api.put(`/admin/trust-cases/${caseId}/status`, { status: s });
+      toast.success(`Status → ${s}`);
+      load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const requestEIN = async () => {
+    try {
+      await api.post(`/admin/trust-cases/${caseId}/ein-request`);
+      toast.success("EIN marked as requested");
+      load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const uploadEinLetter = async (file) => {
+    if (!file) return;
+    setUploadingEin(true);
+    const form = new FormData();
+    form.append("doc_type", "ein_letter");
+    form.append("file", file);
+    try {
+      await api.post(`/trust-cases/${caseId}/documents`, form, { headers: { "Content-Type": "multipart/form-data" } });
+      toast.success("EIN letter uploaded");
+      load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setUploadingEin(false); if (einInputRef.current) einInputRef.current.value = ""; }
+  };
+
+  const addNote = async () => {
+    if (!note.trim()) return;
+    try {
+      await api.post(`/admin/trust-cases/${caseId}/notes`, { note });
+      setNote("");
+      toast.success("Note added");
+      load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const download = async (d) => {
+    try {
+      const res = await api.get(`/trust-cases/${caseId}/documents/${d.id}/download`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url; a.download = d.filename || "file"; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const docs = (c.documents || []).filter((d) => !d.is_deleted);
+
+  return (
+    <Layout>
+      <Link to="/admin" className="text-sm text-[#64748B] hover:text-navy inline-flex items-center gap-1 mb-6" data-testid="admin-back-btn">
+        <ArrowLeft className="h-4 w-4" /> Back to cases
+      </Link>
+
+      <div className="mb-6">
+        <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Case #{c.id.slice(0, 8).toUpperCase()}</p>
+        <h1 className="font-serif text-4xl text-navy">{c.client_name || c.client_email}</h1>
+        <p className="text-[#64748B] mt-1">{c.client_email} · {c.trust_type === "joint" ? "Joint Trust" : "Single Trust"}</p>
+      </div>
+
+      <div className="mb-6">
+        <StatusTracker status={c.status} />
+      </div>
+
+      <div className="bg-white border border-[#E2E0DA] rounded-xl p-6 mb-6" data-testid="admin-status-panel">
+        <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+          <span className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Update status</span>
+          <select value={c.status} onChange={(e) => setStatus(e.target.value)}
+            className="bg-white border border-input rounded-md px-3 py-2 text-sm" data-testid="admin-status-select">
+            {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-6">
+        <Section title={`Grantors (${c.grantors?.length || 0})`}>
+          {(c.grantors || []).map((g, i) => (
+            <div key={g.id} className="mb-4" data-testid={`admin-grantor-${i}`}>
+              <p className="text-xs uppercase text-bronze font-semibold mb-2">Grantor {i + 1}</p>
+              <KV k="Name" v={`${g.full_legal_name}${g.middle_name ? " (" + g.middle_name + ")" : ""}`} />
+              <KV k="DOB" v={g.date_of_birth} />
+              <KV k="SSN" v={displaySSN(g.ssn)} />
+              <KV k="Email" v={g.email} />
+              <KV k="Phone" v={g.phone} />
+              <KV k="Marital" v={g.marital_status} />
+              <KV k="Citizenship" v={g.citizenship} />
+              <KV k="Address" v={`${g.address?.line1 || ""} ${g.address?.city || ""} ${g.address?.state || ""} ${g.address?.zip || ""}`} />
+              {g.notes && <KV k="Notes" v={g.notes} />}
+            </div>
+          ))}
+        </Section>
+
+        <Section title="Trustee">
+          {c.trustees?.[0] ? (() => { const t = c.trustees[0]; return (
+            <div>
+              <KV k="Name" v={t.full_legal_name} />
+              <KV k="Relationship" v={t.relationship} />
+              <KV k="Email" v={t.email} />
+              <KV k="Phone" v={t.phone} />
+            </div>
+          ); })() : <p className="text-sm text-[#64748B]">Not added yet.</p>}
+        </Section>
+
+        <Section title={`Successor Trustees (${c.successor_trustees?.length || 0})`}>
+          {(c.successor_trustees || []).map((t, i) => (
+            <div key={t.id} className="mb-3" data-testid={`admin-successor-${i}`}>
+              <p className="text-xs uppercase text-bronze font-semibold mb-1">Successor {i + 1}</p>
+              <KV k="Name" v={t.full_legal_name} />
+              <KV k="Relationship" v={t.relationship} />
+              <KV k="Email" v={t.email} />
+            </div>
+          ))}
+        </Section>
+
+        <Section title={`Beneficiaries (${c.beneficiaries?.length || 0})`}>
+          {(c.beneficiaries || []).map((b, i) => (
+            <div key={b.id} className="mb-3" data-testid={`admin-beneficiary-${i}`}>
+              <p className="text-xs uppercase text-bronze font-semibold mb-1">Beneficiary {i + 1}</p>
+              <KV k="Name" v={b.full_legal_name} />
+              <KV k="Relationship" v={b.relationship} />
+              <KV k="Share" v={`${b.percentage}%`} />
+              {b.contingent_name && <KV k="Contingent" v={b.contingent_name} />}
+            </div>
+          ))}
+        </Section>
+
+        <Section title={`Assets (${c.assets?.length || 0})`}>
+          {(c.assets || []).map((a) => (
+            <div key={a.id} className="mb-3" data-testid={`admin-asset-${a.id}`}>
+              <KV k="Type" v={a.asset_type} />
+              <KV k="Institution / Property" v={a.institution_name || a.property_address} />
+              {a.account_number && <KV k="Account #" v={a.account_number} />}
+              {a.estimated_value && <KV k="Est. Value" v={`$${Number(a.estimated_value).toLocaleString()}`} />}
+            </div>
+          ))}
+        </Section>
+
+        <Section title="EIN Workflow">
+          <KV k="SSN" v={c.ein?.ssn ? displaySSN(c.ein.ssn) : "—"} />
+          <KV k="Authorized" v={c.ein?.authorized ? "Yes" : "No"} />
+          <KV k="EIN Requested" v={c.ein_requested ? "Yes" : "No"} />
+          <div className="flex gap-2 mt-4">
+            {!c.ein_requested && c.ein?.authorized && (
+              <button onClick={requestEIN} className="btn-secondary text-sm" data-testid="ein-request-btn">Mark EIN Requested</button>
+            )}
+            <label className="btn-accent text-sm cursor-pointer inline-flex items-center" data-testid="ein-letter-upload-label">
+              <Upload className="h-4 w-4 inline mr-1" /> {uploadingEin ? "Uploading…" : "Upload EIN Letter"}
+              <input ref={einInputRef} type="file" className="hidden" onChange={(e) => uploadEinLetter(e.target.files?.[0])} data-testid="ein-letter-upload" />
+            </label>
+          </div>
+          {c.ein_letter && (
+            <div className="mt-3 flex items-center justify-between bg-sand-200/40 rounded-md px-3 py-2 text-sm" data-testid="ein-letter-saved">
+              <span className="flex items-center gap-2"><FileText className="h-4 w-4" /> {c.ein_letter.filename}</span>
+              <button onClick={() => download(c.ein_letter)} className="text-navy hover:text-bronze"><Download className="h-4 w-4" /></button>
+            </div>
+          )}
+        </Section>
+
+        <Section title={`Documents (${docs.length})`}>
+          {docs.length === 0 ? <p className="text-sm text-[#64748B]">No documents uploaded.</p> : (
+            <ul className="space-y-2 text-sm">
+              {docs.map((d) => (
+                <li key={d.id} className="flex items-center justify-between bg-sand-200/40 rounded-md px-3 py-2" data-testid={`admin-doc-${d.id}`}>
+                  <span className="flex items-center gap-2 text-navy truncate">
+                    <FileText className="h-4 w-4 shrink-0" />
+                    <span className="truncate">{d.filename}</span>
+                    <span className="text-xs text-[#64748B]">({d.doc_type})</span>
+                  </span>
+                  <button onClick={() => download(d)} className="text-navy hover:text-bronze" data-testid={`admin-doc-download-${d.id}`}><Download className="h-4 w-4" /></button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Section>
+
+        <Section title="Internal Notes">
+          <div className="space-y-2 mb-3">
+            {(c.admin_notes || []).map((n) => (
+              <div key={n.id} className="bg-sand-200/40 rounded-md p-3 text-sm" data-testid={`admin-note-${n.id}`}>
+                <p className="text-[#64748B] text-xs mb-1">{n.author} · {new Date(n.created_at).toLocaleString()}</p>
+                <p className="text-navy whitespace-pre-wrap">{n.note}</p>
+              </div>
+            ))}
+            {(c.admin_notes || []).length === 0 && <p className="text-sm text-[#64748B]">No notes yet.</p>}
+          </div>
+          <Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Add an internal note…"
+            className="bg-white mb-2" data-testid="admin-note-input" />
+          <button onClick={addNote} className="btn-primary text-sm" data-testid="admin-note-add">
+            <StickyNote className="h-4 w-4 inline mr-1" /> Add Note
+          </button>
+        </Section>
+      </div>
+
+      <div className="mt-6">
+        <MessageThread caseId={caseId} title="Client Messages" />
+      </div>
+    </Layout>
+  );
+}

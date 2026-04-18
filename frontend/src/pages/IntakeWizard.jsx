@@ -1,0 +1,152 @@
+import React, { useEffect, useState } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import Layout from "@/components/Layout";
+import api, { formatApiError } from "@/lib/api";
+import StatusTracker from "@/components/StatusTracker";
+import MessageThread from "@/components/MessageThread";
+import { toast } from "sonner";
+import { CheckCircle2, Circle, Lock, ArrowLeft, ArrowRight } from "lucide-react";
+import GrantorStep from "@/pages/intake/GrantorStep";
+import TrusteeStep from "@/pages/intake/TrusteeStep";
+import SuccessorStep from "@/pages/intake/SuccessorStep";
+import BeneficiaryStep from "@/pages/intake/BeneficiaryStep";
+import AssetStep from "@/pages/intake/AssetStep";
+import EINStep from "@/pages/intake/EINStep";
+import DocumentsStep from "@/pages/intake/DocumentsStep";
+import ReviewStep from "@/pages/intake/ReviewStep";
+
+const STEP_DEFS = [
+  { key: "grantors", label: "Grantors", Component: GrantorStep },
+  { key: "trustee", label: "Trustee", Component: TrusteeStep },
+  { key: "successor", label: "Successor Trustees", Component: SuccessorStep },
+  { key: "beneficiaries", label: "Beneficiaries", Component: BeneficiaryStep },
+  { key: "assets", label: "Assets", Component: AssetStep },
+  { key: "ein", label: "EIN Workflow", Component: EINStep },
+  { key: "documents", label: "Documents", Component: DocumentsStep },
+  { key: "review", label: "Review", Component: ReviewStep },
+];
+
+function isStepComplete(key, trustCase) {
+  if (!trustCase) return false;
+  const maxGrantors = trustCase.trust_type === "joint" ? 2 : 1;
+  switch (key) {
+    case "grantors": return (trustCase.grantors?.length || 0) >= maxGrantors;
+    case "trustee":  return (trustCase.trustees?.length || 0) >= 1;
+    case "successor":return (trustCase.successor_trustees?.length || 0) >= 1;
+    case "beneficiaries": return (trustCase.beneficiaries?.length || 0) >= 1;
+    case "assets":   return (trustCase.assets?.length || 0) >= 1;
+    case "ein":      return trustCase.ein?.authorized === true;
+    case "documents":{
+      const docs = trustCase.documents || [];
+      const types = new Set(docs.filter(d => !d.is_deleted).map(d => d.doc_type));
+      return types.has("government_id") && types.has("proof_of_address");
+    }
+    default: return false;
+  }
+}
+
+export default function IntakeWizard() {
+  const { caseId } = useParams();
+  const navigate = useNavigate();
+  const [trustCase, setTrustCase] = useState(null);
+  const [stepIdx, setStepIdx] = useState(0);
+
+  const reload = async () => {
+    try {
+      const { data } = await api.get(`/trust-cases/${caseId}`);
+      setTrustCase(data);
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+      navigate("/portal");
+    }
+  };
+
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [caseId]);
+
+  if (!trustCase) return (
+    <Layout><p className="text-[#64748B]">Loading…</p></Layout>
+  );
+
+  const StepComp = STEP_DEFS[stepIdx].Component;
+  const stepKey = STEP_DEFS[stepIdx].key;
+  const currentDone = stepKey === "review" ? true : isStepComplete(stepKey, trustCase);
+
+  const gotoStep = (i) => {
+    // Hard stop: cannot go to step beyond first incomplete one
+    for (let k = 0; k < i; k++) {
+      if (STEP_DEFS[k].key === "review") continue;
+      if (!isStepComplete(STEP_DEFS[k].key, trustCase)) {
+        toast.error(`Complete "${STEP_DEFS[k].label}" before proceeding.`);
+        return;
+      }
+    }
+    setStepIdx(i);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  return (
+    <Layout>
+      <div className="mb-8 flex items-center gap-3">
+        <button onClick={() => navigate("/portal")} className="text-sm text-[#64748B] hover:text-navy inline-flex items-center gap-1" data-testid="back-to-portal-btn">
+          <ArrowLeft className="h-4 w-4" /> Back to portal
+        </button>
+        <span className="text-[#CBD5E1]">·</span>
+        <span className="text-sm text-[#64748B]">
+          {trustCase.trust_type === "joint" ? "Joint Trust" : "Single Trust"} · Case #{trustCase.id.slice(0, 8).toUpperCase()}
+        </span>
+      </div>
+
+      <div className="mb-6">
+        <StatusTracker status={trustCase.status} />
+      </div>
+
+      <div className="grid lg:grid-cols-[280px_1fr] gap-8">
+        {/* Left nav */}
+        <aside className="space-y-1" data-testid="intake-step-nav">
+          {STEP_DEFS.map((s, i) => {
+            const done = s.key === "review" ? false : isStepComplete(s.key, trustCase);
+            const locked = i > 0 && STEP_DEFS.slice(0, i).some((p) => p.key !== "review" && !isStepComplete(p.key, trustCase));
+            const active = i === stepIdx;
+            return (
+              <button key={s.key} onClick={() => gotoStep(i)} disabled={locked}
+                className={`w-full text-left px-4 py-3 rounded-md flex items-center gap-3 transition-colors ${
+                  active ? "bg-navy text-white" : locked ? "text-[#CBD5E1] cursor-not-allowed" : "hover:bg-sand-200 text-navy"
+                }`}
+                data-testid={`step-nav-${s.key}`}>
+                {locked ? <Lock className="h-4 w-4" /> : done ? <CheckCircle2 className="h-4 w-4 text-bronze" /> : <Circle className="h-4 w-4" />}
+                <span className="text-sm font-medium">{s.label}</span>
+              </button>
+            );
+          })}
+        </aside>
+
+        {/* Right content */}
+        <div className="min-w-0 space-y-8">
+          <div className="bg-white border border-[#E2E0DA] rounded-xl p-6 sm:p-10">
+            <StepComp trustCase={trustCase} caseId={caseId} reload={reload} />
+          </div>
+
+          {/* Help box per section */}
+          <MessageThread caseId={caseId} section={stepKey} title={`Questions about ${STEP_DEFS[stepIdx].label}?`} />
+
+          <div className="flex items-center justify-between">
+            <button onClick={() => gotoStep(stepIdx - 1)} disabled={stepIdx === 0}
+              className="btn-secondary" data-testid="wizard-prev-btn">
+              <ArrowLeft className="h-4 w-4 inline mr-1" /> Previous
+            </button>
+            {stepIdx < STEP_DEFS.length - 1 ? (
+              <button onClick={() => gotoStep(stepIdx + 1)} disabled={!currentDone}
+                className="btn-primary" data-testid="wizard-next-btn">
+                Next <ArrowRight className="h-4 w-4 inline ml-1" />
+              </button>
+            ) : (
+              <button onClick={() => navigate("/portal")} className="btn-primary" data-testid="wizard-done-btn">
+                Back to Portal
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </Layout>
+  );
+}

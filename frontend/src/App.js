@@ -1,52 +1,49 @@
-import { useEffect } from "react";
+import React from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { Toaster } from "sonner";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import Login from "@/pages/Login";
+import Register from "@/pages/Register";
+import ClientPortal from "@/pages/ClientPortal";
+import StartNew from "@/pages/StartNew";
+import IntakeWizard from "@/pages/IntakeWizard";
+import AdminDashboard from "@/pages/AdminDashboard";
+import AdminCaseDetail from "@/pages/AdminCaseDetail";
+import BrandingPage from "@/pages/BrandingPage";
+import ProtectedRoute from "@/components/ProtectedRoute";
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
+function Root() {
+  const { user } = useAuth();
+  if (user === null) return null;
+  if (user === false) return <Navigate to="/login" replace />;
+  return user.role === "admin" ? <Navigate to="/admin" replace /> : <Navigate to="/portal" replace />;
+}
 
 function App() {
   return (
     <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+      <AuthProvider>
+        <Toaster position="top-right" richColors />
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<Root />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+
+            <Route path="/portal" element={<ProtectedRoute><ClientPortal /></ProtectedRoute>} />
+            <Route path="/portal/new" element={<ProtectedRoute><StartNew /></ProtectedRoute>} />
+            <Route path="/intake/:caseId" element={<ProtectedRoute><IntakeWizard /></ProtectedRoute>} />
+
+            <Route path="/admin" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
+            <Route path="/admin/cases/:caseId" element={<ProtectedRoute adminOnly><AdminCaseDetail /></ProtectedRoute>} />
+            <Route path="/admin/branding" element={<ProtectedRoute adminOnly><BrandingPage /></ProtectedRoute>} />
+
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </BrowserRouter>
+      </AuthProvider>
     </div>
   );
 }
