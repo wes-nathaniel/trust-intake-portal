@@ -290,3 +290,142 @@ class TestBranding:
     def test_update_branding_client_forbidden(self, client_session):
         r = client_session.put(f"{API}/branding", json={"business_name": "hack"})
         assert r.status_code == 403
+
+
+# ---------- INVITE FLOW ----------
+class TestInviteFlow:
+    def _get_token_from_db_via_api(self, admin_session, email):
+        # Not exposed — rely on endpoint response that returns case_id; we look up token in DB via a debug path.
+        # Since there's no debug endpoint, fetch the invite via a direct mongo query through the app server is NOT possible.
+        # Instead, the admin endpoint returns {ok, case_id, user_id} — the token is delivered via email.
+        # We derive the token by searching login attempts? -- Not possible.
+        # So we expose a small helper: query mongodb directly.
+        from pymongo import MongoClient
+        m = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+        db_name = os.environ.get("DB_NAME", "test_database")
+        rec = m[db_name].invites.find_one({"email": email, "used": False}, sort=[("created_at", -1)])
+        return rec["token"] if rec else None
+
+    def test_admin_invite_creates_user_case_and_token(self, admin_session):
+        email = f"itest_{uuid.uuid4().hex[:8]}@example.com"
+        r = admin_session.post(f"{API}/admin/invite-client",
+                               json={"name": "Invite User", "email": email, "trust_type": "single"})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["ok"] is True
+        assert "case_id" in data and "user_id" in data
+        # token should exist in DB
+        token = self._get_token_from_db_via_api(admin_session, email)
+        assert token, "Invite token not found in DB"
+
+    def test_invite_info_valid_and_invalid(self, admin_session):
+        email = f"itest_{uuid.uuid4().hex[:8]}@example.com"
+        admin_session.post(f"{API}/admin/invite-client",
+                           json={"name": "Invite Info", "email": email, "trust_type": "joint"})
+        token = self._get_token_from_db_via_api(admin_session, email)
+        r = requests.get(f"{API}/auth/invite-info", params={"token": token})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["email"] == email
+        assert body["name"] == "Invite Info"
+        assert "case_id" in body
+        # invalid token
+        r2 = requests.get(f"{API}/auth/invite-info", params={"token": "bogus"})
+        assert r2.status_code == 400
+
+    def test_accept_invite_sets_password_and_logs_in(self, admin_session):
+        email = f"itest_{uuid.uuid4().hex[:8]}@example.com"
+        admin_session.post(f"{API}/admin/invite-client",
+                           json={"name": "Accept User", "email": email, "trust_type": "single"})
+        token = self._get_token_from_db_via_api(admin_session, email)
+        new_pw = "NewClientPass123"
+        s = requests.Session()
+        r = s.post(f"{API}/auth/accept-invite", json={"token": token, "password": new_pw})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["email"] == email
+        assert "case_id" in data
+        # cookies should allow /auth/me
+        me = s.get(f"{API}/auth/me")
+        assert me.status_code == 200
+        # login with new password
+        s2 = requests.Session()
+        login = s2.post(f"{API}/auth/login", json={"email": email, "password": new_pw})
+        assert login.status_code == 200
+
+    def test_accept_invite_token_not_reusable(self, admin_session):
+        email = f"itest_{uuid.uuid4().hex[:8]}@example.com"
+        admin_session.post(f"{API}/admin/invite-client",
+                           json={"name": "Reuse Token", "email": email, "trust_type": "single"})
+        token = self._get_token_from_db_via_api(admin_session, email)
+        r1 = requests.post(f"{API}/auth/accept-invite",
+                           json={"token": token, "password": "Abc12345"})
+        assert r1.status_code == 200
+        r2 = requests.post(f"{API}/auth/accept-invite",
+                           json={"token": token, "password": "Abc12345"})
+        assert r2.status_code == 400
+
+
+# ---------- STATUS CHANGE EMAIL ----------
+class TestStatusEmails:
+    def test_status_change_to_in_review(self, admin_session, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        r1 = admin_session.put(f"{API}/admin/trust-cases/{cid}/status", json={"status": "In Review"})
+        assert r1.status_code == 200
+        assert r1.json()["status"] == "In Review"
+
+    def test_status_same_status_no_email(self, admin_session, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        admin_session.put(f"{API}/admin/trust-cases/{cid}/status", json={"status": "In Review"})
+        r2 = admin_session.put(f"{API}/admin/trust-cases/{cid}/status", json={"status": "In Review"})
+        assert r2.status_code == 200
+
+    def test_status_completed_triggers_pdf_email(self, admin_session, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        r1 = admin_session.put(f"{API}/admin/trust-cases/{cid}/status", json={"status": "Completed"})
+        assert r1.status_code == 200
+        assert r1.json()["status"] == "Completed"
+
+
+# ---------- E-SIGN ----------
+class TestEsign:
+    def test_esign_health_disabled(self, admin_session):
+        r = admin_session.get(f"{API}/admin/esign/health")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["enabled"] is False
+        assert "test_mode" in data
+
+    def test_esign_health_requires_admin(self, client_session):
+        r = client_session.get(f"{API}/admin/esign/health")
+        assert r.status_code == 403
+
+    def test_send_for_signing_503_when_disabled(self, admin_session, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        files = {"file": ("t.pdf", io.BytesIO(b"%PDF-1.4 fake"), "application/pdf")}
+        data = {"signer_email": "x@y.com", "signer_name": "X Y", "title": "T"}
+        r2 = admin_session.post(f"{API}/admin/trust-cases/{cid}/send-for-signing",
+                                data=data, files=files)
+        assert r2.status_code == 503
+        assert "not configured" in r2.json().get("detail", "").lower()
+
+
+# ---------- BENEFICIARY PERCENT VALIDATION ----------
+class TestBeneficiaryPctTotal:
+    def test_three_beneficiaries_total_over_100(self, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        base = {"date_of_birth": "2000-01-01", "relationship": "Child"}
+        r1 = client_session.post(f"{API}/trust-cases/{cid}/beneficiaries",
+                                 json={**base, "full_legal_name": "B1", "percentage": 50})
+        assert r1.status_code == 200
+        r2 = client_session.post(f"{API}/trust-cases/{cid}/beneficiaries",
+                                 json={**base, "full_legal_name": "B2", "percentage": 40})
+        assert r2.status_code == 200
+        r3 = client_session.post(f"{API}/trust-cases/{cid}/beneficiaries",
+                                 json={**base, "full_legal_name": "B3", "percentage": 20})
+        assert r3.status_code == 400

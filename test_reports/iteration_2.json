@@ -1,0 +1,35 @@
+{
+  "summary": "Follow-up testing of invite/esign/status-change iteration. 39/39 backend tests pass (11 new in TestInviteFlow, TestStatusEmails, TestEsign, TestBeneficiaryPctTotal). Frontend: Admin Invite client dialog, /accept-invite magic-link flow (redirects to intake wizard), and Send-for-Signing dialog on AdminCaseDetail all work. Backend logs show zero 'Resend send failed' during this iteration. E-sign correctly returns {enabled:false} and /send-for-signing returns 503 with clean message.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py admin_update_status: when an exception is thrown inside the status-email try/except block, logger.error is called with 'Status change email failed' but the backend still returns 200 — good behavior (email should not fail the API); confirmed correct.",
+    "server.py admin_send_for_signing: after Dropbox Sign upload, code mimics the status-change email manually (line ~1150). Works but duplicates _status_change_email logic — consider extracting a helper so invite/status/ready-for-signing all go through one function.",
+    "server.py resend email domain: at 20:26 UTC earlier today logs showed Resend 403 'You can only send testing emails to your own email address' — this is PRE-iteration and recipients during 22:52 test run (uitest_*@example.com, itest_*@example.com, testclient_*) appear to have been accepted by Resend (no errors in logs for this run). Domain DKIM status appears fully live now. Worth verifying in production that emails to arbitrary @example.com recipients are actually queued/delivered rather than silently dropped. Test recipients weren't inboxes we can check.",
+    "esign.py download_signed_pdf: uses api.signature_request_files which returns a urllib3 file-like — the fallback 'isinstance(resp, (bytes, bytearray))' may never hit in current SDK versions. Minor; low risk since e-sign is disabled.",
+    "InviteClientDialog.jsx uses native <select> not shadcn Select — consistent with rest of wizard; acceptable.",
+    "AcceptInvite.jsx successfully refresh()es auth context and navigates to /intake/{case_id} — verified end-to-end."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added TestInviteFlow, TestStatusEmails, TestEsign, TestBeneficiaryPctTotal — 11 new tests)"
+  ],
+  "success_rate": {"backend": "100% (39/39)", "frontend": "100% of new flows (invite dialog, accept-invite, send-for-signing dialog)"},
+  "test_credentials": "Admin: support@igcfirm.com / Wllorenzo03! (seeded). Invites created dynamically (itest_/uitest_ prefix). Token fetched via direct Mongo query in tests (no debug endpoint).",
+  "seed_data_creation": "Tests generated ~15 throwaway clients + invites + cases. Admin seeded by backend startup.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Invite/accept-invite/send-for-signing flows fully covered by /app/backend/tests/backend_test.py. If DROPBOX_SIGN_API_KEY is later added, TestEsign::test_send_for_signing_503_when_disabled and test_esign_health_disabled will need to flip their expected values. The test_brute_force_lockout case now PASSES (401→429 after 5 fails) — main agent fixed the X-Forwarded-For IP issue from iteration 1. Frontend smoke flows (admin login, invite dialog, case detail E-Signature section, accept-invite redirect to wizard) verified via Playwright screenshots.",
+  "rca of the issue": "No bugs found in this iteration. The iteration 1 brute-force lockout issue has been fixed (line 450-451 of server.py now reads X-Forwarded-For / X-Real-IP before falling back to request.client.host), and the test now passes."
+}
