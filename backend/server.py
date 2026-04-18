@@ -329,14 +329,20 @@ async def register(body: RegisterReq, response: Response):
 @api_router.post("/auth/login")
 async def login(body: LoginReq, request: Request, response: Response):
     email = body.email.lower()
-    ip = request.client.host if request.client else "unknown"
-    identifier = f"{ip}:{email}"
+    # Derive real client IP from proxy headers (K8s ingress)
+    xff = request.headers.get("x-forwarded-for", "")
+    real_ip = xff.split(",")[0].strip() if xff else (request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown"))
+    identifier = f"{real_ip}:{email}"
+    email_identifier = f"email:{email}"
     await check_lockout(identifier)
+    await check_lockout(email_identifier)
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(body.password, user["password_hash"]):
         await record_failure(identifier)
+        await record_failure(email_identifier)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     await clear_failures(identifier)
+    await clear_failures(email_identifier)
     access = create_access_token(user["id"], email, user.get("role", "client"))
     refresh = create_refresh_token(user["id"])
     set_auth_cookies(response, access, refresh)
