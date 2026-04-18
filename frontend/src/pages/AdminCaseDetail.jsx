@@ -104,10 +104,26 @@ export default function AdminCaseDetail() {
         <ArrowLeft className="h-4 w-4" /> Back to cases
       </Link>
 
-      <div className="mb-6">
-        <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Case #{c.id.slice(0, 8).toUpperCase()}</p>
-        <h1 className="font-serif text-4xl text-navy">{c.client_name || c.client_email}</h1>
-        <p className="text-[#64748B] mt-1">{c.client_email} · {c.trust_type === "joint" ? "Joint Trust" : "Single Trust"}</p>
+      <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Case #{c.id.slice(0, 8).toUpperCase()}</p>
+          <h1 className="font-serif text-4xl text-navy">{c.client_name || c.client_email}</h1>
+          <p className="text-[#64748B] mt-1">{c.client_email} · {c.trust_type === "joint" ? "Joint Trust" : "Single Trust"}</p>
+        </div>
+        <button
+          onClick={async () => {
+            try {
+              const res = await api.get(`/trust-cases/${caseId}/export.pdf`, { responseType: "blob" });
+              const url = URL.createObjectURL(res.data);
+              const a = document.createElement("a");
+              a.href = url; a.download = `trust-intake-${caseId.slice(0,8)}.pdf`; a.click();
+              URL.revokeObjectURL(url);
+            } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+          }}
+          className="btn-accent"
+          data-testid="admin-download-pdf-btn">
+          <Download className="h-4 w-4 inline mr-1" /> Download Intake PDF
+        </button>
       </div>
 
       <div className="mb-6">

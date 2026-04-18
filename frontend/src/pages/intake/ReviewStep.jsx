@@ -1,6 +1,8 @@
 import React from "react";
 import { SectionHeader } from "./_shared";
-import { CheckCircle2, ShieldCheck } from "lucide-react";
+import { CheckCircle2, ShieldCheck, Download } from "lucide-react";
+import api, { formatApiError } from "@/lib/api";
+import { toast } from "sonner";
 
 const LINE = ({ l, v }) => (
   <div className="flex justify-between border-b border-dashed border-[#E2E0DA] py-1.5 text-sm">
@@ -9,7 +11,7 @@ const LINE = ({ l, v }) => (
   </div>
 );
 
-export default function ReviewStep({ trustCase }) {
+export default function ReviewStep({ trustCase, caseId }) {
   const g = trustCase.grantors || [];
   const t = trustCase.trustees?.[0];
   const sct = trustCase.successor_trustees || [];
@@ -22,12 +24,28 @@ export default function ReviewStep({ trustCase }) {
       <SectionHeader num={8} total={8} title="Review & Submit"
         subtitle="Review all the information you've provided. Your case is now with our team." />
 
-      <div className="bg-bronze/10 border border-bronze/30 rounded-lg p-4 mb-8 flex items-center gap-3" data-testid="review-complete-banner">
-        <ShieldCheck className="h-5 w-5 text-bronze" />
-        <div>
-          <p className="font-semibold text-navy">All required sections are complete.</p>
-          <p className="text-sm text-[#64748B]">Our team will contact you shortly. You can continue to upload documents and message us anytime.</p>
+      <div className="bg-bronze/10 border border-bronze/30 rounded-lg p-4 mb-8 flex flex-col sm:flex-row items-start sm:items-center gap-3 justify-between" data-testid="review-complete-banner">
+        <div className="flex items-center gap-3">
+          <ShieldCheck className="h-5 w-5 text-bronze" />
+          <div>
+            <p className="font-semibold text-navy">All required sections are complete.</p>
+            <p className="text-sm text-[#64748B]">Our team will contact you shortly. You can continue to upload documents and message us anytime.</p>
+          </div>
         </div>
+        <button
+          onClick={async () => {
+            try {
+              const res = await api.get(`/trust-cases/${caseId || trustCase.id}/export.pdf`, { responseType: "blob" });
+              const url = URL.createObjectURL(res.data);
+              const a = document.createElement("a");
+              a.href = url; a.download = `trust-intake-${(caseId || trustCase.id).slice(0,8)}.pdf`; a.click();
+              URL.revokeObjectURL(url);
+            } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+          }}
+          className="btn-accent shrink-0"
+          data-testid="review-download-pdf-btn">
+          <Download className="h-4 w-4 inline mr-1" /> Download Summary PDF
+        </button>
       </div>
 
       <div className="space-y-6" data-testid="review-summary">

@@ -141,8 +141,10 @@ export default function BeneficiaryStep({ caseId, trustCase, reload }) {
           <Form caseId={caseId} idx={list.length} reload={reload} onCancel={() => setEditing(null)} />
         )}
       </div>
-      <div className="mt-4 text-sm text-[#64748B]" data-testid="beneficiary-total">
-        Total allocated: <span className={`font-semibold ${total === 100 ? "text-green-700" : "text-bronze"}`}>{total}%</span>
+      <div className="mt-4 text-sm" data-testid="beneficiary-total">
+        Total allocated: <span className={`font-semibold ${total === 100 ? "text-green-700" : total > 100 ? "text-red-600" : "text-bronze"}`}>{total}%</span>
+        {total > 100 && <span className="ml-2 text-red-600">Total cannot exceed 100%.</span>}
+        {total < 100 && list.length > 0 && <span className="ml-2 text-[#64748B]">({100 - total}% unallocated)</span>}
       </div>
       {list.length === 0 && (
         <div className="mt-6 p-4 bg-amber-50 border border-amber-200 rounded-md text-sm text-amber-900" data-testid="beneficiary-warning">

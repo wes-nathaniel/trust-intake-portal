@@ -23,6 +23,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 from starlette.middleware.cors import CORSMiddleware
 import io
+from pdf_export import build_intake_pdf
 
 # ---------- CONFIG ----------
 JWT_ALGORITHM = "HS256"
@@ -156,6 +157,39 @@ def get_object(path: str) -> tuple:
     return r.content, r.headers.get("Content-Type", "application/octet-stream")
 
 # ---------- EMAIL ----------
+async def _branding_doc() -> dict:
+    rec = await db.branding.find_one({"id": "global"}, {"_id": 0})
+    return {**DEFAULT_BRANDING, **(rec or {})}
+
+
+def _welcome_email_html(business, accent, primary, client_name, trust_label, case_id, link):
+    return f"""
+<table width="100%" cellpadding="0" cellspacing="0" style="font-family:Georgia,serif;background:#F6F4F0;padding:24px 0;">
+  <tr><td align="center">
+    <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #EBE7DF;border-radius:10px;overflow:hidden;">
+      <tr><td style="background:{primary};padding:24px;color:#F6F4F0;">
+        <div style="font-size:11px;letter-spacing:3px;color:{accent};text-transform:uppercase;margin-bottom:6px;">Trust & Estate Portal</div>
+        <div style="font-size:24px;font-family:Georgia,serif;">{business}</div>
+      </td></tr>
+      <tr><td style="padding:28px;color:#1C252E;font-size:15px;line-height:1.55;">
+        <p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Welcome, {client_name}.</p>
+        <p>Your <b>{trust_label}</b> intake has been started with us.</p>
+        <p>Case reference: <span style="font-family:monospace;background:#EBE7DF;padding:2px 6px;border-radius:4px;">{case_id}</span></p>
+        <p>You can pick up where you left off at any time. We'll guide you section-by-section and flag anything still required.</p>
+        <p style="text-align:center;margin:28px 0;">
+          <a href="{link}" style="display:inline-block;background:{accent};color:#ffffff;padding:12px 26px;border-radius:6px;text-decoration:none;font-weight:600;">Continue your intake</a>
+        </p>
+        <p style="color:#64748B;font-size:13px;">If you have questions at any step, use the "Questions about this section?" box inside the portal — your message goes directly to our team.</p>
+      </td></tr>
+      <tr><td style="background:#F6F4F0;padding:16px;text-align:center;color:#64748B;font-size:11px;">
+        &copy; {business} &middot; Secure Trust Intake Portal
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+"""
+
+
 async def send_email_notification(to_email: str, subject: str, html_body: str):
     if not RESEND_API_KEY:
         logger.info(f"[email-mock] to={to_email} subject={subject}")
@@ -165,6 +199,27 @@ async def send_email_notification(to_email: str, subject: str, html_body: str):
         await asyncio.to_thread(resend.Emails.send, params)
     except Exception as e:
         logger.error(f"Resend send failed: {e}")
+
+
+async def send_email_notification_with_attachment(to_email: str, subject: str, html_body: str,
+                                                  attachment_name: str, attachment_bytes: bytes,
+                                                  content_type: str = "application/pdf"):
+    if not RESEND_API_KEY:
+        logger.info(f"[email-mock-attach] to={to_email} subject={subject} attachment={attachment_name} ({len(attachment_bytes)} bytes)")
+        return
+    try:
+        import base64
+        params = {
+            "from": SENDER_EMAIL, "to": [to_email], "subject": subject, "html": html_body,
+            "attachments": [{
+                "filename": attachment_name,
+                "content": base64.b64encode(attachment_bytes).decode("utf-8"),
+                "content_type": content_type,
+            }],
+        }
+        await asyncio.to_thread(resend.Emails.send, params)
+    except Exception as e:
+        logger.error(f"Resend send (attachment) failed: {e}")
 
 # ---------- MODELS ----------
 class RegisterReq(BaseModel):
@@ -448,6 +503,30 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
     }
     await db.trust_cases.insert_one(case)
     case.pop("_id", None)
+    # Branded welcome email
+    branding = await _branding_doc()
+    biz = branding.get("business_name", "our firm")
+    trust_label = "Joint Trust" if body.trust_type == "joint" else "Single Trust"
+    welcome_html = _welcome_email_html(
+        business=biz,
+        accent=branding.get("accent_color", "#C5A880"),
+        primary=branding.get("primary_color", "#1C252E"),
+        client_name=user.get("name") or user["email"],
+        trust_label=trust_label,
+        case_id=case["id"][:8].upper(),
+        link=f"{FRONTEND_URL}/intake/{case['id']}",
+    )
+    await send_email_notification(user["email"], f"Welcome to {biz} — your trust intake has begun", welcome_html)
+    # Notify admin too
+    admin = await db.users.find_one({"role": "admin"})
+    if admin:
+        await send_email_notification(
+            admin["email"],
+            f"New trust intake started — {user.get('name') or user['email']}",
+            f"<p>A new <b>{trust_label}</b> case has been started by "
+            f"<b>{user.get('name') or user['email']}</b>.</p>"
+            f"<p><a href='{FRONTEND_URL}/admin/cases/{case['id']}'>Open case in admin</a></p>",
+        )
     return case
 
 @api_router.get("/trust-cases/mine")
@@ -532,21 +611,34 @@ async def delete_successor(case_id: str, sid: str, user: dict = Depends(get_curr
     return {"ok": True}
 
 # --- Beneficiaries ---
+def _validate_pct_total(bens: list) -> float:
+    total = sum(float(b.get("percentage", 0) or 0) for b in bens)
+    if total > 100.0001:
+        raise HTTPException(status_code=400,
+                            detail=f"Beneficiary shares total {total}% — cannot exceed 100%.")
+    return total
+
 @api_router.post("/trust-cases/{case_id}/beneficiaries")
 async def add_beneficiary(case_id: str, b: Beneficiary, user: dict = Depends(get_current_user)):
     case = await get_case(case_id, user)
     bens = case.get("beneficiaries", [])
-    bens.append(b.model_dump())
-    await update_case(case_id, {"beneficiaries": bens})
+    if float(b.percentage or 0) <= 0:
+        raise HTTPException(status_code=400, detail="Beneficiary share must be greater than 0.")
+    new_list = bens + [b.model_dump()]
+    _validate_pct_total(new_list)
+    await update_case(case_id, {"beneficiaries": new_list})
     return b.model_dump()
 
 @api_router.put("/trust-cases/{case_id}/beneficiaries/{bid}")
 async def update_beneficiary(case_id: str, bid: str, b: Beneficiary, user: dict = Depends(get_current_user)):
     case = await get_case(case_id, user)
     bens = case.get("beneficiaries", [])
+    if float(b.percentage or 0) <= 0:
+        raise HTTPException(status_code=400, detail="Beneficiary share must be greater than 0.")
     for i, x in enumerate(bens):
         if x["id"] == bid:
             data = b.model_dump(); data["id"] = bid; bens[i] = data
+            _validate_pct_total(bens)
             await update_case(case_id, {"beneficiaries": bens})
             return data
     raise HTTPException(status_code=404, detail="Beneficiary not found")
@@ -750,8 +842,49 @@ async def admin_get_case(case_id: str, _: dict = Depends(require_admin)):
 async def admin_update_status(case_id: str, body: StatusUpdate, admin: dict = Depends(require_admin)):
     if body.status not in STATUSES:
         raise HTTPException(status_code=400, detail="Invalid status")
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Not found")
+    prev_status = case.get("status")
     await update_case(case_id, {"status": body.status})
+    # Auto email + attach PDF when case moves to Completed
+    if body.status == "Completed" and prev_status != "Completed":
+        try:
+            case["status"] = "Completed"
+            branding = await _branding_doc()
+            pdf_bytes = build_intake_pdf(case, branding)
+            biz = branding.get("business_name", "Trust Portal")
+            html = f"""
+<p>Your trust intake is now <b>complete</b>. Attached is a PDF summary of the information you provided.</p>
+<p>You can download it anytime from your portal.</p>
+<p><a href='{FRONTEND_URL}/portal'>Open your portal</a></p>
+<p style='color:#64748B;font-size:12px'>Thank you for trusting {biz}.</p>
+"""
+            await send_email_notification_with_attachment(
+                to_email=case.get("client_email"),
+                subject=f"Your trust intake is complete — {biz}",
+                html_body=html,
+                attachment_name=f"trust-intake-{case_id[:8]}.pdf",
+                attachment_bytes=pdf_bytes,
+                content_type="application/pdf",
+            )
+        except Exception as e:
+            logger.error(f"Completion email failed: {e}")
     return {"ok": True, "status": body.status}
+
+
+@api_router.get("/trust-cases/{case_id}/export.pdf")
+async def export_pdf(case_id: str, user: dict = Depends(get_current_user)):
+    case = await get_case(case_id, user)
+    branding = await _branding_doc()
+    pdf_bytes = build_intake_pdf(case, branding)
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="trust-intake-{case_id[:8]}.pdf"'
+        },
+    )
 
 @api_router.post("/admin/trust-cases/{case_id}/notes")
 async def admin_add_note(case_id: str, body: NoteCreate, admin: dict = Depends(require_admin)):

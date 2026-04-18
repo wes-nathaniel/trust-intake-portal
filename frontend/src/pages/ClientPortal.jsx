@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
-import { Users, User, Plus, ArrowRight, FileText, ShieldCheck } from "lucide-react";
+import { Users, User, Plus, ArrowRight, FileText, ShieldCheck, Download } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import StatusTracker from "@/components/StatusTracker";
 import { toast } from "sonner";
@@ -99,9 +99,25 @@ export default function ClientPortal() {
                     <span>{c.assets?.length || 0} asset(s)</span>
                   </div>
                 </div>
-                <Link to={`/intake/${c.id}`} className="btn-accent" data-testid={`continue-case-${c.id}`}>
-                  {c.status === "Completed" ? "View" : "Continue Intake"}
-                </Link>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await api.get(`/trust-cases/${c.id}/export.pdf`, { responseType: "blob" });
+                        const url = URL.createObjectURL(res.data);
+                        const a = document.createElement("a");
+                        a.href = url; a.download = `trust-intake-${c.id.slice(0,8)}.pdf`; a.click();
+                        URL.revokeObjectURL(url);
+                      } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+                    }}
+                    className="btn-secondary text-sm"
+                    data-testid={`download-pdf-${c.id}`}>
+                    <Download className="h-4 w-4 inline mr-1" /> PDF
+                  </button>
+                  <Link to={`/intake/${c.id}`} className="btn-accent" data-testid={`continue-case-${c.id}`}>
+                    {c.status === "Completed" ? "View" : "Continue Intake"}
+                  </Link>
+                </div>
               </div>
             </div>
           ))}
