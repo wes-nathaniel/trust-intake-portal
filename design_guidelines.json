@@ -1,0 +1,119 @@
+{
+  "theme": "light",
+  "archetype": "Archetype 1 (Organic & Earthy) / Trust & Stability Variant",
+  "design_principles": [
+    "Clarity Over Complexity: Forms must use progressive disclosure (multi-step wizard) with clear hard stops for missing data.",
+    "Reassuring & Secure: High contrast, substantial tap targets, and typography optimized for mature demographics (50+).",
+    "Dense but Digestible: For the admin dashboard, rely on standard Shadcn patterns with 'bento' grid principles for data density."
+  ],
+  "color_palette": {
+    "primary": {
+      "name": "Deep Slate Navy",
+      "hex": "#1C252E",
+      "usage": "Brand core, main typography, solid buttons, footer background"
+    },
+    "secondary": {
+      "name": "Warm Sand",
+      "hex": "#F6F4F0",
+      "usage": "App background, section dividers, soft active states"
+    },
+    "accent": {
+      "name": "Legacy Bronze",
+      "hex": "#C5A880",
+      "usage": "Call-to-action highlights, status indicators, progress bars, active step borders"
+    },
+    "surface": {
+      "name": "Paper White",
+      "hex": "#FFFFFF",
+      "usage": "Form cards, input fields, dropdowns, table backgrounds"
+    },
+    "text": {
+      "main": "#1C252E",
+      "muted": "#64748B",
+      "inverse": "#FFFFFF"
+    },
+    "states": {
+      "error": "#EF4444",
+      "success": "#10B981",
+      "warning": "#F59E0B"
+    }
+  },
+  "typography": {
+    "font_families": {
+      "headings": "Cormorant Garamond",
+      "body": "IBM Plex Sans",
+      "mono": "IBM Plex Mono"
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl tracking-tight leading-none text-primary font-serif",
+      "h2": "text-2xl sm:text-3xl tracking-tight text-primary font-serif",
+      "h3": "text-xl sm:text-2xl text-primary font-serif",
+      "body": "text-base sm:text-lg leading-relaxed text-main font-sans",
+      "label": "text-sm uppercase tracking-[0.1em] font-semibold text-muted font-sans",
+      "small": "text-sm text-muted font-sans"
+    }
+  },
+  "spacing_and_layout": {
+    "container": "max-w-6xl mx-auto px-4 sm:px-6 lg:px-8",
+    "section_padding": "py-16 sm:py-24",
+    "form_spacing": "gap-8",
+    "card_padding": "p-8",
+    "grid_bento": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6",
+    "border_radius": {
+      "containers": "rounded-xl",
+      "inputs": "rounded-md",
+      "buttons": "rounded-md"
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-[#1C252E] text-white hover:bg-[#2C3845] transition-colors rounded-md px-6 py-3 font-medium",
+      "secondary": "bg-[#F6F4F0] text-[#1C252E] hover:bg-[#EBE7DF] transition-colors rounded-md px-6 py-3 font-medium border border-transparent hover:border-[#1C252E]/10",
+      "accent": "bg-[#C5A880] text-white hover:bg-[#B3966D] transition-colors rounded-md px-6 py-3 font-medium"
+    },
+    "inputs": {
+      "default": "border border-slate-300 rounded-md p-3 focus:ring-2 focus:ring-[#C5A880] focus:border-transparent bg-white text-lg transition-shadow",
+      "labels": "text-sm uppercase tracking-wide text-slate-500 font-semibold mb-2 block"
+    },
+    "cards": {
+      "default": "bg-white border border-slate-200 rounded-xl shadow-sm p-8 hover:shadow-md transition-shadow"
+    },
+    "navigation": {
+      "header": "sticky top-0 z-50 bg-white/90 backdrop-blur-xl border-b border-slate-200"
+    }
+  },
+  "interaction_and_motion": {
+    "hover": "hover:-translate-y-0.5 transition-transform duration-200",
+    "focus": "focus:outline-none focus:ring-2 focus:ring-[#C5A880] focus:ring-offset-2",
+    "page_transition": "opacity-0 animate-in fade-in duration-300",
+    "progress_bar": "transition-all duration-500 ease-out bg-[#C5A880]"
+  },
+  "images_urls": {
+    "hero": {
+      "url": "https://images.unsplash.com/photo-1598139384902-5a8217874645?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTF8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBsYXclMjBvZmZpY2UlMjBpbnRlcmlvciUyMG1haG9nYW55JTIwZ2xhc3N8ZW58MHx8fHwxNzc2NTQwNDg3fDA&ixlib=rb-4.1.0&q=85",
+      "description": "White and brown wooden framed glass window - Represents modern law office architecture, trust, and transparency.",
+      "usage": "Login screen background, landing page hero image"
+    },
+    "legacy": {
+      "url": "https://images.unsplash.com/photo-1579455843501-99d7f76f6498?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzV8MHwxfHNlYXJjaHwxfHxzZW5pb3IlMjBjb3VwbGUlMjB3YWxraW5nJTIwcGFyayUyMGxlZ2FjeXxlbnwwfHx8fDE3NzY1NDA0ODd8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Senior couple walking, suggesting legacy, peace of mind, and estate planning.",
+      "usage": "Client portal welcome screen, 'Need Help' section background"
+    },
+    "documents": {
+      "url": "https://images.unsplash.com/photo-1693592772086-e80960b134ed?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDN8MHwxfHNlYXJjaHwxfHxwcmVtaXVtJTIwdGV4dHVyZWQlMjBwYXBlciUyMGRvY3VtZW50fGVufDB8fHx8MTc3NjU0MDQ4N3ww&ixlib=rb-4.1.0&q=85",
+      "description": "A pile of white textured paper, symbolizing formal documentation, intake forms, and legal agreements.",
+      "usage": "Document Upload section header background, Intake summary screen"
+    }
+  },
+  "testing": {
+    "data_testid_rule": "All interactive elements, buttons, inputs, tabs, and form steps MUST have a data-testid attribute formatted as kebab-case role-based (e.g., data-testid='grantor-next-button', data-testid='ein-auth-checkbox')."
+  },
+  "instructions_to_main_agent": [
+    "Use Shadcn UI for form elements, modals, tables, and dropdowns. Customize them to fit the 'Legacy Bronze' and 'Deep Slate Navy' palette.",
+    "Implement a robust multi-step wizard component that prevents moving forward without required fields (HARD STOP validation).",
+    "SSN fields must be visually masked.",
+    "The admin dashboard should utilize dense grid layouts (bento-style) for client lists and document review, prioritizing information density over large graphics.",
+    "Do not use transparent headers without backdrop blurs.",
+    "Ensure all input tap targets and font sizes are legible for users 50+ (base size text-lg for forms)."
+  ]
+}
