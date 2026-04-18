@@ -2,8 +2,9 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
-import { Search, Users, FileClock, ArrowRight } from "lucide-react";
+import { Search, Users, FileClock, ArrowRight, UserPlus } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import InviteClientDialog from "@/components/InviteClientDialog";
 import { toast } from "sonner";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
@@ -15,6 +16,7 @@ export default function AdminDashboard() {
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
+  const [inviteOpen, setInviteOpen] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -35,11 +37,17 @@ export default function AdminDashboard() {
 
   return (
     <Layout>
-      <div className="mb-10">
-        <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-2">Administrator</p>
-        <h1 className="font-serif text-4xl sm:text-5xl text-navy tracking-tight">Admin Dashboard</h1>
-        <p className="text-[#64748B] mt-2">Manage all trust intake cases, clients, documents and messages.</p>
+      <div className="mb-10 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-2">Administrator</p>
+          <h1 className="font-serif text-4xl sm:text-5xl text-navy tracking-tight">Admin Dashboard</h1>
+          <p className="text-[#64748B] mt-2">Manage all trust intake cases, clients, documents and messages.</p>
+        </div>
+        <button onClick={() => setInviteOpen(true)} className="btn-accent" data-testid="invite-client-btn">
+          <UserPlus className="h-4 w-4 inline mr-1" /> Invite client
+        </button>
       </div>
+      <InviteClientDialog open={inviteOpen} onOpenChange={setInviteOpen} onInvited={() => load()} />
 
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10" data-testid="admin-stats">

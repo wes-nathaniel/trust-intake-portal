@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
-import { Users, User, Plus, ArrowRight, FileText, ShieldCheck, Download } from "lucide-react";
+import { Users, User, Plus, ArrowRight, FileText, ShieldCheck, Download, FilePen } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import StatusTracker from "@/components/StatusTracker";
 import { toast } from "sonner";
@@ -99,7 +99,23 @@ export default function ClientPortal() {
                     <span>{c.assets?.length || 0} asset(s)</span>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {c.esign?.status === "signed" && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          const res = await api.get(`/trust-cases/${c.id}/download-signed`, { responseType: "blob" });
+                          const url = URL.createObjectURL(res.data);
+                          const a = document.createElement("a");
+                          a.href = url; a.download = `signed-trust-${c.id.slice(0,8)}.pdf`; a.click();
+                          URL.revokeObjectURL(url);
+                        } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+                      }}
+                      className="btn-accent text-sm"
+                      data-testid={`download-signed-${c.id}`}>
+                      <FilePen className="h-4 w-4 inline mr-1" /> Signed Trust
+                    </button>
+                  )}
                   <button
                     onClick={async () => {
                       try {

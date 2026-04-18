@@ -12,6 +12,7 @@ import IntakeWizard from "@/pages/IntakeWizard";
 import AdminDashboard from "@/pages/AdminDashboard";
 import AdminCaseDetail from "@/pages/AdminCaseDetail";
 import BrandingPage from "@/pages/BrandingPage";
+import AcceptInvite from "@/pages/AcceptInvite";
 import ProtectedRoute from "@/components/ProtectedRoute";
 
 function Root() {
@@ -31,6 +32,7 @@ function App() {
             <Route path="/" element={<Root />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
+            <Route path="/accept-invite" element={<AcceptInvite />} />
 
             <Route path="/portal" element={<ProtectedRoute><ClientPortal /></ProtectedRoute>} />
             <Route path="/portal/new" element={<ProtectedRoute><StartNew /></ProtectedRoute>} />

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, EmailStr
 from starlette.middleware.cors import CORSMiddleware
 import io
 from pdf_export import build_intake_pdf
+import esign
 
 # ---------- CONFIG ----------
 JWT_ALGORITHM = "HS256"
@@ -162,7 +163,7 @@ async def _branding_doc() -> dict:
     return {**DEFAULT_BRANDING, **(rec or {})}
 
 
-def _welcome_email_html(business, accent, primary, client_name, trust_label, case_id, link):
+def _email_shell(business, primary, accent, inner_html):
     return f"""
 <table width="100%" cellpadding="0" cellspacing="0" style="font-family:Georgia,serif;background:#F6F4F0;padding:24px 0;">
   <tr><td align="center">
@@ -171,16 +172,7 @@ def _welcome_email_html(business, accent, primary, client_name, trust_label, cas
         <div style="font-size:11px;letter-spacing:3px;color:{accent};text-transform:uppercase;margin-bottom:6px;">Trust & Estate Portal</div>
         <div style="font-size:24px;font-family:Georgia,serif;">{business}</div>
       </td></tr>
-      <tr><td style="padding:28px;color:#1C252E;font-size:15px;line-height:1.55;">
-        <p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Welcome, {client_name}.</p>
-        <p>Your <b>{trust_label}</b> intake has been started with us.</p>
-        <p>Case reference: <span style="font-family:monospace;background:#EBE7DF;padding:2px 6px;border-radius:4px;">{case_id}</span></p>
-        <p>You can pick up where you left off at any time. We'll guide you section-by-section and flag anything still required.</p>
-        <p style="text-align:center;margin:28px 0;">
-          <a href="{link}" style="display:inline-block;background:{accent};color:#ffffff;padding:12px 26px;border-radius:6px;text-decoration:none;font-weight:600;">Continue your intake</a>
-        </p>
-        <p style="color:#64748B;font-size:13px;">If you have questions at any step, use the "Questions about this section?" box inside the portal — your message goes directly to our team.</p>
-      </td></tr>
+      <tr><td style="padding:28px;color:#1C252E;font-size:15px;line-height:1.55;">{inner_html}</td></tr>
       <tr><td style="background:#F6F4F0;padding:16px;text-align:center;color:#64748B;font-size:11px;">
         &copy; {business} &middot; Secure Trust Intake Portal
       </td></tr>
@@ -188,6 +180,66 @@ def _welcome_email_html(business, accent, primary, client_name, trust_label, cas
   </td></tr>
 </table>
 """
+
+
+def _cta(link, label, accent):
+    return (f'<p style="text-align:center;margin:28px 0;">'
+            f'<a href="{link}" style="display:inline-block;background:{accent};color:#ffffff;'
+            f'padding:12px 26px;border-radius:6px;text-decoration:none;font-weight:600;">{label}</a></p>')
+
+
+def _referral_block(business, accent, referral_link):
+    return f"""
+<div style="margin-top:24px;border-top:1px dashed #EBE7DF;padding-top:20px;">
+  <p style="font-family:Georgia,serif;font-size:18px;color:#1C252E;margin:0 0 6px 0;">Your family deserves the same peace of mind.</p>
+  <p style="color:#64748B;font-size:13px;margin:0 0 14px 0;">If {business} has been valuable for you, share us with family or friends who might be putting off their own estate plan.</p>
+  <p style="text-align:center;margin:0;">
+    <a href="{referral_link}" style="display:inline-block;background:transparent;color:#1C252E;border:1px solid #1C252E;padding:10px 22px;border-radius:6px;text-decoration:none;font-weight:600;">Refer a family</a>
+  </p>
+</div>
+"""
+
+
+def _welcome_email_html(business, accent, primary, client_name, trust_label, case_id, link):
+    inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Welcome, {client_name}.</p>
+<p>Your <b>{trust_label}</b> intake has been started with us.</p>
+<p>Case reference: <span style="font-family:monospace;background:#EBE7DF;padding:2px 6px;border-radius:4px;">{case_id}</span></p>
+<p>You can pick up where you left off at any time. We'll guide you section-by-section and flag anything still required.</p>
+{_cta(link, "Continue your intake", accent)}
+<p style="color:#64748B;font-size:13px;">If you have questions at any step, use the "Questions about this section?" box inside the portal — your message goes directly to our team.</p>
+"""
+    return _email_shell(business, primary, accent, inner)
+
+
+def _invite_email_html(business, accent, primary, client_name, trust_label, sender_name, link):
+    inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Welcome, {client_name}.</p>
+<p>{sender_name} at <b>{business}</b> has started a <b>{trust_label}</b> intake for you in our secure portal.</p>
+<p>Click the button below to set your password and begin. Your intake is saved section-by-section — feel free to pause and return any time.</p>
+{_cta(link, "Accept invitation & begin", accent)}
+<p style="color:#64748B;font-size:13px;">This invitation link is valid for 7 days. If you weren't expecting this email, please ignore it.</p>
+"""
+    return _email_shell(business, primary, accent, inner)
+
+
+def _status_change_email_html(business, accent, primary, client_name, status, case_id, link):
+    nice_copy = {
+        "Intake In Progress": "Your intake is now marked as in progress. Thanks for the information so far.",
+        "Waiting on Documents": "We're waiting on a few documents from you to move forward. Please sign in to upload them.",
+        "In Review": "Your intake is now under attorney review. No action is required from you at this time.",
+        "Drafting Trust": "Our team is now drafting your trust documents. We'll reach out if we need anything.",
+        "Ready for Signing": "Your trust documents are ready for signing. Please review and sign at your earliest convenience.",
+        "Completed": "Your trust is now complete. A PDF summary is attached in a separate email.",
+    }.get(status, f"Your case status has been updated to: {status}.")
+    inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Status update, {client_name}.</p>
+<p style="margin:0 0 8px 0;">Your case <span style="font-family:monospace;background:#EBE7DF;padding:2px 6px;border-radius:4px;">{case_id}</span> is now:</p>
+<p style="font-family:Georgia,serif;font-size:22px;color:{accent};margin:0 0 16px 0;">{status}</p>
+<p>{nice_copy}</p>
+{_cta(link, "Open your portal", accent)}
+"""
+    return _email_shell(business, primary, accent, inner)
 
 
 async def send_email_notification(to_email: str, subject: str, html_body: str):
@@ -235,6 +287,16 @@ class ForgotReq(BaseModel):
     email: EmailStr
 
 class ResetReq(BaseModel):
+    token: str
+    password: str = Field(min_length=6)
+
+class InviteReq(BaseModel):
+    name: str
+    email: EmailStr
+    trust_type: Literal["single", "joint"] = "single"
+    message: Optional[str] = ""
+
+class AcceptInviteReq(BaseModel):
     token: str
     password: str = Field(min_length=6)
 
@@ -464,6 +526,109 @@ async def reset_password(body: ResetReq):
     await db.users.update_one({"id": rec["user_id"]}, {"$set": {"password_hash": hash_password(body.password)}})
     await db.password_reset_tokens.update_one({"token": body.token}, {"$set": {"used": True}})
     return {"ok": True}
+
+
+# ---------- CLIENT INVITES ----------
+@api_router.post("/admin/invite-client")
+async def admin_invite_client(body: InviteReq, admin: dict = Depends(require_admin)):
+    email = body.email.lower()
+    existing = await db.users.find_one({"email": email})
+    if existing and existing.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="Cannot invite an admin email")
+    # Create user if needed (random password, requires invite-acceptance to set real one)
+    if not existing:
+        user_id = new_id()
+        await db.users.insert_one({
+            "id": user_id,
+            "email": email,
+            "name": body.name,
+            "password_hash": hash_password(secrets.token_urlsafe(24)),
+            "role": "client",
+            "created_at": now_iso(),
+            "invited_by": admin["id"],
+        })
+    else:
+        user_id = existing["id"]
+        # Update name if blank
+        if not existing.get("name"):
+            await db.users.update_one({"id": user_id}, {"$set": {"name": body.name}})
+    # Create a trust case for them
+    case = {
+        "id": new_id(),
+        "client_id": user_id,
+        "client_email": email,
+        "client_name": body.name,
+        "trust_type": body.trust_type,
+        "status": "Intake Started",
+        "grantors": [], "trustees": [], "successor_trustees": [],
+        "beneficiaries": [], "assets": [],
+        "ein": None, "ein_requested": False, "ein_letter": None,
+        "documents": [], "admin_notes": [], "branding": {},
+        "created_at": now_iso(), "updated_at": now_iso(),
+        "invited": True,
+    }
+    await db.trust_cases.insert_one(case)
+    # Invite token (7-day expiry, stored in DB)
+    token = secrets.token_urlsafe(32)
+    await db.invites.insert_one({
+        "token": token,
+        "user_id": user_id,
+        "case_id": case["id"],
+        "email": email,
+        "name": body.name,
+        "used": False,
+        "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
+        "created_at": now_iso(),
+    })
+    # Branded invite email
+    branding = await _branding_doc()
+    link = f"{FRONTEND_URL}/accept-invite?token={token}"
+    html = _invite_email_html(
+        business=branding.get("business_name", "Trust Portal"),
+        accent=branding.get("accent_color", "#C5A880"),
+        primary=branding.get("primary_color", "#1C252E"),
+        client_name=body.name,
+        trust_label="Joint Trust" if body.trust_type == "joint" else "Single Trust",
+        sender_name=admin.get("name") or "Your trust team",
+        link=link,
+    )
+    await send_email_notification(email, f"You're invited — {branding.get('business_name','Trust Portal')}", html)
+    return {"ok": True, "case_id": case["id"], "user_id": user_id}
+
+
+@api_router.get("/auth/invite-info")
+async def invite_info(token: str):
+    rec = await db.invites.find_one({"token": token, "used": False}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=400, detail="Invalid or used invitation")
+    expires_at = rec["expires_at"]
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Invitation expired")
+    return {"email": rec["email"], "name": rec["name"], "case_id": rec["case_id"]}
+
+
+@api_router.post("/auth/accept-invite")
+async def accept_invite(body: AcceptInviteReq, response: Response):
+    rec = await db.invites.find_one({"token": body.token, "used": False})
+    if not rec:
+        raise HTTPException(status_code=400, detail="Invalid or used invitation")
+    expires_at = rec["expires_at"]
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Invitation expired")
+    user = await db.users.find_one({"id": rec["user_id"]})
+    if not user:
+        raise HTTPException(status_code=400, detail="User not found")
+    # Set password & log in
+    await db.users.update_one({"id": user["id"]}, {"$set": {"password_hash": hash_password(body.password)}})
+    await db.invites.update_one({"token": body.token}, {"$set": {"used": True, "used_at": now_iso()}})
+    access = create_access_token(user["id"], user["email"], user.get("role", "client"))
+    refresh = create_refresh_token(user["id"])
+    set_auth_cookies(response, access, refresh)
+    return {**public_user(user), "case_id": rec["case_id"]}
 
 # ---------- TRUST CASES ----------
 async def get_case(case_id: str, user: dict) -> dict:
@@ -847,19 +1012,47 @@ async def admin_update_status(case_id: str, body: StatusUpdate, admin: dict = De
         raise HTTPException(status_code=404, detail="Not found")
     prev_status = case.get("status")
     await update_case(case_id, {"status": body.status})
-    # Auto email + attach PDF when case moves to Completed
+    if body.status == prev_status:
+        return {"ok": True, "status": body.status}
+
+    branding = await _branding_doc()
+    biz = branding.get("business_name", "Trust Portal")
+    accent = branding.get("accent_color", "#C5A880")
+    primary = branding.get("primary_color", "#1C252E")
+
+    # Progress-status email on every status change (incl. Completed below which adds attachment)
+    if body.status != "Completed":
+        try:
+            html = _status_change_email_html(
+                business=biz, accent=accent, primary=primary,
+                client_name=case.get("client_name") or case.get("client_email"),
+                status=body.status,
+                case_id=case_id[:8].upper(),
+                link=f"{FRONTEND_URL}/portal",
+            )
+            await send_email_notification(
+                case.get("client_email"),
+                f"Status update: {body.status} — {biz}",
+                html,
+            )
+        except Exception as e:
+            logger.error(f"Status change email failed: {e}")
+
+    # Completion email with PDF + referral block
     if body.status == "Completed" and prev_status != "Completed":
         try:
             case["status"] = "Completed"
-            branding = await _branding_doc()
             pdf_bytes = build_intake_pdf(case, branding)
-            biz = branding.get("business_name", "Trust Portal")
-            html = f"""
-<p>Your trust intake is now <b>complete</b>. Attached is a PDF summary of the information you provided.</p>
-<p>You can download it anytime from your portal.</p>
-<p><a href='{FRONTEND_URL}/portal'>Open your portal</a></p>
-<p style='color:#64748B;font-size:12px'>Thank you for trusting {biz}.</p>
+            referral_link = f"{FRONTEND_URL}/register?ref={case_id[:8]}"
+            referral_html = _referral_block(biz, accent, referral_link)
+            inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Your trust intake is complete.</p>
+<p>Thank you for trusting {biz}. A PDF summary of your intake is attached for your records.</p>
+<p>You can download it again anytime from your portal.</p>
+{_cta(f'{FRONTEND_URL}/portal', 'Open your portal', accent)}
+{referral_html}
 """
+            html = _email_shell(biz, primary, accent, inner)
             await send_email_notification_with_attachment(
                 to_email=case.get("client_email"),
                 subject=f"Your trust intake is complete — {biz}",
@@ -884,6 +1077,182 @@ async def export_pdf(case_id: str, user: dict = Depends(get_current_user)):
         headers={
             "Content-Disposition": f'attachment; filename="trust-intake-{case_id[:8]}.pdf"'
         },
+    )
+
+
+# ---------- E-SIGN (Dropbox Sign) ----------
+@api_router.get("/admin/esign/health")
+async def esign_health(_: dict = Depends(require_admin)):
+    return {"enabled": esign.is_enabled(), "test_mode": esign.TEST_MODE}
+
+
+@api_router.post("/admin/trust-cases/{case_id}/send-for-signing")
+async def admin_send_for_signing(
+    case_id: str,
+    file: UploadFile = File(...),
+    signer_email: str = Form(...),
+    signer_name: str = Form(...),
+    title: Optional[str] = Form(None),
+    admin: dict = Depends(require_admin),
+):
+    if not esign.is_enabled():
+        raise HTTPException(status_code=503, detail="E-sign is not configured. Add DROPBOX_SIGN_API_KEY in backend/.env and restart backend.")
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    # Read file bytes
+    pdf_bytes = await file.read()
+    if not pdf_bytes:
+        raise HTTPException(status_code=400, detail="File is empty")
+
+    branding = await _branding_doc()
+    biz = branding.get("business_name", "Trust Portal")
+    doc_title = title or f"Trust Document — Case #{case_id[:8].upper()}"
+    try:
+        result = esign.send_signature_request(
+            pdf_bytes=pdf_bytes,
+            filename=file.filename or "trust.pdf",
+            signer_email=signer_email,
+            signer_name=signer_name,
+            title=doc_title,
+            subject=f"Please sign your trust document — {biz}",
+            message=f"Your trust is ready for signing. Please review and sign this document at your convenience. — {biz}",
+        )
+    except Exception as e:
+        logger.error(f"Dropbox Sign send failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Dropbox Sign error: {e}")
+
+    # Also store the unsigned PDF in object storage for record-keeping
+    stored_path = None
+    try:
+        ext = "pdf"
+        stored_path = f"{APP_NAME}/uploads/{admin['id']}/{case_id}/unsigned-{new_id()}.{ext}"
+        put_object(stored_path, pdf_bytes, "application/pdf")
+    except Exception as e:
+        logger.warning(f"Unsigned doc storage failed (non-fatal): {e}")
+
+    esign_record = {
+        "signature_request_id": result["signature_request_id"],
+        "title": doc_title,
+        "signer_email": signer_email,
+        "signer_name": signer_name,
+        "status": "sent",
+        "created_at": now_iso(),
+        "stored_unsigned_path": stored_path,
+        "details_url": result.get("details_url"),
+    }
+    await update_case(case_id, {
+        "esign": esign_record,
+        "status": "Ready for Signing",
+    })
+
+    # Status-change email already fires from admin_update_status; here we hand-send because we bypassed it
+    try:
+        html = _status_change_email_html(
+            business=biz,
+            accent=branding.get("accent_color", "#C5A880"),
+            primary=branding.get("primary_color", "#1C252E"),
+            client_name=case.get("client_name") or case.get("client_email"),
+            status="Ready for Signing",
+            case_id=case_id[:8].upper(),
+            link=f"{FRONTEND_URL}/portal",
+        )
+        await send_email_notification(
+            case.get("client_email"),
+            f"Your trust is ready for signing — {biz}",
+            html,
+        )
+    except Exception as e:
+        logger.error(f"Ready-for-signing email failed: {e}")
+
+    return {"ok": True, **esign_record}
+
+
+@api_router.get("/admin/trust-cases/{case_id}/signature-status")
+async def admin_signature_status(case_id: str, admin: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    rec = case.get("esign")
+    if not rec:
+        raise HTTPException(status_code=404, detail="No signature request for this case")
+    try:
+        status = esign.get_status(rec["signature_request_id"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Dropbox Sign error: {e}")
+
+    new_status = rec.get("status")
+    if status.get("is_complete") and rec.get("status") != "signed":
+        new_status = "signed"
+        rec["status"] = new_status
+        rec["signed_at"] = now_iso()
+        await update_case(case_id, {"esign": rec, "status": "Completed"})
+        # admin_update_status email side-effect won't fire (we set directly); mimic completion email w/ PDF
+        try:
+            branding = await _branding_doc()
+            biz = branding.get("business_name", "Trust Portal")
+            accent = branding.get("accent_color", "#C5A880")
+            primary = branding.get("primary_color", "#1C252E")
+            case["status"] = "Completed"
+            pdf_bytes = build_intake_pdf(case, branding)
+            referral_link = f"{FRONTEND_URL}/register?ref={case_id[:8]}"
+            inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Your signed trust is complete.</p>
+<p>Thank you. A PDF intake summary is attached for your records; the signed trust document itself will be available in your portal.</p>
+{_cta(f'{FRONTEND_URL}/portal', 'Open your portal', accent)}
+{_referral_block(biz, accent, referral_link)}
+"""
+            html = _email_shell(biz, primary, accent, inner)
+            await send_email_notification_with_attachment(
+                to_email=case.get("client_email"),
+                subject=f"Your trust is signed & complete — {biz}",
+                html_body=html,
+                attachment_name=f"trust-intake-{case_id[:8]}.pdf",
+                attachment_bytes=pdf_bytes,
+                content_type="application/pdf",
+            )
+        except Exception as e:
+            logger.error(f"Post-sign email failed: {e}")
+    else:
+        rec.update({k: v for k, v in status.items() if k in ("signatures", "details_url")})
+        await update_case(case_id, {"esign": rec})
+    return {**rec, "remote_status": status}
+
+
+@api_router.get("/admin/trust-cases/{case_id}/download-signed")
+async def admin_download_signed(case_id: str, admin: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    rec = case.get("esign")
+    if not rec:
+        raise HTTPException(status_code=404, detail="No signature request")
+    try:
+        data = esign.download_signed_pdf(rec["signature_request_id"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Dropbox Sign error: {e}")
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="signed-trust-{case_id[:8]}.pdf"'},
+    )
+
+
+@api_router.get("/trust-cases/{case_id}/download-signed")
+async def client_download_signed(case_id: str, user: dict = Depends(get_current_user)):
+    case = await get_case(case_id, user)
+    rec = case.get("esign")
+    if not rec or rec.get("status") != "signed":
+        raise HTTPException(status_code=404, detail="No signed document available yet")
+    try:
+        data = esign.download_signed_pdf(rec["signature_request_id"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Dropbox Sign error: {e}")
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="signed-trust-{case_id[:8]}.pdf"'},
     )
 
 @api_router.post("/admin/trust-cases/{case_id}/notes")
@@ -961,6 +1330,8 @@ async def startup():
     await db.messages.create_index([("case_id", 1), ("created_at", 1)])
     await db.login_attempts.create_index("identifier")
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=3600)
+    await db.invites.create_index("token", unique=True)
+    await db.invites.create_index("expires_at", expireAfterSeconds=0)
 
     # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()

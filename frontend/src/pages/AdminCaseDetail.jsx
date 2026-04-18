@@ -5,9 +5,10 @@ import api, { formatApiError } from "@/lib/api";
 import StatusTracker from "@/components/StatusTracker";
 import MessageThread from "@/components/MessageThread";
 import { toast } from "sonner";
-import { ArrowLeft, Upload, Download, FileText, StickyNote } from "lucide-react";
+import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, FilePen, RefreshCw } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { displaySSN } from "@/pages/intake/_shared";
+import SendForSigningDialog from "@/components/SendForSigningDialog";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
                   "Drafting Trust", "Ready for Signing", "Completed"];
@@ -34,6 +35,8 @@ export default function AdminCaseDetail() {
   const [note, setNote] = useState("");
   const einInputRef = useRef();
   const [uploadingEin, setUploadingEin] = useState(false);
+  const [signOpen, setSignOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
     try {
@@ -92,6 +95,26 @@ export default function AdminCaseDetail() {
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a");
       a.href = url; a.download = d.filename || "file"; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const refreshSignatureStatus = async () => {
+    setRefreshing(true);
+    try {
+      await api.get(`/admin/trust-cases/${caseId}/signature-status`);
+      await load();
+      toast.success("Signature status refreshed");
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setRefreshing(false); }
+  };
+
+  const downloadSigned = async () => {
+    try {
+      const res = await api.get(`/admin/trust-cases/${caseId}/download-signed`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url; a.download = `signed-trust-${caseId.slice(0,8)}.pdf`; a.click();
       URL.revokeObjectURL(url);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
@@ -224,6 +247,45 @@ export default function AdminCaseDetail() {
           )}
         </Section>
 
+        <Section title="E-Signature (Dropbox Sign)">
+          {!c.esign ? (
+            <div>
+              <p className="text-sm text-[#64748B] mb-3">No signature request sent yet. Upload the final trust PDF to send the client an e-sign request.</p>
+              <button onClick={() => setSignOpen(true)} className="btn-accent text-sm" data-testid="send-for-signing-btn">
+                <FilePen className="h-4 w-4 inline mr-1" /> Send for Signing
+              </button>
+            </div>
+          ) : (
+            <div>
+              <KV k="Title" v={c.esign.title} />
+              <KV k="Signer" v={`${c.esign.signer_name} <${c.esign.signer_email}>`} />
+              <KV k="Status" v={c.esign.status} />
+              <KV k="Sent" v={c.esign.created_at?.slice(0, 19).replace("T", " ")} />
+              {c.esign.signed_at && <KV k="Signed" v={c.esign.signed_at?.slice(0, 19).replace("T", " ")} />}
+              <div className="flex flex-wrap gap-2 mt-4">
+                <button onClick={refreshSignatureStatus} disabled={refreshing} className="btn-secondary text-sm" data-testid="esign-refresh-btn">
+                  <RefreshCw className={`h-4 w-4 inline mr-1 ${refreshing ? "animate-spin" : ""}`} /> {refreshing ? "Refreshing…" : "Refresh status"}
+                </button>
+                {c.esign.details_url && (
+                  <a href={c.esign.details_url} target="_blank" rel="noreferrer" className="btn-secondary text-sm" data-testid="esign-details-link">
+                    Open in Dropbox Sign
+                  </a>
+                )}
+                {c.esign.status === "signed" && (
+                  <button onClick={downloadSigned} className="btn-accent text-sm" data-testid="esign-download-btn">
+                    <Download className="h-4 w-4 inline mr-1" /> Download signed PDF
+                  </button>
+                )}
+                {c.esign.status !== "signed" && (
+                  <button onClick={() => setSignOpen(true)} className="text-sm text-navy hover:text-bronze" data-testid="esign-resend-btn">
+                    Send replacement document
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </Section>
+
         <Section title={`Documents (${docs.length})`}>
           {docs.length === 0 ? <p className="text-sm text-[#64748B]">No documents uploaded.</p> : (
             <ul className="space-y-2 text-sm">
@@ -262,6 +324,15 @@ export default function AdminCaseDetail() {
       <div className="mt-6">
         <MessageThread caseId={caseId} title="Client Messages" />
       </div>
+
+      <SendForSigningDialog
+        open={signOpen}
+        onOpenChange={setSignOpen}
+        caseId={caseId}
+        clientEmail={c.client_email}
+        clientName={c.client_name}
+        onSent={load}
+      />
     </Layout>
   );
 }
