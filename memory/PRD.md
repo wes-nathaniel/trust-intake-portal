@@ -62,3 +62,21 @@ This is a Resend account restriction, not a code bug. To go live:
 2. Wait a few minutes for DNS verification
 3. Update `SENDER_EMAIL` in `/app/backend/.env` to something like `noreply@igcfirm.com`
 4. `sudo supervisorctl restart backend`
+
+## Updates — 2026-02-18 (Session 3 — build-to-completion)
+
+### ✅ Shipped
+- **Admin-initiated client invite** — `POST /api/admin/invite-client`, `GET /api/auth/invite-info`, `POST /api/auth/accept-invite`. Admin dashboard has "Invite client" button → dialog → branded magic-link email → `/accept-invite?token=…` page → set password → auto-login → land on intake wizard.
+- **Progress-status emails** — every admin status change sends a branded email to the client with the new status and copy explaining what it means (incl. "Waiting on Documents", "In Review", "Drafting Trust", "Ready for Signing", "Completed").
+- **Referral block** — the completion email now has "Your family deserves the same peace of mind" block with a unique referral link (`/register?ref=<case-prefix>`).
+- **E-sign integration (code complete, key-gated)** — Dropbox Sign via `dropbox-sign` SDK. Endpoints: `POST /admin/trust-cases/{id}/send-for-signing`, `GET /admin/trust-cases/{id}/signature-status`, `GET /admin/trust-cases/{id}/download-signed`, `GET /trust-cases/{id}/download-signed` (client side). UI: "E-Signature" section on AdminCaseDetail with Send-for-Signing dialog, refresh, and download. Client portal shows "Signed Trust" download button when signed.
+- **E-sign intentionally disabled** — `DROPBOX_SIGN_API_KEY` blank in `.env`; endpoints return 503 with clean setup message. Flip this by pasting a key and restarting backend.
+
+### Testing
+- Iteration 2: 39/39 backend tests pass. Brute-force lockout (iteration 1 issue) now passes. All new flows verified.
+
+### To activate e-sign later
+1. Get key from https://sign.dropbox.com → Settings → API → Generate key
+2. Set `DROPBOX_SIGN_API_KEY="..."` in `/app/backend/.env`
+3. `sudo supervisorctl restart backend`
+4. Flip test mode to production when ready with `DROPBOX_SIGN_TEST_MODE="false"`
