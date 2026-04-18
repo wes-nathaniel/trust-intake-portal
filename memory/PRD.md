@@ -44,3 +44,21 @@ Full Trust Intake & Client Portal web app with strict section-by-section (HARD S
 
 ## Endpoints Summary
 See `/app/memory/test_credentials.md` and `/app/backend/server.py`.
+
+## Updates — 2026-02-18 (later)
+- ✅ Branded welcome email (HTML with navy/bronze palette) sent to client on case creation
+- ✅ Admin notification email on new case
+- ✅ Server-side beneficiary percentage validation (cannot exceed 100%)
+- ✅ PDF export (reportlab) — branded summary with masked SSNs; endpoints: `GET /api/trust-cases/{id}/export.pdf`
+- ✅ PDF auto-emailed to client (as attachment) when admin sets status to **Completed**
+- ✅ Download buttons on Client Portal, Admin Case Detail, and the wizard Review step
+- ✅ Resend API key configured
+
+## Resend — Important Note
+Resend returned: *"You can only send testing emails to your own email address (wes@igcfirm.com). To send emails to other recipients, please verify a domain at resend.com/domains, and change the `from` address to an email using this domain."*
+
+This is a Resend account restriction, not a code bug. To go live:
+1. Go to https://resend.com/domains → Add Domain → add `igcfirm.com` → add the DNS records shown
+2. Wait a few minutes for DNS verification
+3. Update `SENDER_EMAIL` in `/app/backend/.env` to something like `noreply@igcfirm.com`
+4. `sudo supervisorctl restart backend`
