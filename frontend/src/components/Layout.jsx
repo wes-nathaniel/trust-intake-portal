@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Bell, LogOut, Menu as MenuIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import AdminNotifications from "@/components/AdminNotifications";
 
 export default function Layout({ children }) {
   const { user, branding, logout } = useAuth();
@@ -51,6 +52,7 @@ export default function Layout({ children }) {
           <div className="flex items-center gap-3">
             {user && user !== false ? (
               <>
+                {user.role === "admin" && <AdminNotifications />}
                 <span className="hidden sm:inline text-sm text-[#64748B]" data-testid="user-email">{user.email}</span>
                 <Button variant="ghost" size="sm" onClick={handleLogout} data-testid="logout-btn">
                   <LogOut className="h-4 w-4 mr-1" /> Sign out

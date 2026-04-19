@@ -80,3 +80,8 @@ This is a Resend account restriction, not a code bug. To go live:
 2. Set `DROPBOX_SIGN_API_KEY="..."` in `/app/backend/.env`
 3. `sudo supervisorctl restart backend`
 4. Flip test mode to production when ready with `DROPBOX_SIGN_TEST_MODE="false"`
+
+## Updates — 2026-02-19 (Session 4)
+### ✅ Admin inbox + Resend invite
+- **Admin notifications bell** — new `GET /api/admin/notifications` returns unread messages grouped by case (limit 50, 30s polling). Layout header shows a bell icon with red unread-count badge + popover listing groups (client name/email, trust type/status, latest message preview, time-ago). Click a group → navigates to admin case detail; messages become read on load.
+- **Pending-invite banner + Resend invite** — `admin_get_case` now returns `pending_invite: {email, expires_at, created_at}` when the case was invited but the client hasn't accepted. AdminCaseDetail shows an amber "Invitation pending acceptance" banner with a one-click "Resend invite" button → `POST /api/admin/trust-cases/{id}/resend-invite` invalidates old tokens, creates a new one, resends the branded invite email.

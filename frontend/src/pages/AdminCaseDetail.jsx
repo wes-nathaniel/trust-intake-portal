@@ -5,7 +5,7 @@ import api, { formatApiError } from "@/lib/api";
 import StatusTracker from "@/components/StatusTracker";
 import MessageThread from "@/components/MessageThread";
 import { toast } from "sonner";
-import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, FilePen, RefreshCw } from "lucide-react";
+import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, FilePen, RefreshCw, MailPlus, Clock } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { displaySSN } from "@/pages/intake/_shared";
 import SendForSigningDialog from "@/components/SendForSigningDialog";
@@ -37,6 +37,7 @@ export default function AdminCaseDetail() {
   const [uploadingEin, setUploadingEin] = useState(false);
   const [signOpen, setSignOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [resending, setResending] = useState(false);
 
   const load = async () => {
     try {
@@ -119,6 +120,16 @@ export default function AdminCaseDetail() {
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
+  const resendInvite = async () => {
+    setResending(true);
+    try {
+      const { data } = await api.post(`/admin/trust-cases/${caseId}/resend-invite`);
+      toast.success(`Invitation resent to ${data.sent_to}`);
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setResending(false); }
+  };
+
   const docs = (c.documents || []).filter((d) => !d.is_deleted);
 
   return (
@@ -152,6 +163,25 @@ export default function AdminCaseDetail() {
       <div className="mb-6">
         <StatusTracker status={c.status} />
       </div>
+
+      {c.pending_invite && (
+        <div className="mb-6 bg-amber-50 border border-amber-300 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 justify-between" data-testid="pending-invite-banner">
+          <div className="flex items-start gap-3">
+            <div className="shrink-0 h-10 w-10 rounded-full bg-amber-200/60 flex items-center justify-center">
+              <Clock className="h-5 w-5 text-amber-800" />
+            </div>
+            <div>
+              <p className="font-semibold text-amber-900">Invitation pending acceptance</p>
+              <p className="text-sm text-amber-900/80">
+                Client <b>{c.pending_invite.email}</b> hasn't set a password yet. Expires {new Date(c.pending_invite.expires_at).toLocaleDateString()}.
+              </p>
+            </div>
+          </div>
+          <button onClick={resendInvite} disabled={resending} className="btn-accent shrink-0" data-testid="resend-invite-btn">
+            <MailPlus className="h-4 w-4 inline mr-1" /> {resending ? "Sending…" : "Resend invite"}
+          </button>
+        </div>
+      )}
 
       <div className="bg-white border border-[#E2E0DA] rounded-xl p-6 mb-6" data-testid="admin-status-panel">
         <div className="flex flex-col sm:flex-row gap-3 sm:items-center">

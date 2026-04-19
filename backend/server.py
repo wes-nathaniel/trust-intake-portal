@@ -1001,6 +1001,24 @@ async def admin_get_case(case_id: str, _: dict = Depends(require_admin)):
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Not found")
+    # Attach pending_invite info (case was invited and client hasn't accepted yet)
+    pending = None
+    if case.get("invited"):
+        active = await db.invites.find_one(
+            {"case_id": case_id, "used": False},
+            {"_id": 0, "expires_at": 1, "created_at": 1, "email": 1},
+            sort=[("created_at", -1)],
+        )
+        if active:
+            exp = active.get("expires_at")
+            if isinstance(exp, datetime):
+                exp = exp.isoformat()
+            pending = {
+                "email": active.get("email"),
+                "expires_at": exp,
+                "created_at": active.get("created_at"),
+            }
+    case["pending_invite"] = pending
     return case
 
 @api_router.put("/admin/trust-cases/{case_id}/status")
@@ -1279,6 +1297,90 @@ async def admin_stats(_: dict = Depends(require_admin)):
         by_status[s] = await db.trust_cases.count_documents({"status": s})
     clients = await db.users.count_documents({"role": "client"})
     return {"total_cases": total, "total_clients": clients, "by_status": by_status}
+
+
+# --- Admin notifications: unread messages grouped by case ---
+@api_router.get("/admin/notifications")
+async def admin_notifications(_: dict = Depends(require_admin), limit: int = 50):
+    msgs = await db.messages.find(
+        {"sender_role": "client", "read": False},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(limit)
+    # Group by case_id
+    by_case: dict = {}
+    case_ids = []
+    for m in msgs:
+        by_case.setdefault(m["case_id"], []).append(m)
+        if m["case_id"] not in case_ids:
+            case_ids.append(m["case_id"])
+    cases = {}
+    if case_ids:
+        async for c in db.trust_cases.find(
+            {"id": {"$in": case_ids}},
+            {"_id": 0, "id": 1, "client_name": 1, "client_email": 1, "trust_type": 1, "status": 1}
+        ):
+            cases[c["id"]] = c
+    groups = []
+    for cid in case_ids:
+        c = cases.get(cid, {})
+        groups.append({
+            "case_id": cid,
+            "client_name": c.get("client_name") or c.get("client_email") or "(unknown)",
+            "client_email": c.get("client_email", ""),
+            "trust_type": c.get("trust_type"),
+            "status": c.get("status"),
+            "unread_count": len(by_case[cid]),
+            "latest_message": by_case[cid][0],
+            "messages": by_case[cid][:5],
+        })
+    total = await db.messages.count_documents({"sender_role": "client", "read": False})
+    return {"total_unread": total, "groups": groups}
+
+
+# --- Resend invite ---
+@api_router.post("/admin/trust-cases/{case_id}/resend-invite")
+async def admin_resend_invite(case_id: str, admin: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    user = await db.users.find_one({"id": case["client_id"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Client user not found")
+    # Mark any outstanding invites as used so only the new one is valid
+    await db.invites.update_many(
+        {"user_id": user["id"], "case_id": case_id, "used": False},
+        {"$set": {"used": True, "used_at": now_iso(), "invalidated": True}}
+    )
+    token = secrets.token_urlsafe(32)
+    await db.invites.insert_one({
+        "token": token,
+        "user_id": user["id"],
+        "case_id": case_id,
+        "email": user["email"],
+        "name": user.get("name", case.get("client_name", "")),
+        "used": False,
+        "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
+        "created_at": now_iso(),
+        "resent_by": admin["id"],
+    })
+    branding = await _branding_doc()
+    link = f"{FRONTEND_URL}/accept-invite?token={token}"
+    html = _invite_email_html(
+        business=branding.get("business_name", "Trust Portal"),
+        accent=branding.get("accent_color", "#C5A880"),
+        primary=branding.get("primary_color", "#1C252E"),
+        client_name=user.get("name") or case.get("client_name", "there"),
+        trust_label="Joint Trust" if case.get("trust_type") == "joint" else "Single Trust",
+        sender_name=admin.get("name") or "Your trust team",
+        link=link,
+    )
+    await send_email_notification(
+        user["email"],
+        f"Reminder: your invitation — {branding.get('business_name', 'Trust Portal')}",
+        html,
+    )
+    return {"ok": True, "sent_to": user["email"]}
+
 
 # ---------- BRANDING ----------
 DEFAULT_BRANDING = {
