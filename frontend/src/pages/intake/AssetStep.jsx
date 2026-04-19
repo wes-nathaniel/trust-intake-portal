@@ -1,8 +1,8 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { Field, Txt, TA, SectionHeader, validateRequired } from "./_shared";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { Plus, Trash2, Landmark, Home, Car, Shield, TrendingUp, Briefcase, Cloud } from "lucide-react";
+import { Plus, Trash2, Landmark, Home, Car, Shield, TrendingUp, Briefcase, Cloud, Upload, FileText, Download, ListPlus, FileUp } from "lucide-react";
 
 const TYPES = [
   { v: "bank", l: "Bank Account", icon: Landmark },
@@ -90,7 +90,54 @@ function Form({ caseId, initial, idx, reload, onCancel }) {
 
 export default function AssetStep({ caseId, trustCase, reload }) {
   const [editing, setEditing] = useState(null);
+  const [mode, setMode] = useState("documents"); // "documents" | "manual"
   const list = trustCase.assets || [];
+  const allDocs = (trustCase.documents || []).filter(d => !d.is_deleted);
+  const ASSET_DOC_TYPE_LABELS = {
+    bank_statement: "Bank Statement",
+    deed: "Deed",
+    title: "Vehicle Title",
+    insurance_policy: "Insurance Policy",
+    business_document: "Business Document",
+  };
+  const assetDocs = allDocs.filter(d => ASSET_DOC_TYPE_LABELS[d.doc_type]);
+  const hasAssets = list.length > 0 || assetDocs.length > 0;
+
+  const uploadInput = useRef();
+  const [uploadingType, setUploadingType] = useState("bank_statement");
+  const [uploading, setUploading] = useState(false);
+
+  const uploadAssetDoc = async (file) => {
+    if (!file) return;
+    setUploading(true);
+    const form = new FormData();
+    form.append("doc_type", uploadingType);
+    form.append("file", file);
+    try {
+      await api.post(`/trust-cases/${caseId}/documents`, form, { headers: { "Content-Type": "multipart/form-data" } });
+      toast.success(`${ASSET_DOC_TYPE_LABELS[uploadingType]} uploaded`);
+      reload();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setUploading(false); if (uploadInput.current) uploadInput.current.value = ""; }
+  };
+
+  const removeAssetDoc = async (id) => {
+    if (!window.confirm("Remove this document?")) return;
+    try {
+      await api.delete(`/trust-cases/${caseId}/documents/${id}`);
+      reload();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const downloadDoc = async (d) => {
+    try {
+      const res = await api.get(`/trust-cases/${caseId}/documents/${d.id}/download`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url; a.download = d.filename || "file"; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
 
   const remove = async (id) => {
     if (!window.confirm("Remove this asset?")) return;
@@ -105,44 +152,113 @@ export default function AssetStep({ caseId, trustCase, reload }) {
   return (
     <div>
       <SectionHeader num={5} total={8} title="Trust Assets"
-        subtitle="List the assets you'd like to place in the trust. Add at least one to continue." />
+        subtitle="Tell us what you'd like to place in the trust. Easiest: upload statements, deeds, titles, etc. and our team will extract the details. You can also enter assets manually." />
 
-      <div className="space-y-4">
-        {list.map((a, i) =>
-          editing === i ? (
-            <Form key={a.id} caseId={caseId} initial={a} idx={i} reload={reload} onCancel={() => setEditing(null)} />
-          ) : (
-            <div key={a.id} className="border border-[#E2E0DA] rounded-lg p-5 flex items-start justify-between" data-testid={`asset-card-${i}`}>
-              <div>
-                <p className="text-xs uppercase tracking-wide text-bronze font-semibold">{label(a.asset_type)}</p>
-                <h4 className="font-serif text-lg text-navy">{a.asset_type === "real_estate" ? a.property_address : a.institution_name}</h4>
-                <p className="text-sm text-[#64748B]">
-                  {a.account_number && `Acct: ${a.account_number}`}
-                  {a.estimated_value && ` · ~$${Number(a.estimated_value).toLocaleString()}`}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <button onClick={() => setEditing(i)} className="text-sm text-navy hover:text-bronze" data-testid={`asset-edit-${i}`}>Edit</button>
-                <button onClick={() => remove(a.id)} className="text-red-600 hover:text-red-800" data-testid={`asset-remove-${i}`}>
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          )
-        )}
-        {editing !== "new" && (
-          <button onClick={() => setEditing("new")} className="btn-accent" data-testid="asset-add-btn">
-            <Plus className="h-4 w-4 inline mr-1" /> Add Asset
-          </button>
-        )}
-        {editing === "new" && (
-          <Form caseId={caseId} idx={list.length} reload={reload} onCancel={() => setEditing(null)} />
-        )}
+      {/* Mode selector */}
+      <div className="inline-flex bg-sand-200 rounded-lg p-1 mb-6" data-testid="asset-mode-toggle">
+        <button onClick={() => setMode("documents")}
+          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${mode === "documents" ? "bg-white text-navy shadow-sm" : "text-[#64748B]"}`}
+          data-testid="asset-mode-documents">
+          <FileUp className="h-4 w-4 inline mr-1" /> Upload documents
+        </button>
+        <button onClick={() => setMode("manual")}
+          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${mode === "manual" ? "bg-white text-navy shadow-sm" : "text-[#64748B]"}`}
+          data-testid="asset-mode-manual">
+          <ListPlus className="h-4 w-4 inline mr-1" /> Enter manually
+        </button>
       </div>
 
-      {list.length === 0 && (
+      {mode === "documents" ? (
+        <div className="space-y-4" data-testid="asset-docs-mode">
+          <div className="border border-[#E2E0DA] rounded-lg p-5 bg-sand-200/30">
+            <p className="font-serif text-lg text-navy mb-1">Upload an asset document</p>
+            <p className="text-sm text-[#64748B] mb-4">Your trust team will review and add these assets to your case. Upload as many as you like.</p>
+            <div className="flex flex-wrap items-center gap-3">
+              <select value={uploadingType} onChange={(e) => setUploadingType(e.target.value)}
+                className="rounded-md border border-input bg-white px-3 py-2 text-sm" data-testid="asset-doc-type-select">
+                {Object.entries(ASSET_DOC_TYPE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+              <label className="btn-accent cursor-pointer text-sm inline-flex items-center" data-testid="asset-doc-upload-label">
+                <Upload className="h-4 w-4 inline mr-1" /> {uploading ? "Uploading…" : "Choose file"}
+                <input ref={uploadInput} type="file" className="hidden" onChange={(e) => uploadAssetDoc(e.target.files?.[0])} data-testid="asset-doc-upload-input" />
+              </label>
+            </div>
+          </div>
+
+          {assetDocs.length > 0 && (
+            <div>
+              <h4 className="font-serif text-lg text-navy mb-2">Uploaded asset documents ({assetDocs.length})</h4>
+              <ul className="space-y-2">
+                {assetDocs.map((d) => (
+                  <li key={d.id} className="flex items-center justify-between text-sm bg-white border border-[#E2E0DA] rounded-md px-3 py-2" data-testid={`asset-doc-item-${d.id}`}>
+                    <span className="flex items-center gap-2 text-navy truncate">
+                      <FileText className="h-4 w-4 shrink-0" />
+                      <span className="truncate">{d.filename}</span>
+                      <span className="text-xs text-[#64748B]">· {ASSET_DOC_TYPE_LABELS[d.doc_type]}</span>
+                    </span>
+                    <div className="flex gap-2 shrink-0">
+                      <button onClick={() => downloadDoc(d)} className="text-navy hover:text-bronze"><Download className="h-4 w-4" /></button>
+                      <button onClick={() => removeAssetDoc(d.id)} className="text-red-600 hover:text-red-800"><Trash2 className="h-4 w-4" /></button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Manual-entered assets still visible so they don't disappear if switching modes */}
+          {list.length > 0 && (
+            <div className="mt-6">
+              <h4 className="font-serif text-lg text-navy mb-2">Manually entered assets ({list.length})</h4>
+              <ul className="space-y-2">
+                {list.map((a) => (
+                  <li key={a.id} className="flex items-center justify-between text-sm bg-white border border-[#E2E0DA] rounded-md px-3 py-2">
+                    <span><b>{label(a.asset_type)}</b> · {a.institution_name || a.property_address}</span>
+                    <button onClick={() => remove(a.id)} className="text-red-600 hover:text-red-800"><Trash2 className="h-4 w-4" /></button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-4" data-testid="asset-manual-mode">
+          {list.map((a, i) =>
+            editing === i ? (
+              <Form key={a.id} caseId={caseId} initial={a} idx={i} reload={reload} onCancel={() => setEditing(null)} />
+            ) : (
+              <div key={a.id} className="border border-[#E2E0DA] rounded-lg p-5 flex items-start justify-between" data-testid={`asset-card-${i}`}>
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-bronze font-semibold">{label(a.asset_type)}</p>
+                  <h4 className="font-serif text-lg text-navy">{a.asset_type === "real_estate" ? a.property_address : a.institution_name}</h4>
+                  <p className="text-sm text-[#64748B]">
+                    {a.account_number && `Acct: ${a.account_number}`}
+                    {a.estimated_value && ` · ~$${Number(a.estimated_value).toLocaleString()}`}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => setEditing(i)} className="text-sm text-navy hover:text-bronze" data-testid={`asset-edit-${i}`}>Edit</button>
+                  <button onClick={() => remove(a.id)} className="text-red-600 hover:text-red-800" data-testid={`asset-remove-${i}`}>
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            )
+          )}
+          {editing !== "new" && (
+            <button onClick={() => setEditing("new")} className="btn-accent" data-testid="asset-add-btn">
+              <Plus className="h-4 w-4 inline mr-1" /> Add Asset manually
+            </button>
+          )}
+          {editing === "new" && (
+            <Form caseId={caseId} idx={list.length} reload={reload} onCancel={() => setEditing(null)} />
+          )}
+        </div>
+      )}
+
+      {!hasAssets && (
         <div className="mt-6 p-4 bg-amber-50 border border-amber-200 rounded-md text-sm text-amber-900" data-testid="asset-warning">
-          <strong>Required:</strong> Please add at least one asset to continue.
+          <strong>Required:</strong> Please add at least one asset (upload a document or enter manually) to continue.
         </div>
       )}
     </div>

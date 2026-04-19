@@ -223,7 +223,7 @@ def _invite_email_html(business, accent, primary, client_name, trust_label, send
     return _email_shell(business, primary, accent, inner)
 
 
-def _status_change_email_html(business, accent, primary, client_name, status, case_id, link):
+def _status_change_email_html(business, accent, primary, client_name, status, case_id, link, pending_items=None):
     nice_copy = {
         "Intake In Progress": "Your intake is now marked as in progress. Thanks for the information so far.",
         "Waiting on Documents": "We're waiting on a few documents from you to move forward. Please sign in to upload them.",
@@ -232,12 +232,27 @@ def _status_change_email_html(business, accent, primary, client_name, status, ca
         "Ready for Signing": "Your trust documents are ready for signing. Please review and sign at your earliest convenience.",
         "Completed": "Your trust is now complete. A PDF summary is attached in a separate email.",
     }.get(status, f"Your case status has been updated to: {status}.")
+
+    pending_html = ""
+    if pending_items:
+        rows = []
+        for p in pending_items:
+            note = f'<span style="color:#64748B;font-size:13px;"> — {p.get("note")}</span>' if p.get("note") else ""
+            rows.append(f'<li style="padding:6px 0;border-bottom:1px dashed #EBE7DF;"><b>{p.get("label")}</b>{note}</li>')
+        pending_html = f"""
+<div style="margin-top:16px;background:#FEF6E0;border:1px solid #F4D58D;border-radius:8px;padding:14px 16px;">
+  <p style="margin:0 0 8px 0;font-family:Georgia,serif;font-size:16px;color:#78350F;">We still need:</p>
+  <ul style="margin:0;padding-left:18px;color:#1C252E;font-size:14px;line-height:1.55;">{"".join(rows)}</ul>
+</div>
+"""
+
     inner = f"""
 <p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Status update, {client_name}.</p>
 <p style="margin:0 0 8px 0;">Your case <span style="font-family:monospace;background:#EBE7DF;padding:2px 6px;border-radius:4px;">{case_id}</span> is now:</p>
 <p style="font-family:Georgia,serif;font-size:22px;color:{accent};margin:0 0 16px 0;">{status}</p>
 <p>{nice_copy}</p>
-{_cta(link, "Open your portal", accent)}
+{pending_html}
+{_cta(link, "Open your portal" if not pending_items else "Upload the documents", accent)}
 """
     return _email_shell(business, primary, accent, inner)
 
@@ -697,11 +712,12 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
 @api_router.get("/trust-cases/mine")
 async def my_cases(user: dict = Depends(get_current_user)):
     cases = await db.trust_cases.find({"client_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
-    return cases
+    return [_attach_pending(c) for c in cases]
 
 @api_router.get("/trust-cases/{case_id}")
 async def get_case_endpoint(case_id: str, user: dict = Depends(get_current_user)):
-    return await get_case(case_id, user)
+    c = await get_case(case_id, user)
+    return _attach_pending(c)
 
 # --- Grantor ---
 @api_router.post("/trust-cases/{case_id}/grantors")
@@ -865,6 +881,67 @@ ALLOWED_DOC_TYPES = REQUIRED_DOC_TYPES | {
     "business_document", "supporting_file", "ein_letter"
 }
 
+# ---------- DOC REQUESTS / PENDING ITEMS ----------
+DOC_TYPE_LABELS = {
+    "government_id": "Government-issued ID",
+    "proof_of_address": "Proof of Address",
+    "existing_trust": "Existing Trust Document",
+    "bank_statement": "Bank Statement",
+    "deed": "Deed",
+    "title": "Title",
+    "insurance_policy": "Insurance Policy",
+    "business_document": "Business Document",
+    "supporting_file": "Supporting File",
+    "ein_letter": "EIN Letter",
+}
+
+ASSET_DOC_TYPES = {"bank_statement", "deed", "title", "insurance_policy", "business_document"}
+
+class DocRequestCreate(BaseModel):
+    doc_type: str
+    label: Optional[str] = None
+    note: Optional[str] = ""
+
+def _doc_label(dtype: str, override: Optional[str] = None) -> str:
+    return override or DOC_TYPE_LABELS.get(dtype, dtype.replace("_", " ").title())
+
+def _compute_pending(case: dict) -> list:
+    """Return a list of pending items for the client: required missing docs, admin doc requests, messages needing reply."""
+    pending = []
+    docs = [d for d in (case.get("documents") or []) if not d.get("is_deleted")]
+    types_uploaded = {d["doc_type"] for d in docs}
+
+    # Required docs
+    for dt in ("government_id", "proof_of_address"):
+        if dt not in types_uploaded:
+            pending.append({
+                "kind": "required_doc",
+                "doc_type": dt,
+                "label": _doc_label(dt),
+                "step": "documents",
+            })
+
+    # Admin-initiated doc requests (not fulfilled, not cancelled)
+    for r in case.get("requested_documents", []) or []:
+        if not r.get("fulfilled") and not r.get("cancelled"):
+            pending.append({
+                "kind": "requested_doc",
+                "request_id": r["id"],
+                "doc_type": r.get("doc_type"),
+                "label": _doc_label(r.get("doc_type", ""), r.get("label")),
+                "note": r.get("note", ""),
+                "step": "documents",
+            })
+    return pending
+
+
+def _attach_pending(case: dict) -> dict:
+    case["pending_items"] = _compute_pending(case)
+    return case
+
+
+
+
 @api_router.post("/trust-cases/{case_id}/documents")
 async def upload_document(case_id: str,
                           doc_type: str = Form(...),
@@ -894,6 +971,19 @@ async def upload_document(case_id: str,
     updates = {"documents": docs}
     if doc_type == "ein_letter" and user.get("role") == "admin":
         updates["ein_letter"] = doc
+    # Auto-fulfill any matching open doc request
+    reqs = list(case.get("requested_documents", []) or [])
+    changed = False
+    for r in reqs:
+        if (not r.get("fulfilled") and not r.get("cancelled")
+                and r.get("doc_type") == doc_type):
+            r["fulfilled"] = True
+            r["fulfilled_at"] = now_iso()
+            r["fulfilled_doc_id"] = doc["id"]
+            changed = True
+            break
+    if changed:
+        updates["requested_documents"] = reqs
     await update_case(case_id, updates)
     return doc
 
@@ -1019,7 +1109,7 @@ async def admin_get_case(case_id: str, _: dict = Depends(require_admin)):
                 "created_at": active.get("created_at"),
             }
     case["pending_invite"] = pending
-    return case
+    return _attach_pending(case)
 
 @api_router.put("/admin/trust-cases/{case_id}/status")
 async def admin_update_status(case_id: str, body: StatusUpdate, admin: dict = Depends(require_admin)):
@@ -1041,12 +1131,15 @@ async def admin_update_status(case_id: str, body: StatusUpdate, admin: dict = De
     # Progress-status email on every status change (incl. Completed below which adds attachment)
     if body.status != "Completed":
         try:
+            pending = _compute_pending(case) if body.status == "Waiting on Documents" else None
+            portal_link = f"{FRONTEND_URL}/intake/{case_id}?step=documents" if pending else f"{FRONTEND_URL}/portal"
             html = _status_change_email_html(
                 business=biz, accent=accent, primary=primary,
                 client_name=case.get("client_name") or case.get("client_email"),
                 status=body.status,
                 case_id=case_id[:8].upper(),
-                link=f"{FRONTEND_URL}/portal",
+                link=portal_link,
+                pending_items=pending,
             )
             await send_email_notification(
                 case.get("client_email"),
@@ -1287,6 +1380,89 @@ async def admin_add_note(case_id: str, body: NoteCreate, admin: dict = Depends(r
 @api_router.post("/admin/trust-cases/{case_id}/ein-request")
 async def admin_mark_ein_requested(case_id: str, _: dict = Depends(require_admin)):
     await update_case(case_id, {"ein_requested": True})
+    return {"ok": True}
+
+
+# --- Admin: request specific documents from the client ---
+@api_router.post("/admin/trust-cases/{case_id}/doc-requests")
+async def admin_create_doc_request(case_id: str, body: DocRequestCreate,
+                                   admin: dict = Depends(require_admin),
+                                   notify: bool = True):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if body.doc_type not in ALLOWED_DOC_TYPES and body.doc_type != "other":
+        # Allow "other" for custom requests
+        pass
+    req = {
+        "id": new_id(),
+        "doc_type": body.doc_type,
+        "label": body.label or _doc_label(body.doc_type),
+        "note": body.note or "",
+        "requested_by": admin["id"],
+        "requested_by_name": admin.get("name") or "Admin",
+        "created_at": now_iso(),
+        "fulfilled": False,
+        "cancelled": False,
+    }
+    reqs = list(case.get("requested_documents", []) or [])
+    reqs.append(req)
+    await update_case(case_id, {"requested_documents": reqs})
+
+    # Notify client via email if status emails desired
+    if notify:
+        try:
+            branding = await _branding_doc()
+            biz = branding.get("business_name", "Trust Portal")
+            accent = branding.get("accent_color", "#C5A880")
+            primary = branding.get("primary_color", "#1C252E")
+            link = f"{FRONTEND_URL}/intake/{case_id}?step=documents"
+            note_html = f'<p style="color:#64748B;font-size:14px;">{body.note}</p>' if body.note else ""
+            inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">We need a document from you.</p>
+<p>Our team has requested the following document for your case <span style="font-family:monospace;background:#EBE7DF;padding:2px 6px;border-radius:4px;">{case_id[:8].upper()}</span>:</p>
+<p style="font-family:Georgia,serif;font-size:22px;color:{accent};margin:10px 0;">{req['label']}</p>
+{note_html}
+{_cta(link, "Upload now", accent)}
+"""
+            html = _email_shell(biz, primary, accent, inner)
+            await send_email_notification(
+                case.get("client_email"),
+                f"Document requested: {req['label']} — {biz}",
+                html,
+            )
+        except Exception as e:
+            logger.error(f"Doc-request email failed: {e}")
+    return req
+
+
+@api_router.delete("/admin/trust-cases/{case_id}/doc-requests/{req_id}")
+async def admin_cancel_doc_request(case_id: str, req_id: str, admin: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    reqs = list(case.get("requested_documents", []) or [])
+    for r in reqs:
+        if r["id"] == req_id:
+            r["cancelled"] = True
+            r["cancelled_at"] = now_iso()
+    await update_case(case_id, {"requested_documents": reqs})
+    return {"ok": True}
+
+
+@api_router.post("/admin/trust-cases/{case_id}/doc-requests/{req_id}/mark-fulfilled")
+async def admin_mark_doc_request_fulfilled(case_id: str, req_id: str, admin: dict = Depends(require_admin)):
+    """Manual 'Mark received' for offline-delivered docs."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    reqs = list(case.get("requested_documents", []) or [])
+    for r in reqs:
+        if r["id"] == req_id:
+            r["fulfilled"] = True
+            r["fulfilled_at"] = now_iso()
+            r["fulfilled_by"] = admin["id"]
+    await update_case(case_id, {"requested_documents": reqs})
     return {"ok": True}
 
 @api_router.get("/admin/stats")

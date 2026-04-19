@@ -301,8 +301,18 @@ class TestInviteFlow:
         # We derive the token by searching login attempts? -- Not possible.
         # So we expose a small helper: query mongodb directly.
         from pymongo import MongoClient
-        m = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
-        db_name = os.environ.get("DB_NAME", "test_database")
+        from pathlib import Path
+        # Load backend .env for MONGO_URL / DB_NAME so tests match running server
+        env_vals = {}
+        env_path = Path("/app/backend/.env")
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if "=" in line and not line.strip().startswith("#"):
+                    k, v = line.split("=", 1)
+                    env_vals[k.strip()] = v.strip().strip('"').strip("'")
+        mongo_url = os.environ.get("MONGO_URL") or env_vals.get("MONGO_URL", "mongodb://localhost:27017")
+        db_name = os.environ.get("DB_NAME") or env_vals.get("DB_NAME", "trust_portal")
+        m = MongoClient(mongo_url)
         rec = m[db_name].invites.find_one({"email": email, "used": False}, sort=[("created_at", -1)])
         return rec["token"] if rec else None
 
@@ -429,3 +439,139 @@ class TestBeneficiaryPctTotal:
         r3 = client_session.post(f"{API}/trust-cases/{cid}/beneficiaries",
                                  json={**base, "full_legal_name": "B3", "percentage": 20})
         assert r3.status_code == 400
+
+
+# ---------- DOC REQUESTS / PENDING ITEMS (NEW iteration 3) ----------
+class TestDocRequestsAndPending:
+    def _new_case(self, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        assert r.status_code == 200
+        return r.json()["id"]
+
+    def test_get_case_has_pending_items_required_docs(self, client_session):
+        cid = self._new_case(client_session)
+        r = client_session.get(f"{API}/trust-cases/{cid}")
+        assert r.status_code == 200
+        data = r.json()
+        assert "pending_items" in data
+        kinds = {(p["kind"], p["doc_type"]) for p in data["pending_items"]}
+        assert ("required_doc", "government_id") in kinds
+        assert ("required_doc", "proof_of_address") in kinds
+
+    def test_admin_create_doc_request_appears_in_client_pending(self, admin_session, client_session):
+        cid = self._new_case(client_session)
+        r = admin_session.post(f"{API}/admin/trust-cases/{cid}/doc-requests",
+                               json={"doc_type": "bank_statement", "note": "Most recent 2 months"})
+        assert r.status_code == 200, r.text
+        req = r.json()
+        assert req["doc_type"] == "bank_statement"
+        assert req["fulfilled"] is False
+        assert req["cancelled"] is False
+        assert "id" in req
+
+        # Client sees it in pending_items
+        r2 = client_session.get(f"{API}/trust-cases/{cid}")
+        assert r2.status_code == 200
+        pending = r2.json()["pending_items"]
+        matching = [p for p in pending if p["kind"] == "requested_doc" and p.get("request_id") == req["id"]]
+        assert len(matching) == 1
+        assert matching[0]["doc_type"] == "bank_statement"
+        assert matching[0]["note"] == "Most recent 2 months"
+        assert matching[0]["label"]
+
+    def test_uploading_matching_doc_auto_fulfills_request(self, admin_session, client_session):
+        cid = self._new_case(client_session)
+        create = admin_session.post(f"{API}/admin/trust-cases/{cid}/doc-requests",
+                                    json={"doc_type": "bank_statement", "note": "Need it"})
+        req_id = create.json()["id"]
+
+        files = {"file": ("stmt.txt", io.BytesIO(b"statement"), "text/plain")}
+        data = {"doc_type": "bank_statement"}
+        up = client_session.post(f"{API}/trust-cases/{cid}/documents", data=data, files=files)
+        if up.status_code == 503:
+            pytest.skip("Storage unavailable")
+        assert up.status_code == 200
+
+        # Request should be auto-fulfilled
+        r = admin_session.get(f"{API}/admin/trust-cases/{cid}")
+        assert r.status_code == 200
+        case = r.json()
+        req = next(x for x in case["requested_documents"] if x["id"] == req_id)
+        assert req["fulfilled"] is True
+        assert req.get("fulfilled_doc_id")
+
+        # And dropped from pending_items
+        r2 = client_session.get(f"{API}/trust-cases/{cid}")
+        pend_ids = [p.get("request_id") for p in r2.json()["pending_items"] if p["kind"] == "requested_doc"]
+        assert req_id not in pend_ids
+
+    def test_delete_doc_request_removes_from_pending(self, admin_session, client_session):
+        cid = self._new_case(client_session)
+        create = admin_session.post(f"{API}/admin/trust-cases/{cid}/doc-requests",
+                                    json={"doc_type": "deed"})
+        req_id = create.json()["id"]
+
+        # Verify present
+        r1 = client_session.get(f"{API}/trust-cases/{cid}")
+        assert any(p.get("request_id") == req_id for p in r1.json()["pending_items"])
+
+        # Cancel
+        d = admin_session.delete(f"{API}/admin/trust-cases/{cid}/doc-requests/{req_id}")
+        assert d.status_code == 200
+
+        # No longer pending
+        r2 = client_session.get(f"{API}/trust-cases/{cid}")
+        assert not any(p.get("request_id") == req_id for p in r2.json()["pending_items"])
+
+    def test_mark_fulfilled_without_upload(self, admin_session, client_session):
+        cid = self._new_case(client_session)
+        create = admin_session.post(f"{API}/admin/trust-cases/{cid}/doc-requests",
+                                    json={"doc_type": "title", "note": "offline"})
+        req_id = create.json()["id"]
+
+        m = admin_session.post(f"{API}/admin/trust-cases/{cid}/doc-requests/{req_id}/mark-fulfilled")
+        assert m.status_code == 200
+
+        # Verify fulfilled in admin case, and removed from client pending
+        r = admin_session.get(f"{API}/admin/trust-cases/{cid}")
+        req = next(x for x in r.json()["requested_documents"] if x["id"] == req_id)
+        assert req["fulfilled"] is True
+        assert req.get("fulfilled_by")
+
+        r2 = client_session.get(f"{API}/trust-cases/{cid}")
+        assert not any(p.get("request_id") == req_id for p in r2.json()["pending_items"])
+
+    def test_status_waiting_on_documents_returns_200(self, admin_session, client_session):
+        """Status email with pending_items list should trigger without error (side-effects checked via logs separately)."""
+        cid = self._new_case(client_session)
+        # Add a requested doc to make pending_items richer
+        admin_session.post(f"{API}/admin/trust-cases/{cid}/doc-requests",
+                           json={"doc_type": "bank_statement", "note": "Need it"})
+        r = admin_session.put(f"{API}/admin/trust-cases/{cid}/status",
+                              json={"status": "Waiting on Documents"})
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "Waiting on Documents"
+
+    def test_admin_get_case_attaches_pending_items(self, admin_session, client_session):
+        cid = self._new_case(client_session)
+        r = admin_session.get(f"{API}/admin/trust-cases/{cid}")
+        assert r.status_code == 200
+        assert "pending_items" in r.json()
+
+    def test_upload_asset_doc_no_manual_asset_still_ok(self, client_session):
+        """Assets completeness: uploading a bank_statement with no manual asset should succeed and not error."""
+        cid = self._new_case(client_session)
+        files = {"file": ("b.txt", io.BytesIO(b"x"), "text/plain")}
+        data = {"doc_type": "bank_statement"}
+        r = client_session.post(f"{API}/trust-cases/{cid}/documents", data=data, files=files)
+        if r.status_code == 503:
+            pytest.skip("Storage unavailable")
+        assert r.status_code == 200
+        # Case GET - no manual assets but bank_statement doc present
+        case = client_session.get(f"{API}/trust-cases/{cid}").json()
+        assert not case.get("assets", [])
+        doc_types = {d["doc_type"] for d in case.get("documents", []) if not d.get("is_deleted")}
+        assert "bank_statement" in doc_types
+        # pending_items should NOT have an 'asset' kind
+        kinds = {p["kind"] for p in case.get("pending_items", [])}
+        assert "asset" not in kinds

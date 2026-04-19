@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
 import StatusTracker from "@/components/StatusTracker";
 import MessageThread from "@/components/MessageThread";
 import { toast } from "sonner";
-import { CheckCircle2, Circle, Lock, ArrowLeft, ArrowRight } from "lucide-react";
+import { CheckCircle2, Circle, Lock, ArrowLeft, ArrowRight, AlertTriangle } from "lucide-react";
 import GrantorStep from "@/pages/intake/GrantorStep";
 import TrusteeStep from "@/pages/intake/TrusteeStep";
 import SuccessorStep from "@/pages/intake/SuccessorStep";
@@ -34,7 +34,13 @@ function isStepComplete(key, trustCase) {
     case "trustee":  return (trustCase.trustees?.length || 0) >= 1;
     case "successor":return (trustCase.successor_trustees?.length || 0) >= 1;
     case "beneficiaries": return (trustCase.beneficiaries?.length || 0) >= 1;
-    case "assets":   return (trustCase.assets?.length || 0) >= 1;
+    case "assets": {
+      const manual = (trustCase.assets?.length || 0) >= 1;
+      const docs = (trustCase.documents || []).filter(d => !d.is_deleted);
+      const ASSET_DOC_TYPES = new Set(["bank_statement","deed","title","insurance_policy","business_document"]);
+      const uploaded = docs.some(d => ASSET_DOC_TYPES.has(d.doc_type));
+      return manual || uploaded;
+    }
     case "ein":      return trustCase.ein?.authorized === true;
     case "documents":{
       const docs = trustCase.documents || [];
@@ -48,6 +54,7 @@ function isStepComplete(key, trustCase) {
 export default function IntakeWizard() {
   const { caseId } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [trustCase, setTrustCase] = useState(null);
   const [stepIdx, setStepIdx] = useState(0);
 
@@ -62,6 +69,21 @@ export default function IntakeWizard() {
   };
 
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, [caseId]);
+
+  // Deep-link: ?step=<key> jumps to that step (if unlocked)
+  useEffect(() => {
+    if (!trustCase) return;
+    const qsStep = searchParams.get("step");
+    if (!qsStep) return;
+    const idx = STEP_DEFS.findIndex((s) => s.key === qsStep);
+    if (idx >= 0 && idx !== stepIdx) {
+      const locked = idx > 0 && STEP_DEFS.slice(0, idx).some(
+        (p) => p.key !== "review" && !isStepComplete(p.key, trustCase)
+      );
+      if (!locked) setStepIdx(idx);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trustCase?.id, searchParams]);
 
   if (!trustCase) return (
     <Layout><p className="text-[#64748B]">Loading…</p></Layout>
@@ -99,6 +121,24 @@ export default function IntakeWizard() {
       <div className="mb-6">
         <StatusTracker status={trustCase.status} />
       </div>
+
+      {(trustCase.pending_items || []).length > 0 && stepKey !== "documents" && (
+        <div className="mb-6 bg-amber-50 border border-amber-300 rounded-xl p-4 flex items-start gap-3" data-testid="wizard-pending-banner">
+          <AlertTriangle className="h-5 w-5 text-amber-800 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="font-semibold text-amber-900">Action required — {(trustCase.pending_items || []).length} document(s) still needed</p>
+            <ul className="text-sm text-amber-900/90 mt-1 space-y-0.5">
+              {(trustCase.pending_items || []).map((p, i) => (
+                <li key={i}>• <b>{p.label}</b>{p.note && <span className="text-amber-800/80"> — {p.note}</span>}</li>
+              ))}
+            </ul>
+          </div>
+          <button onClick={() => gotoStep(STEP_DEFS.findIndex((s) => s.key === "documents"))}
+            className="btn-primary text-sm shrink-0" data-testid="wizard-jump-to-documents">
+            Go to Documents
+          </button>
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-[280px_1fr] gap-8">
         {/* Left nav */}

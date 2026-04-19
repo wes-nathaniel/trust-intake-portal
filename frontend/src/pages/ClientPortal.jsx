@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
-import { Users, User, Plus, ArrowRight, FileText, ShieldCheck, Download, FilePen } from "lucide-react";
+import { Users, User, Plus, ArrowRight, FileText, ShieldCheck, Download, FilePen, AlertTriangle } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import StatusTracker from "@/components/StatusTracker";
 import { toast } from "sonner";
@@ -81,6 +81,32 @@ export default function ClientPortal() {
         <div className="space-y-8">
           {cases.map((c) => (
             <div key={c.id} className="space-y-4" data-testid={`case-row-${c.id}`}>
+              {(c.pending_items || []).length > 0 && (
+                <div className="bg-amber-50 border border-amber-300 rounded-xl p-5" data-testid={`pending-banner-${c.id}`}>
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="h-5 w-5 text-amber-800 mt-0.5 shrink-0" />
+                    <div className="flex-1">
+                      <p className="font-semibold text-amber-900">Action required — {(c.pending_items || []).length} item(s) still needed</p>
+                      <ul className="mt-2 space-y-1 text-sm text-amber-900/90">
+                        {(c.pending_items || []).map((p, i) => (
+                          <li key={i} className="flex items-start gap-2">
+                            <span className="mt-1 h-1.5 w-1.5 rounded-full bg-amber-700 shrink-0"></span>
+                            <span className="flex-1">
+                              <b>{p.label}</b>
+                              {p.note && <span className="text-amber-800/80"> — {p.note}</span>}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="mt-3">
+                        <Link to={`/intake/${c.id}?step=documents`} className="btn-primary text-sm inline-flex items-center" data-testid={`pending-upload-${c.id}`}>
+                          Upload now <ArrowRight className="h-4 w-4 ml-1" />
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
               <StatusTracker status={c.status} />
               <div className="bg-white border border-[#E2E0DA] rounded-xl p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div>

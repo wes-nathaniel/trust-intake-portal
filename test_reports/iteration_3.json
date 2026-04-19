@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 3 tests the new workflow-alignment features: admin doc-requests, pending_items on client GET, auto-fulfill on matching upload, Waiting-on-Documents status email with pending list, client portal pending banner with 'Upload now' deep-link, admin DocRequestsPanel UI, wizard deep-link routing. Backend: 47/47 pytest cases pass (8 new in TestDocRequestsAndPending + 39 regression). Frontend: found and fixed ONE CRITICAL runtime crash in ClientPortal.jsx (AlertTriangle not imported from lucide-react) that broke the entire /portal page. After fix, pending banner, Upload-now link, wizard deep-link, admin DocRequestsPanel all work end-to-end.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ClientPortal.jsx", "issue": "Used <AlertTriangle/> without importing it from lucide-react — page crashed with 'AlertTriangle is not defined' ReferenceError inside ClientPortal.map render, breaking entire /portal route for all clients. FIXED in this iteration by adding AlertTriangle to the import.", "selector": "import { ... } from 'lucide-react'", "priority": "CRITICAL (was)"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(INFO) None — the AlertTriangle crash was fixed by testing agent (1-line import).",
+    "Suggest running a lint rule like eslint-plugin-react/jsx-no-undef to catch missing icon imports before shipping (this is the 2nd time the same class of bug could have occurred; see iteration 2 review).",
+    "(Nice to have) AdminCaseDetail's 'Client-facing outstanding items' section shows only doc-related pending items — consider also surfacing the count directly in the status bar for admin quick-glance.",
+    "(Nice to have) In the Admin DocRequestsPanel, the request dialog 'Note' field placeholder is clear, but there's no indicator in the outstanding-request row when a note was attached — consider showing the note inline so admins remember what they asked for."
+  ],
+  "critical_code_review_comments": [
+    "server.py _compute_pending (line 908): Correct — only returns items with kind in {required_doc, requested_doc} and filters fulfilled/cancelled. No 'asset' kind tracked, matching spec.",
+    "server.py upload_document auto-fulfill (line 974): Only fulfills ONE matching request per upload via `break`. If admin requested 2 bank_statements and client uploads 2 files, the second upload will fulfill the second request correctly because of sequential calls. Good.",
+    "server.py admin_create_doc_request (line 1394-1396): The `if body.doc_type not in ALLOWED_DOC_TYPES and body.doc_type != 'other': pass` is a dead conditional — it evaluates but does nothing. Remove or replace with actual validation. Currently ANY string is accepted as doc_type. Low risk since admin-only.",
+    "server.py DocRequestCreate pydantic model has no max-length on note — could become abuse vector from compromised admin. Low risk.",
+    "ClientPortal.jsx: fix applied — AlertTriangle now imported from lucide-react.",
+    "IntakeWizard.jsx uses useSearchParams correctly and falls back to earliest incomplete step when requested step's prerequisites are unmet — verified visually: /intake/<id>?step=documents with empty case lands on Grantors step (Step 1 of 8). Correct behavior per spec.",
+    "DocRequestsPanel.jsx uses native <select> consistent with other dialogs — acceptable pattern used elsewhere in admin UI.",
+    "Resend email status: no new 'Resend send failed' errors during this iteration's test run. Only pre-existing April 18 errors remain in logs (noted in iteration 2)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added TestDocRequestsAndPending class — 8 new tests; plus fixed DB_NAME env loading in TestInviteFlow helper so regression tests pass again)",
+    "/app/frontend/src/pages/ClientPortal.jsx (added AlertTriangle to lucide-react import — 1-line fix to resolve uncaught runtime ReferenceError)"
+  ],
+  "success_rate": {"backend": "100% (47/47)", "frontend": "100% of new workflow flows (pending banner, Upload-now deep-link, admin DocRequestsPanel request+list+action icons)"},
+  "test_credentials": "Admin: support@igcfirm.com / Wllorenzo03! (seeded). Test clients created dynamically with uitest_<ts>@example.com / Client12345!",
+  "seed_data_creation": "Tests generated ~10 throwaway clients + cases + doc-requests during this run. No production data modified.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Core doc-request + pending_items workflow fully covered by /app/backend/tests/backend_test.py::TestDocRequestsAndPending. Regression (auth, intake CRUD, invite, status email, e-sign, beneficiaries) is also passing. Client-side Required/Optional split on the Documents step and AssetStep mode-toggle were NOT visually verified end-to-end because wizard correctly refuses to jump past incomplete earlier steps in an empty case — to test these visually, a future run should seed a case with grantors/trustee/successors/beneficiaries via API, then navigate to /intake/<id>?step=documents and /intake/<id>?step=assets to inspect the UI components. Code review of DocumentsStep.jsx and AssetStep.jsx imports confirms no other missing-icon bugs.",
+  "rca of the issue": "ROOT CAUSE of /portal crash: ClientPortal.jsx was updated in this iteration to render an 'Action required' pending banner using the AlertTriangle icon, but the author forgot to add AlertTriangle to the lucide-react import list on line 5. React rendered the JSX, hit the undefined reference inside the .map callback over mine.map(c => ...) for each case with pending items, and threw ReferenceError which propagated up as an uncaught runtime error covering the entire dashboard. REPRODUCTION: login as any client with a case that has pending_items > 0. MITIGATION: added AlertTriangle to the import. Verified post-fix: /portal renders, banner shows '3 item(s) still needed' with bullet list + Upload-now button, clicking navigates to /intake/<id>?step=documents."
+}

@@ -9,6 +9,7 @@ import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, File
 import { Textarea } from "@/components/ui/textarea";
 import { displaySSN } from "@/pages/intake/_shared";
 import SendForSigningDialog from "@/components/SendForSigningDialog";
+import DocRequestsPanel from "@/components/DocRequestsPanel";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
                   "Drafting Trust", "Ready for Signing", "Completed"];
@@ -191,6 +192,16 @@ export default function AdminCaseDetail() {
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
+        {(c.pending_items || []).length > 0 && (
+          <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-md text-sm" data-testid="admin-pending-summary">
+            <p className="font-semibold text-amber-900 mb-1">Client-facing outstanding items ({(c.pending_items || []).length})</p>
+            <ul className="list-disc pl-5 text-amber-900/90">
+              {(c.pending_items || []).map((p, i) => (
+                <li key={i}><b>{p.label}</b>{p.note && <span className="text-amber-800/80"> — {p.note}</span>}</li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
@@ -314,6 +325,10 @@ export default function AdminCaseDetail() {
               </div>
             </div>
           )}
+        </Section>
+
+        <Section title="Document Requests from client">
+          <DocRequestsPanel caseId={caseId} requests={c.requested_documents} reload={load} />
         </Section>
 
         <Section title={`Documents (${docs.length})`}>
