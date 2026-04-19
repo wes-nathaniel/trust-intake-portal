@@ -85,3 +85,26 @@ This is a Resend account restriction, not a code bug. To go live:
 ### ✅ Admin inbox + Resend invite
 - **Admin notifications bell** — new `GET /api/admin/notifications` returns unread messages grouped by case (limit 50, 30s polling). Layout header shows a bell icon with red unread-count badge + popover listing groups (client name/email, trust type/status, latest message preview, time-ago). Click a group → navigates to admin case detail; messages become read on load.
 - **Pending-invite banner + Resend invite** — `admin_get_case` now returns `pending_invite: {email, expires_at, created_at}` when the case was invited but the client hasn't accepted. AdminCaseDetail shows an amber "Invitation pending acceptance" banner with a one-click "Resend invite" button → `POST /api/admin/trust-cases/{id}/resend-invite` invalidates old tokens, creates a new one, resends the branded invite email.
+
+## Updates — 2026-02-19 (Session 5 — workflow alignment)
+### ✅ Fixed issues raised by user
+- **Status ≠ reality** → `pending_items` now computed server-side (required-doc-missing + open admin requests) and attached to every case read (client & admin). Admin case detail shows a "Client-facing outstanding items" summary right under the status selector.
+- **Generic 'Waiting on Documents' email** → `_status_change_email_html` now accepts `pending_items`; when status is set to "Waiting on Documents", the email lists **exactly which documents are still needed** (label + optional note) in a yellow callout and the CTA deep-links to `/intake/{id}?step=documents`.
+- **Email link looping back to Step 1** → `IntakeWizard` now reads `useSearchParams('step')` and jumps straight to the requested step (respects HARD STOP; if prior steps aren't complete it remains at the earliest incomplete step by design).
+- **Optional uploads looked required** → `DocumentsStep` rewritten with clear "Required" and collapsible "Optional uploads" sections; each upload shows a colored tag (Required / Optional / Requested by your team) and a green check when filled.
+- **Admin had no way to request specific docs** → new `POST /api/admin/trust-cases/{id}/doc-requests`, `DELETE …/doc-requests/{req_id}`, `POST …/mark-fulfilled`. Auto-fulfill when client uploads a matching `doc_type`. New admin UI component `DocRequestsPanel` with type dropdown, optional custom label, note to client, per-row "mark received" and "cancel". Creating a request sends a branded "Document requested" email to the client.
+- **Assets should be document-based** → `AssetStep` redesigned with a mode toggle:
+  - **Upload documents** (default): select type (Bank Statement / Deed / Title / Insurance Policy / Business Document), upload; admin reviews and extracts. Step-complete when any such doc exists.
+  - **Enter manually**: original form preserved.
+  - `isStepComplete('assets')` now true if (manual asset list ≥ 1) OR (at least one asset-category doc uploaded).
+- **Client portal "Action required" card** → top of each case row with `pending_items.length`, bullet list (label + note), and a primary "Upload now" button that deep-links to Documents step.
+
+### Testing
+- iteration_3: **47/47 backend tests pass** (39 regression + 8 new for doc-requests/pending-items). One critical runtime issue (missing `AlertTriangle` import) caught and auto-fixed by testing agent.
+
+### Endpoints added
+- `POST /api/admin/trust-cases/{id}/doc-requests`
+- `DELETE /api/admin/trust-cases/{id}/doc-requests/{req_id}`
+- `POST /api/admin/trust-cases/{id}/doc-requests/{req_id}/mark-fulfilled`
+- Case GETs now include `pending_items: [{kind, doc_type, label, note, step}]`
+
