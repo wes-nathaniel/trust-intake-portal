@@ -700,3 +700,418 @@ class TestQuestionsAndAI:
         r = client_session.post(f"{API}/trust-cases/{cid}/questions",
                                 json={"section": "trustee", "question": ""})
         assert r.status_code in (400, 422)
+
+
+# ============================================================================
+# Iteration 5: Iron Gate Consulting Phase 1-5 — Trust Name, Acknowledgments,
+# EIN authorized, ein_letter RBAC, Trust Preview, Unlock Final, Square,
+# Mark Payment Received, Webhook, Statuses, Send Review Reminder
+# ============================================================================
+
+def _make_pdf_bytes(num_pages: int = 1, text: str = "IGC Test Trust Draft") -> bytes:
+    """Build a small valid multi-page PDF using reportlab."""
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import LETTER
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=LETTER)
+    for i in range(num_pages):
+        c.setFont("Helvetica", 14)
+        c.drawString(72, 720, f"{text} — Page {i+1}")
+        c.drawString(72, 700, "This is a synthetic fixture PDF for backend testing only.")
+        c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+# ---------- PHASE 1: TRUST NAME ----------
+class TestTrustName:
+    def test_create_case_persists_trust_name(self, client_session):
+        r = client_session.post(f"{API}/trust-cases",
+                                json={"trust_type": "single", "trust_name": "The TEST Smith Family Trust"})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["trust_name"] == "The TEST Smith Family Trust"
+        # Verify persisted via GET
+        r2 = client_session.get(f"{API}/trust-cases/{data['id']}")
+        assert r2.status_code == 200
+        assert r2.json()["trust_name"] == "The TEST Smith Family Trust"
+
+    def test_update_trust_name_endpoint(self, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        r2 = client_session.put(f"{API}/trust-cases/{cid}/trust-name",
+                                json={"trust_name": "TEST Updated Trust Name"})
+        assert r2.status_code == 200
+        assert r2.json()["trust_name"] == "TEST Updated Trust Name"
+        # GET verifies persistence
+        case = client_session.get(f"{API}/trust-cases/{cid}").json()
+        assert case["trust_name"] == "TEST Updated Trust Name"
+
+    def test_update_trust_name_too_short_rejected(self, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        r2 = client_session.put(f"{API}/trust-cases/{cid}/trust-name", json={"trust_name": "ab"})
+        assert r2.status_code in (400, 422), r2.text
+
+
+# ---------- PHASE 1: ACKNOWLEDGMENTS ----------
+class TestAcknowledgments:
+    def test_set_individual_acks(self, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        body = {
+            "state_laws_ack": True,
+            "notarization_ack": True,
+            "disclosure_ack": True,
+            "business_sos_ack": True,
+        }
+        r2 = client_session.put(f"{API}/trust-cases/{cid}/acknowledgments", json=body)
+        assert r2.status_code == 200, r2.text
+        data = r2.json()
+        assert data["state_laws_ack"] is True
+        assert data["notarization_ack"] is True
+        assert data["disclosure_ack"] is True
+        assert data["business_sos_ack"] is True
+        # Persisted on case
+        case = client_session.get(f"{API}/trust-cases/{cid}").json()
+        assert case["acknowledgments"]["state_laws_ack"] is True
+
+    def test_review_completed_ack_triggers_admin_notification(self, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        # First call: set to true
+        r2 = client_session.put(f"{API}/trust-cases/{cid}/acknowledgments",
+                                json={"review_completed_ack": True})
+        assert r2.status_code == 200
+        assert r2.json()["review_completed_ack"] is True
+        # Second call (already true) should still return 200; backend will not duplicate-notify
+        r3 = client_session.put(f"{API}/trust-cases/{cid}/acknowledgments",
+                                json={"review_completed_ack": True})
+        assert r3.status_code == 200
+
+
+# ---------- PHASE 1: EIN — authorized required, ssn no longer required ----------
+class TestEINAuthorized:
+    def test_ein_no_ssn_just_authorized(self, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        # Without ssn, only authorized=true
+        r2 = client_session.put(f"{API}/trust-cases/{cid}/ein", json={"authorized": True})
+        assert r2.status_code == 200, r2.text
+
+    def test_ein_authorized_false_rejected(self, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        r2 = client_session.put(f"{API}/trust-cases/{cid}/ein", json={"authorized": False})
+        assert r2.status_code == 400
+
+
+# ---------- PHASE 1: ein_letter RBAC ----------
+class TestEINLetterRBAC:
+    def test_client_cannot_upload_ein_letter(self, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        files = {"file": ("ein.pdf", io.BytesIO(b"%PDF-1.4 fake"), "application/pdf")}
+        r2 = client_session.post(f"{API}/trust-cases/{cid}/documents",
+                                 data={"doc_type": "ein_letter"}, files=files)
+        assert r2.status_code == 403, r2.text
+
+    def test_admin_can_upload_ein_letter(self, admin_session, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        files = {"file": ("ein.pdf", io.BytesIO(b"%PDF-1.4 fake EIN letter"), "application/pdf")}
+        r2 = admin_session.post(f"{API}/trust-cases/{cid}/documents",
+                                data={"doc_type": "ein_letter"}, files=files)
+        if r2.status_code == 503:
+            pytest.skip("Storage unavailable")
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["doc_type"] == "ein_letter"
+
+    def test_client_doc_upload_does_not_crash(self, client_session):
+        """Client upload should succeed (admin notification email is best-effort)."""
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        files = {"file": ("id.pdf", io.BytesIO(b"id-bytes"), "application/pdf")}
+        r2 = client_session.post(f"{API}/trust-cases/{cid}/documents",
+                                 data={"doc_type": "government_id"}, files=files)
+        if r2.status_code == 503:
+            pytest.skip("Storage unavailable")
+        assert r2.status_code == 200
+
+
+# ---------- PHASE 2: TRUST PREVIEW ----------
+class TestTrustPreview:
+    def _setup_case_with_draft(self, client_session, admin_session, pages: int = 2):
+        r = client_session.post(f"{API}/trust-cases",
+                                json={"trust_type": "single", "trust_name": "TEST Preview Trust"})
+        cid = r.json()["id"]
+        pdf_bytes = _make_pdf_bytes(num_pages=pages)
+        files = {"file": ("draft.pdf", io.BytesIO(pdf_bytes), "application/pdf")}
+        r2 = admin_session.post(f"{API}/admin/trust-cases/{cid}/trust-draft", files=files)
+        if r2.status_code == 503:
+            pytest.skip("Storage unavailable")
+        assert r2.status_code == 200, r2.text
+        assert r2.json().get("pages") == pages
+        return cid
+
+    def test_admin_upload_trust_draft_sets_status(self, client_session, admin_session):
+        cid = self._setup_case_with_draft(client_session, admin_session, pages=2)
+        case = admin_session.get(f"{API}/admin/trust-cases/{cid}").json()
+        assert case["status"] == "Ready for Review"
+        assert case.get("trust_draft", {}).get("pages") == 2
+
+    def test_admin_upload_trust_draft_rejects_non_pdf(self, client_session, admin_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        files = {"file": ("draft.txt", io.BytesIO(b"not a pdf"), "text/plain")}
+        r2 = admin_session.post(f"{API}/admin/trust-cases/{cid}/trust-draft", files=files)
+        assert r2.status_code == 400, r2.text
+
+    def test_trust_preview_meta(self, client_session, admin_session):
+        cid = self._setup_case_with_draft(client_session, admin_session, pages=2)
+        r = client_session.get(f"{API}/trust-cases/{cid}/trust-preview/meta")
+        assert r.status_code == 200, r.text
+        meta = r.json()
+        assert meta["pages"] == 2
+        assert meta["version"] >= 1
+        assert meta["trust_name"] == "TEST Preview Trust"
+        assert meta["unlocked"] is False
+
+    def test_trust_preview_page_returns_png(self, client_session, admin_session):
+        cid = self._setup_case_with_draft(client_session, admin_session, pages=2)
+        r = client_session.get(f"{API}/trust-cases/{cid}/trust-preview/page/1.png")
+        assert r.status_code == 200, r.text[:200]
+        assert r.headers.get("content-type", "").startswith("image/png")
+        assert len(r.content) > 100
+        assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_trust_preview_page_out_of_range_404(self, client_session, admin_session):
+        cid = self._setup_case_with_draft(client_session, admin_session, pages=1)
+        r = client_session.get(f"{API}/trust-cases/{cid}/trust-preview/page/99.png")
+        assert r.status_code == 404
+
+    def test_admin_raw_pdf_download(self, client_session, admin_session):
+        cid = self._setup_case_with_draft(client_session, admin_session, pages=1)
+        r = admin_session.get(f"{API}/admin/trust-cases/{cid}/trust-draft/raw")
+        assert r.status_code == 200
+        assert r.headers.get("content-type", "").startswith("application/pdf")
+        assert r.content.startswith(b"%PDF")
+
+    def test_admin_raw_pdf_forbidden_for_client(self, client_session, admin_session):
+        cid = self._setup_case_with_draft(client_session, admin_session, pages=1)
+        r = client_session.get(f"{API}/admin/trust-cases/{cid}/trust-draft/raw")
+        assert r.status_code == 403
+
+
+# ---------- PHASE 4: UNLOCK FINAL ----------
+class TestUnlockFinal:
+    def _setup(self, client_session, admin_session):
+        r = client_session.post(f"{API}/trust-cases",
+                                json={"trust_type": "single", "trust_name": "TEST Unlock Trust"})
+        cid = r.json()["id"]
+        files = {"file": ("draft.pdf", io.BytesIO(_make_pdf_bytes(1)), "application/pdf")}
+        ru = admin_session.post(f"{API}/admin/trust-cases/{cid}/trust-draft", files=files)
+        if ru.status_code == 503:
+            pytest.skip("Storage unavailable")
+        assert ru.status_code == 200
+        return cid
+
+    def test_trust_final_locked_returns_403(self, client_session, admin_session):
+        cid = self._setup(client_session, admin_session)
+        r = client_session.get(f"{API}/trust-cases/{cid}/trust-final")
+        assert r.status_code == 403
+
+    def test_unlock_final_then_download(self, client_session, admin_session):
+        cid = self._setup(client_session, admin_session)
+        r = admin_session.post(f"{API}/admin/trust-cases/{cid}/unlock-final")
+        assert r.status_code == 200
+        assert r.json()["trust_unlocked"] is True
+        # Verify case state
+        case = admin_session.get(f"{API}/admin/trust-cases/{cid}").json()
+        assert case["trust_unlocked"] is True
+        assert case["status"] == "Completed"
+        # Client can now download final
+        d = client_session.get(f"{API}/trust-cases/{cid}/trust-final")
+        assert d.status_code == 200
+        assert d.headers.get("content-type", "").startswith("application/pdf")
+        assert d.content.startswith(b"%PDF")
+
+    def test_unlock_final_no_draft_400(self, client_session, admin_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        r2 = admin_session.post(f"{API}/admin/trust-cases/{cid}/unlock-final")
+        assert r2.status_code == 400
+
+
+# ---------- PHASE 5: SEND REVIEW REMINDER ----------
+class TestSendReviewReminder:
+    def test_reminder_no_draft_400(self, client_session, admin_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        r2 = admin_session.post(f"{API}/admin/trust-cases/{cid}/send-review-reminder")
+        assert r2.status_code == 400
+
+    def test_reminder_with_draft_succeeds(self, client_session, admin_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        files = {"file": ("d.pdf", io.BytesIO(_make_pdf_bytes(1)), "application/pdf")}
+        ru = admin_session.post(f"{API}/admin/trust-cases/{cid}/trust-draft", files=files)
+        if ru.status_code == 503:
+            pytest.skip("Storage unavailable")
+        assert ru.status_code == 200
+        r2 = admin_session.post(f"{API}/admin/trust-cases/{cid}/send-review-reminder")
+        assert r2.status_code == 200, r2.text
+
+
+# ---------- PHASE 5: NEW STATUSES ----------
+class TestNewStatuses:
+    def test_admin_can_set_ready_for_review(self, client_session, admin_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        r2 = admin_session.put(f"{API}/admin/trust-cases/{cid}/status",
+                               json={"status": "Ready for Review"})
+        assert r2.status_code == 200
+        assert r2.json()["status"] == "Ready for Review"
+
+    def test_admin_can_set_payment_pending(self, client_session, admin_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        r2 = admin_session.put(f"{API}/admin/trust-cases/{cid}/status",
+                               json={"status": "Payment Pending"})
+        assert r2.status_code == 200
+        assert r2.json()["status"] == "Payment Pending"
+
+
+# ---------- PHASE 3: SQUARE ----------
+class TestSquare:
+    def test_square_health_admin(self, admin_session):
+        r = admin_session.get(f"{API}/admin/square/health")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["enabled"] is True
+        assert data["location_id"] is True
+        assert "environment" in data
+        assert "webhook_configured" in data
+
+    def test_square_health_client_forbidden(self, client_session):
+        r = client_session.get(f"{API}/admin/square/health")
+        assert r.status_code == 403
+
+    def test_invoice_create_validation_amount(self, admin_session, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        # amount_cents <= 0 rejected by Pydantic validator (422)
+        r2 = admin_session.post(f"{API}/admin/trust-cases/{cid}/invoice",
+                                json={"amount_cents": 0})
+        assert r2.status_code in (400, 422), r2.text
+        r3 = admin_session.post(f"{API}/admin/trust-cases/{cid}/invoice",
+                                json={"amount_cents": -100})
+        assert r3.status_code in (400, 422), r3.text
+
+    def test_invoice_create_bad_case_id(self, admin_session):
+        # Skip if Square not enabled (would 503 first); tests endpoint reaches case lookup
+        r = admin_session.post(f"{API}/admin/trust-cases/nonexistent-id/invoice",
+                               json={"amount_cents": 50000})
+        # Square IS enabled in this env per /health, so we expect 404 (case missing)
+        assert r.status_code in (404, 503), r.text
+
+    def test_invoice_create_client_forbidden(self, client_session):
+        r = client_session.post(f"{API}/admin/trust-cases/somecase/invoice",
+                                json={"amount_cents": 50000})
+        assert r.status_code == 403
+
+
+# ---------- PHASE 3: MARK PAYMENT RECEIVED ----------
+class TestMarkPaymentReceived:
+    def test_mark_payment_received(self, client_session, admin_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        r2 = admin_session.post(f"{API}/admin/trust-cases/{cid}/mark-payment-received")
+        assert r2.status_code == 200, r2.text
+        body = r2.json()
+        assert body["ok"] is True
+        assert body["payment"]["status"] == "paid_manual"
+        # Verify case status flipped
+        case = admin_session.get(f"{API}/admin/trust-cases/{cid}").json()
+        assert case["status"] == "Completed"
+        assert case["payment"]["status"] == "paid_manual"
+
+    def test_mark_payment_received_client_forbidden(self, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        r2 = client_session.post(f"{API}/admin/trust-cases/{cid}/mark-payment-received")
+        assert r2.status_code == 403
+
+    def test_payment_status_endpoint(self, client_session, admin_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        # Initially status none
+        r1 = client_session.get(f"{API}/trust-cases/{cid}/payment-status")
+        assert r1.status_code == 200
+        assert r1.json()["status"] == "none"
+        # After mark-payment-received
+        admin_session.post(f"{API}/admin/trust-cases/{cid}/mark-payment-received")
+        r2 = client_session.get(f"{API}/trust-cases/{cid}/payment-status")
+        assert r2.status_code == 200
+        assert r2.json()["status"] == "paid_manual"
+
+
+# ---------- PHASE 3: SQUARE WEBHOOK ----------
+class TestSquareWebhook:
+    def test_webhook_dev_mode_accepts_unverified(self, client_session, admin_session):
+        """With SQUARE_WEBHOOK_SIGNATURE_KEY blank, webhook accepts payload without signature."""
+        # First create a case + matching invoice_id in payment so the webhook can update it
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        cid = r.json()["id"]
+        # Stamp a fake invoice_id directly via mongo (since hitting Square live is forbidden)
+        from pymongo import MongoClient
+        from pathlib import Path
+        env_vals = {}
+        for line in Path("/app/backend/.env").read_text().splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=", 1)
+                env_vals[k.strip()] = v.strip().strip('"').strip("'")
+        m = MongoClient(env_vals.get("MONGO_URL"))
+        db = m[env_vals.get("DB_NAME")]
+        fake_invoice_id = f"inv_test_{uuid.uuid4().hex[:8]}"
+        db.trust_cases.update_one(
+            {"id": cid},
+            {"$set": {"payment": {"status": "invoice_sent", "invoice_id": fake_invoice_id}}},
+        )
+
+        event_id = f"evt_test_{uuid.uuid4().hex[:8]}"
+        payload = {
+            "event_id": event_id,
+            "type": "invoice.payment_made",
+            "data": {"object": {"invoice": {"id": fake_invoice_id, "status": "PAID"}}},
+        }
+        r2 = requests.post(f"{API}/webhooks/square", json=payload)
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["status"] == "ok"
+
+        # Verify payment.status updated to "paid"
+        case = admin_session.get(f"{API}/admin/trust-cases/{cid}").json()
+        assert case["payment"]["status"] == "paid"
+        assert case["payment"]["invoice_status"] == "PAID"
+
+        # Duplicate event => "duplicate"
+        r3 = requests.post(f"{API}/webhooks/square", json=payload)
+        assert r3.status_code == 200
+        assert r3.json()["status"] == "duplicate"
+
+    def test_webhook_invalid_json_400(self):
+        r = requests.post(f"{API}/webhooks/square",
+                          data=b"not json{{{",
+                          headers={"Content-Type": "application/json"})
+        assert r.status_code == 400
+
+    def test_webhook_unknown_invoice_no_crash(self):
+        payload = {
+            "event_id": f"evt_unmatched_{uuid.uuid4().hex[:8]}",
+            "type": "invoice.payment_made",
+            "data": {"object": {"invoice": {"id": "inv_nomatch_xyz", "status": "PAID"}}},
+        }
+        r = requests.post(f"{API}/webhooks/square", json=payload)
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+

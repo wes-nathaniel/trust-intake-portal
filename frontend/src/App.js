@@ -9,6 +9,8 @@ import Register from "@/pages/Register";
 import ClientPortal from "@/pages/ClientPortal";
 import StartNew from "@/pages/StartNew";
 import IntakeWizard from "@/pages/IntakeWizard";
+import TrustPreview from "@/pages/TrustPreview";
+import TrustFinal from "@/pages/TrustFinal";
 import AdminDashboard from "@/pages/AdminDashboard";
 import AdminCaseDetail from "@/pages/AdminCaseDetail";
 import BrandingPage from "@/pages/BrandingPage";
@@ -37,6 +39,8 @@ function App() {
 
             <Route path="/portal" element={<ProtectedRoute><ClientPortal /></ProtectedRoute>} />
             <Route path="/portal/new" element={<ProtectedRoute><StartNew /></ProtectedRoute>} />
+            <Route path="/portal/trust-preview/:caseId" element={<ProtectedRoute><TrustPreview /></ProtectedRoute>} />
+            <Route path="/portal/trust-final/:caseId" element={<ProtectedRoute><TrustFinal /></ProtectedRoute>} />
             <Route path="/intake/:caseId" element={<ProtectedRoute><IntakeWizard /></ProtectedRoute>} />
 
             <Route path="/admin" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />

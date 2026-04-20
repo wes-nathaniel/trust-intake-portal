@@ -74,9 +74,18 @@ export default function Layout({ children }) {
       </main>
 
       <footer className="border-t border-[#E2E0DA] bg-white mt-16">
-        <div className="max-w-7xl mx-auto px-6 py-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-[#64748B]">
-          <span>&copy; {new Date().getFullYear()} {branding.business_name}. All rights reserved.</span>
-          <span>Secure Trust Intake Portal</span>
+        <div className="max-w-7xl mx-auto px-6 py-6 text-xs text-[#64748B] space-y-2">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-2">
+            <span>&copy; {new Date().getFullYear()} {branding.business_name}. All rights reserved.</span>
+            <span className="font-serif text-sm text-navy" data-testid="footer-prepared-by">
+              Prepared by <b>Iron Gate Consulting</b> · Reviewed through military legal benefits
+            </span>
+            <span>Secure Trust Intake Portal</span>
+          </div>
+          <p className="text-[10px] text-[#94A3B8] leading-relaxed max-w-4xl mx-auto text-center sm:text-left" data-testid="footer-legal">
+            This service is not legal advice. Documents are prepared using standardized trust templates commonly reviewed by military legal professionals.
+            Trust laws vary by state and clients may seek independent legal counsel at any time.
+          </p>
         </div>
       </footer>
     </div>

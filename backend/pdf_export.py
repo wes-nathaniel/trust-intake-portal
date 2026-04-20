@@ -83,12 +83,18 @@ def _header_footer(branding):
         canvas.setFillColor(BRONZE)
         canvas.setFont("Helvetica", 8)
         canvas.drawRightString(letter[0] - 0.6 * inch, letter[1] - 0.4 * inch, "TRUST INTAKE SUMMARY")
-        # Footer
+        # Footer - multi-line branding + disclaimer
         canvas.setFillColor(MUTED)
+        canvas.setFont("Helvetica-Bold", 8)
+        canvas.drawString(0.6 * inch, 0.58 * inch,
+                          "Prepared by Iron Gate Consulting  \u00B7  Reviewed through military legal benefits")
+        canvas.setFont("Helvetica", 7)
+        canvas.drawString(0.6 * inch, 0.45 * inch,
+                          "Not legal advice. Trust laws vary by state; seek independent counsel as needed.")
         canvas.setFont("Helvetica", 8)
-        canvas.drawString(0.6 * inch, 0.4 * inch,
+        canvas.drawString(0.6 * inch, 0.3 * inch,
                           f"Generated {datetime.now().strftime('%B %d, %Y %H:%M UTC')}")
-        canvas.drawRightString(letter[0] - 0.6 * inch, 0.4 * inch,
+        canvas.drawRightString(letter[0] - 0.6 * inch, 0.3 * inch,
                                f"Page {doc.page}")
         canvas.restoreState()
     return on_page
@@ -106,6 +112,10 @@ def build_intake_pdf(case: dict, branding: dict) -> bytes:
     # Cover
     flow.append(Paragraph("Trust Intake Summary", s["title"]))
     flow.append(Spacer(1, 6))
+    trust_name_display = case.get("trust_name") or "(Trust name pending)"
+    flow.append(Paragraph(
+        f"<b>{trust_name_display}</b>",
+        s["body"]))
     flow.append(Paragraph(
         f"Case #{case.get('id','')[:8].upper()} — "
         f"{'Joint Trust' if case.get('trust_type') == 'joint' else 'Single Trust'}",
@@ -113,6 +123,7 @@ def build_intake_pdf(case: dict, branding: dict) -> bytes:
     flow.append(Spacer(1, 14))
 
     client_rows = [
+        ("Trust name", case.get("trust_name") or "—"),
         ("Client", case.get("client_name") or case.get("client_email", "")),
         ("Email", case.get("client_email", "")),
         ("Status", case.get("status", "")),
@@ -267,6 +278,54 @@ def build_intake_pdf(case: dict, branding: dict) -> bytes:
         "intended solely for preparation of estate planning documents. SSNs have been masked "
         "for security.",
         s["muted"]))
+
+    # --- Legal Disclosures page ---
+    flow.append(PageBreak())
+    flow.append(Paragraph("Legal Disclosures & Notices", s["h2"]))
+    flow.append(Spacer(1, 6))
+    flow.append(Paragraph(
+        "<b>Not legal advice.</b> This trust has been reviewed for accuracy and completeness through my military "
+        "legal benefits. All documents are prepared using standardized trust templates that are commonly "
+        "reviewed by military legal professionals. I am not an attorney and do not provide legal advice. "
+        "Clients may seek independent legal counsel at any time.",
+        s["body"]))
+    flow.append(Spacer(1, 10))
+    flow.append(Paragraph(
+        "<b>State-specific advisory.</b> Trust laws vary by state. Clients are responsible for ensuring the trust "
+        "meets their personal legal needs and may seek independent legal counsel in their state at any time.",
+        s["body"]))
+    flow.append(Spacer(1, 10))
+    flow.append(Paragraph(
+        "<b>Notarization required.</b> Your trust must be printed and notarized to become legally valid. "
+        "Please sign in the presence of a notary public and retain the original notarized copy with your "
+        "important records.",
+        s["body"]))
+
+    # Business / SOS advisory if any business asset is present
+    assets_now = case.get("assets") or []
+    has_business_asset = any(a.get("asset_type") == "business" for a in assets_now)
+    if has_business_asset:
+        flow.append(Spacer(1, 10))
+        flow.append(Paragraph("<b>Secretary of State — Business Ownership Transfer</b>", s["h3"]))
+        flow.append(Paragraph(
+            "If you are placing a business under your trust, most states require you to file a Change of "
+            "Ownership / Change of Responsible Party form with the Secretary of State. This updates the "
+            "business registration from your personal name to the trust name. Please contact your Secretary "
+            "of State's office to complete this step.",
+            s["body"]))
+
+    # Acknowledgments (if any on file)
+    acks = case.get("acknowledgments") or {}
+    if any(acks.values()):
+        flow.append(Spacer(1, 10))
+        flow.append(Paragraph("<b>Client Acknowledgments on file</b>", s["h3"]))
+        flow.append(_kv_table([
+            ("Legal disclosure acknowledged", "Yes" if acks.get("disclosure_ack") else "No"),
+            ("State law variance acknowledged", "Yes" if acks.get("state_laws_ack") else "No"),
+            ("Notarization understood", "Yes" if acks.get("notarization_ack") else "No"),
+            ("SOS business advisory acknowledged", "Yes" if acks.get("business_sos_ack") else "N/A"),
+            ("Review completed by client", "Yes" if acks.get("review_completed_ack") else "No"),
+        ], s))
 
     doc.build(flow, onFirstPage=_header_footer(branding),
               onLaterPages=_header_footer(branding))

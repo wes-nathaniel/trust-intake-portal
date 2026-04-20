@@ -5,7 +5,7 @@ import api, { formatApiError } from "@/lib/api";
 import StatusTracker from "@/components/StatusTracker";
 import MessageThread from "@/components/MessageThread";
 import { toast } from "sonner";
-import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, FilePen, RefreshCw, MailPlus, Clock } from "lucide-react";
+import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, FilePen, RefreshCw, MailPlus, Clock, Lock, Unlock, BellRing, ExternalLink } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { displaySSN } from "@/pages/intake/_shared";
 import SendForSigningDialog from "@/components/SendForSigningDialog";
@@ -39,6 +39,15 @@ export default function AdminCaseDetail() {
   const [signOpen, setSignOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [resending, setResending] = useState(false);
+
+  const trustDraftInputRef = useRef();
+  const [uploadingTrust, setUploadingTrust] = useState(false);
+
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
+  const [invoiceAmount, setInvoiceAmount] = useState("");
+  const [invoiceDesc, setInvoiceDesc] = useState("");
+  const [invoiceDue, setInvoiceDue] = useState(14);
+  const [invoiceSending, setInvoiceSending] = useState(false);
 
   const load = async () => {
     try {
@@ -131,6 +140,85 @@ export default function AdminCaseDetail() {
     finally { setResending(false); }
   };
 
+  const uploadTrustDraft = async (file) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".pdf")) {
+      toast.error("Only PDF files are accepted for trust drafts.");
+      return;
+    }
+    setUploadingTrust(true);
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      await api.post(`/admin/trust-cases/${caseId}/trust-draft`, form, { headers: { "Content-Type": "multipart/form-data" } });
+      toast.success("Trust draft uploaded. Client has been notified.");
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setUploadingTrust(false); if (trustDraftInputRef.current) trustDraftInputRef.current.value = ""; }
+  };
+
+  const unlockFinal = async () => {
+    if (!window.confirm("Unlock final trust for this client? This removes watermarks, enables download/print, and emails the client.")) return;
+    try {
+      await api.post(`/admin/trust-cases/${caseId}/unlock-final`);
+      toast.success("Final trust unlocked.");
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const sendReviewReminder = async () => {
+    try {
+      const { data } = await api.post(`/admin/trust-cases/${caseId}/send-review-reminder`);
+      toast.success(`Reminder sent to ${data.sent_to}`);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const downloadDraftRaw = async () => {
+    try {
+      const res = await api.get(`/admin/trust-cases/${caseId}/trust-draft/raw`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url; a.download = `draft-trust-${caseId.slice(0,8)}.pdf`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const createInvoice = async () => {
+    const cents = Math.round(parseFloat(invoiceAmount || "0") * 100);
+    if (!(cents > 0)) { toast.error("Enter an amount greater than $0.00"); return; }
+    setInvoiceSending(true);
+    try {
+      const { data } = await api.post(`/admin/trust-cases/${caseId}/invoice`, {
+        amount_cents: cents,
+        description: invoiceDesc || undefined,
+        due_in_days: Number(invoiceDue) || 14,
+      });
+      toast.success(`Invoice sent to ${c.client_email}`);
+      if (data.public_url) window.open(data.public_url, "_blank");
+      setInvoiceOpen(false);
+      setInvoiceAmount(""); setInvoiceDesc("");
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setInvoiceSending(false); }
+  };
+
+  const refreshInvoice = async () => {
+    try {
+      await api.get(`/admin/trust-cases/${caseId}/invoice`);
+      toast.success("Invoice status refreshed from Square");
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const markPaymentReceived = async () => {
+    if (!window.confirm("Manually mark this payment as received? This should only be used if payment was made offline or cleared outside Square.")) return;
+    try {
+      await api.post(`/admin/trust-cases/${caseId}/mark-payment-received`);
+      toast.success("Payment marked as received.");
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
   const docs = (c.documents || []).filter((d) => !d.is_deleted);
 
   return (
@@ -143,6 +231,7 @@ export default function AdminCaseDetail() {
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Case #{c.id.slice(0, 8).toUpperCase()}</p>
           <h1 className="font-serif text-4xl text-navy">{c.client_name || c.client_email}</h1>
+          {c.trust_name && <p className="text-navy/80 font-serif text-lg mt-0.5" data-testid="admin-trust-name">{c.trust_name}</p>}
           <p className="text-[#64748B] mt-1">{c.client_email} · {c.trust_type === "joint" ? "Joint Trust" : "Single Trust"}</p>
         </div>
         <button
@@ -192,6 +281,12 @@ export default function AdminCaseDetail() {
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
+        {c.acknowledgments?.review_completed_ack && (
+          <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-md text-sm flex items-start gap-2" data-testid="admin-review-completed-banner">
+            <span className="text-green-700 font-semibold">Client marked review as completed.</span>
+            <span className="text-green-800/80">Ready for payment.</span>
+          </div>
+        )}
         {(c.pending_items || []).length > 0 && (
           <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-md text-sm" data-testid="admin-pending-summary">
             <p className="font-semibold text-amber-900 mb-1">Client-facing outstanding items ({(c.pending_items || []).length})</p>
@@ -268,22 +363,152 @@ export default function AdminCaseDetail() {
         </Section>
 
         <Section title="EIN Workflow">
-          <KV k="SSN" v={c.ein?.ssn ? displaySSN(c.ein.ssn) : "—"} />
-          <KV k="Authorized" v={c.ein?.authorized ? "Yes" : "No"} />
-          <KV k="EIN Requested" v={c.ein_requested ? "Yes" : "No"} />
-          <div className="flex gap-2 mt-4">
+          <KV k="Trust Name" v={c.trust_name || "—"} />
+          <KV k="Client Authorized" v={c.ein?.authorized ? "Yes" : "No"} />
+          <KV k="Firm Will File" v={c.ein?.firm_will_file !== false ? "Yes" : "No"} />
+          <KV k="EIN Requested with IRS" v={c.ein_requested ? "Yes" : "No"} />
+          <div className="flex gap-2 mt-4 flex-wrap">
             {!c.ein_requested && c.ein?.authorized && (
               <button onClick={requestEIN} className="btn-secondary text-sm" data-testid="ein-request-btn">Mark EIN Requested</button>
             )}
             <label className="btn-accent text-sm cursor-pointer inline-flex items-center" data-testid="ein-letter-upload-label">
-              <Upload className="h-4 w-4 inline mr-1" /> {uploadingEin ? "Uploading…" : "Upload EIN Letter"}
+              <Upload className="h-4 w-4 inline mr-1" /> {uploadingEin ? "Uploading…" : "Upload EIN Letter (CP-575)"}
               <input ref={einInputRef} type="file" className="hidden" onChange={(e) => uploadEinLetter(e.target.files?.[0])} data-testid="ein-letter-upload" />
             </label>
           </div>
+          <p className="text-xs text-[#64748B] mt-2">Only admins can upload the EIN letter. Clients will download it from their portal.</p>
           {c.ein_letter && (
             <div className="mt-3 flex items-center justify-between bg-sand-200/40 rounded-md px-3 py-2 text-sm" data-testid="ein-letter-saved">
               <span className="flex items-center gap-2"><FileText className="h-4 w-4" /> {c.ein_letter.filename}</span>
               <button onClick={() => download(c.ein_letter)} className="text-navy hover:text-bronze"><Download className="h-4 w-4" /></button>
+            </div>
+          )}
+        </Section>
+
+        <Section title="Payment (Square)">
+          {!c.payment?.invoice_id ? (
+            <div>
+              <p className="text-sm text-[#64748B] mb-3">
+                Send the client a Square invoice. They'll receive an email with a secure payment link (card or ACH).
+                When payment clears, final trust can be unlocked.
+              </p>
+              {invoiceOpen ? (
+                <div className="space-y-3 border border-bronze/40 bg-bronze/5 rounded-lg p-4">
+                  <div className="grid sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-xs uppercase text-[#64748B] font-semibold">Amount (USD)</label>
+                      <input type="number" step="0.01" min="0.01" value={invoiceAmount}
+                        onChange={(e) => setInvoiceAmount(e.target.value)}
+                        placeholder="0.00"
+                        className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
+                        data-testid="invoice-amount-input" />
+                    </div>
+                    <div>
+                      <label className="text-xs uppercase text-[#64748B] font-semibold">Due in (days)</label>
+                      <input type="number" min="1" max="90" value={invoiceDue}
+                        onChange={(e) => setInvoiceDue(e.target.value)}
+                        className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
+                        data-testid="invoice-due-input" />
+                    </div>
+                    <div className="sm:col-span-3">
+                      <label className="text-xs uppercase text-[#64748B] font-semibold">Description (optional)</label>
+                      <input type="text" value={invoiceDesc}
+                        onChange={(e) => setInvoiceDesc(e.target.value)}
+                        placeholder="Trust preparation & filing fee"
+                        className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
+                        data-testid="invoice-desc-input" />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={createInvoice} disabled={invoiceSending} className="btn-primary text-sm" data-testid="invoice-submit-btn">
+                      {invoiceSending ? "Sending…" : "Create & send invoice"}
+                    </button>
+                    <button onClick={() => setInvoiceOpen(false)} className="btn-secondary text-sm">Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <button onClick={() => setInvoiceOpen(true)} className="btn-accent text-sm" data-testid="create-invoice-btn">
+                  <DL className="h-4 w-4 inline mr-1" /> Create Square invoice
+                </button>
+              )}
+            </div>
+          ) : (
+            <div data-testid="payment-details">
+              <KV k="Status" v={c.payment.status} />
+              <KV k="Invoice ID" v={c.payment.invoice_id} />
+              <KV k="Square Status" v={c.payment.invoice_status || "—"} />
+              <KV k="Amount" v={c.payment.amount_cents ? `$${(c.payment.amount_cents/100).toLocaleString(undefined, {minimumFractionDigits: 2})}` : "—"} />
+              <KV k="Due date" v={c.payment.due_date} />
+              <KV k="Source" v={c.payment.source_type || "—"} />
+              <KV k="Last webhook" v={c.payment.last_webhook_at?.slice(0, 19).replace("T", " ") || "—"} />
+              {c.payment.risk_level && <KV k="Risk level" v={c.payment.risk_level} />}
+              <div className="flex flex-wrap gap-2 mt-3">
+                {c.payment.public_url && (
+                  <a href={c.payment.public_url} target="_blank" rel="noreferrer" className="btn-secondary text-sm" data-testid="invoice-public-link">
+                    <ExternalLink className="h-4 w-4 inline mr-1" /> Open in Square
+                  </a>
+                )}
+                <button onClick={refreshInvoice} className="btn-secondary text-sm" data-testid="invoice-refresh-btn">
+                  <RefreshCw className="h-4 w-4 inline mr-1" /> Refresh status
+                </button>
+                {c.payment.status !== "paid" && c.payment.status !== "paid_manual" && (
+                  <button onClick={markPaymentReceived} className="btn-accent text-sm" data-testid="mark-paid-btn">
+                    Mark payment received (manual)
+                  </button>
+                )}
+              </div>
+              {c.payment.status === "ach_pending" && (
+                <p className="text-xs text-amber-700 mt-3">ACH is pending — typically 3–5 business days to clear. Final trust stays locked until cleared or admin overrides.</p>
+              )}
+            </div>
+          )}
+        </Section>
+
+        <Section title="Trust Draft — Secure Preview">
+          {!c.trust_draft ? (
+            <div>
+              <p className="text-sm text-[#64748B] mb-3">
+                Upload the drafted trust PDF to share a watermarked, page-by-page preview with the client.
+                Printing and downloading are disabled for the client until payment is received.
+              </p>
+              <label className="btn-accent text-sm cursor-pointer inline-flex items-center" data-testid="trust-draft-upload-label">
+                <Upload className="h-4 w-4 inline mr-1" /> {uploadingTrust ? "Uploading…" : "Upload Trust Draft PDF"}
+                <input ref={trustDraftInputRef} type="file" accept="application/pdf" className="hidden" onChange={(e) => uploadTrustDraft(e.target.files?.[0])} data-testid="trust-draft-upload-input" />
+              </label>
+            </div>
+          ) : (
+            <div>
+              <KV k="File" v={c.trust_draft.filename} />
+              <KV k="Pages" v={c.trust_draft.pages} />
+              <KV k="Version" v={c.trust_draft.version} />
+              <KV k="Uploaded" v={c.trust_draft.uploaded_at?.slice(0, 19).replace("T", " ")} />
+              <KV k="Review completed by client" v={c.acknowledgments?.review_completed_ack ? "Yes" : "No"} />
+              <KV k="Final unlocked" v={c.trust_unlocked ? "Yes" : "No"} />
+              <div className="flex flex-wrap gap-2 mt-4">
+                <a href={`/portal/trust-preview/${caseId}`} target="_blank" rel="noreferrer" className="btn-secondary text-sm" data-testid="admin-open-preview-btn">
+                  <ExternalLink className="h-4 w-4 inline mr-1" /> Open client preview
+                </a>
+                <button onClick={downloadDraftRaw} className="btn-secondary text-sm" data-testid="admin-download-draft-raw-btn">
+                  <Download className="h-4 w-4 inline mr-1" /> Download draft PDF (admin)
+                </button>
+                <label className="btn-secondary text-sm cursor-pointer inline-flex items-center" data-testid="trust-draft-replace-label">
+                  <Upload className="h-4 w-4 inline mr-1" /> {uploadingTrust ? "Uploading…" : "Replace draft"}
+                  <input ref={trustDraftInputRef} type="file" accept="application/pdf" className="hidden" onChange={(e) => uploadTrustDraft(e.target.files?.[0])} />
+                </label>
+                <button onClick={sendReviewReminder} className="btn-secondary text-sm" data-testid="send-review-reminder-btn">
+                  <BellRing className="h-4 w-4 inline mr-1" /> Send review reminder
+                </button>
+                {!c.trust_unlocked ? (
+                  <button onClick={unlockFinal} className="btn-accent text-sm" data-testid="unlock-final-btn">
+                    <Unlock className="h-4 w-4 inline mr-1" /> Unlock Final Trust
+                  </button>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-sm text-green-700 font-semibold">
+                    <Unlock className="h-4 w-4" /> Final unlocked
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-[#64748B] mt-3"><Lock className="h-3 w-3 inline mr-1" /> Client preview: low-resolution, watermarked, anti-copy &amp; anti-print.</p>
             </div>
           )}
         </Section>

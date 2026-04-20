@@ -2,13 +2,13 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
-import { Users, User, Plus, ArrowRight, FileText, ShieldCheck, Download, FilePen, AlertTriangle } from "lucide-react";
+import { ArrowRight, ShieldCheck, Download, FilePen, AlertTriangle, Plus } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import StatusTracker from "@/components/StatusTracker";
 import { toast } from "sonner";
 
 export default function ClientPortal() {
-  const { user, branding } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [cases, setCases] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -24,15 +24,6 @@ export default function ClientPortal() {
 
   useEffect(() => { load(); }, []);
 
-  const createCase = async (trust_type) => {
-    try {
-      const { data } = await api.post("/trust-cases", { trust_type });
-      navigate(`/intake/${data.id}`);
-    } catch (e) {
-      toast.error(formatApiError(e.response?.data?.detail));
-    }
-  };
-
   return (
     <Layout>
       <div className="mb-10">
@@ -47,35 +38,17 @@ export default function ClientPortal() {
         <p className="text-[#64748B]">Loading…</p>
       ) : cases.length === 0 ? (
         <div>
-          <h2 className="font-serif text-2xl text-navy mb-6">Begin a new trust intake</h2>
-          <div className="grid md:grid-cols-2 gap-6" data-testid="trust-type-selector">
-            <button
-              onClick={() => createCase("single")}
-              className="group bg-white border border-[#E2E0DA] rounded-xl p-8 text-left hover:border-bronze hover:shadow-lg transition-all"
-              data-testid="trust-type-single">
-              <div className="h-12 w-12 rounded-full bg-sand-200 flex items-center justify-center mb-5 group-hover:bg-bronze/15">
-                <User className="h-6 w-6 text-navy" />
-              </div>
-              <h3 className="font-serif text-2xl text-navy mb-2">Single Trust</h3>
-              <p className="text-[#64748B] mb-4">An individual trust with a single grantor — for unmarried individuals or sole grantors.</p>
-              <span className="inline-flex items-center text-bronze font-medium">
-                Start intake <ArrowRight className="h-4 w-4 ml-1 group-hover:translate-x-1 transition-transform" />
-              </span>
-            </button>
-            <button
-              onClick={() => createCase("joint")}
-              className="group bg-white border border-[#E2E0DA] rounded-xl p-8 text-left hover:border-bronze hover:shadow-lg transition-all"
-              data-testid="trust-type-joint">
-              <div className="h-12 w-12 rounded-full bg-sand-200 flex items-center justify-center mb-5 group-hover:bg-bronze/15">
-                <Users className="h-6 w-6 text-navy" />
-              </div>
-              <h3 className="font-serif text-2xl text-navy mb-2">Joint Trust</h3>
-              <p className="text-[#64748B] mb-4">A trust with two grantors — for married couples or partners sharing estate planning.</p>
-              <span className="inline-flex items-center text-bronze font-medium">
-                Start intake <ArrowRight className="h-4 w-4 ml-1 group-hover:translate-x-1 transition-transform" />
-              </span>
-            </button>
-          </div>
+          <h2 className="font-serif text-2xl text-navy mb-3">Begin a new trust intake</h2>
+          <p className="text-[#64748B] mb-6 max-w-2xl">
+            Choose the trust type and give it a formal name in the next step. Your trust name will appear on the
+            EIN filing, the trust documents, and the final PDF.
+          </p>
+          <button
+            onClick={() => navigate("/portal/new")}
+            className="btn-primary inline-flex items-center"
+            data-testid="portal-start-new-btn">
+            Start a new trust <ArrowRight className="h-4 w-4 ml-1" />
+          </button>
         </div>
       ) : (
         <div className="space-y-8">
@@ -107,6 +80,26 @@ export default function ClientPortal() {
                   </div>
                 </div>
               )}
+
+              {c.payment?.invoice_id && c.payment.status !== "paid" && c.payment.status !== "paid_manual" && c.payment.public_url && (
+                <div className="bg-bronze/10 border border-bronze/40 rounded-xl p-5 flex flex-col sm:flex-row items-start sm:items-center gap-3 justify-between" data-testid={`payment-banner-${c.id}`}>
+                  <div>
+                    <p className="font-semibold text-navy">
+                      {c.payment.status === "ach_pending" ? "ACH payment pending — waiting for your bank to clear." :
+                       "Invoice ready — please complete payment to unlock your final trust."}
+                    </p>
+                    <p className="text-sm text-[#334155]">
+                      {c.payment.amount_cents ? `Amount: $${(c.payment.amount_cents/100).toLocaleString(undefined, {minimumFractionDigits: 2})}` : ""}
+                      {c.payment.due_date ? ` · Due ${c.payment.due_date}` : ""}
+                    </p>
+                  </div>
+                  {c.payment.status !== "ach_pending" && (
+                    <a href={c.payment.public_url} target="_blank" rel="noreferrer" className="btn-accent text-sm shrink-0" data-testid={`pay-btn-${c.id}`}>
+                      Pay securely with Square
+                    </a>
+                  )}
+                </div>
+              )}
               <StatusTracker status={c.status} />
               <div className="bg-white border border-[#E2E0DA] rounded-xl p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div>
@@ -116,7 +109,8 @@ export default function ClientPortal() {
                       {c.trust_type === "joint" ? "Joint Trust" : "Single Trust"} · Started {new Date(c.created_at).toLocaleDateString()}
                     </span>
                   </div>
-                  <h3 className="font-serif text-xl text-navy">Trust Case #{c.id.slice(0, 8).toUpperCase()}</h3>
+                  <h3 className="font-serif text-xl text-navy">{c.trust_name || `Trust Case #${c.id.slice(0, 8).toUpperCase()}`}</h3>
+                  {c.trust_name && <p className="text-xs text-[#94A3B8] mt-0.5">Case #{c.id.slice(0, 8).toUpperCase()}</p>}
                   <div className="flex gap-4 mt-2 text-sm text-[#64748B]">
                     <span>{c.grantors?.length || 0} grantor(s)</span>
                     <span>·</span>
@@ -126,6 +120,16 @@ export default function ClientPortal() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
+                  {c.trust_draft && !c.trust_unlocked && (
+                    <Link to={`/portal/trust-preview/${c.id}`} className="btn-primary text-sm" data-testid={`open-trust-preview-${c.id}`}>
+                      <FilePen className="h-4 w-4 inline mr-1" /> Review Draft Trust
+                    </Link>
+                  )}
+                  {c.trust_unlocked && (
+                    <Link to={`/portal/trust-final/${c.id}`} className="btn-accent text-sm" data-testid={`open-trust-final-${c.id}`}>
+                      <FilePen className="h-4 w-4 inline mr-1" /> Final Trust
+                    </Link>
+                  )}
                   {c.esign?.status === "signed" && (
                     <button
                       onClick={async () => {

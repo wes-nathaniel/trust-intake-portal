@@ -150,11 +150,25 @@ export default function AssetStep({ caseId, trustCase, reload }) {
 
   const label = (v) => TYPES.find((t) => t.v === v)?.l || v;
 
+  // Business asset advisory — show when any business-type asset or business-document upload is present
+  const hasBusinessAsset =
+    list.some(a => a.asset_type === "business") ||
+    allDocs.some(d => d.doc_type === "business_document");
+
   return (
     <div>
       <SectionHeader num={5} total={8} title="Trust Assets"
         subtitle="Tell us what you'd like to place in the trust. Easiest: upload statements, deeds, titles, etc. and our team will extract the details. You can also enter assets manually." />
 
+      {hasBusinessAsset && (
+        <div className="mb-6 p-4 bg-amber-50 border border-amber-300 rounded-md text-sm text-amber-900" data-testid="business-sos-advisory-asset">
+          <p className="font-semibold mb-1">Secretary of State — Business Ownership Transfer</p>
+          <p className="text-amber-900/90">
+            If you are placing a business under your trust, most states require you to file a <b>Change of Ownership / Change of Responsible Party</b> form with the Secretary of State.
+            This updates the business registration from your personal name to the trust name. Please contact your Secretary of State's office to complete this step.
+          </p>
+        </div>
+      )}
       {/* Mode selector */}
       <div className="inline-flex bg-sand-200 rounded-lg p-1 mb-6" data-testid="asset-mode-toggle">
         <button onClick={() => setMode("documents")}

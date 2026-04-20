@@ -27,6 +27,8 @@ from pdf_export import build_intake_pdf
 import esign
 import sms
 from ai_assistant import answer_question as ai_answer_question
+from trust_preview import pdf_bytes_to_preview_pages, page_count as pdf_page_count
+import square_service
 
 # ---------- CONFIG ----------
 JWT_ALGORITHM = "HS256"
@@ -175,8 +177,10 @@ def _email_shell(business, primary, accent, inner_html):
         <div style="font-size:24px;font-family:Georgia,serif;">{business}</div>
       </td></tr>
       <tr><td style="padding:28px;color:#1C252E;font-size:15px;line-height:1.55;">{inner_html}</td></tr>
-      <tr><td style="background:#F6F4F0;padding:16px;text-align:center;color:#64748B;font-size:11px;">
-        &copy; {business} &middot; Secure Trust Intake Portal
+      <tr><td style="background:#F6F4F0;padding:16px 20px;text-align:center;color:#64748B;font-size:11px;border-top:1px solid #EBE7DF;">
+        <div style="margin-bottom:6px;font-family:Georgia,serif;font-size:12px;color:#1C252E;">Prepared by Iron Gate Consulting · Reviewed through military legal benefits</div>
+        <div style="color:#94A3B8;font-size:10px;line-height:1.5;">This trust has been reviewed for accuracy and completeness through my military legal benefits. All documents are prepared using standardized trust templates that are commonly reviewed by military legal professionals. I am not an attorney and do not provide legal advice. Clients may seek independent legal counsel at any time. Trust laws vary by state.</div>
+        <div style="margin-top:8px;">&copy; {business} &middot; Secure Trust Intake Portal</div>
       </td></tr>
     </table>
   </td></tr>
@@ -231,6 +235,8 @@ def _status_change_email_html(business, accent, primary, client_name, status, ca
         "Waiting on Documents": "We're waiting on a few documents from you to move forward. Please sign in to upload them.",
         "In Review": "Your intake is now under attorney review. No action is required from you at this time.",
         "Drafting Trust": "Our team is now drafting your trust documents. We'll reach out if we need anything.",
+        "Ready for Review": "Your draft trust is ready for review in the secure portal. Please read through it page-by-page and acknowledge the disclosures when done.",
+        "Payment Pending": "We've sent you an invoice for your trust. Once payment is received and cleared, we'll unlock your final trust documents.",
         "Ready for Signing": "Your trust documents are ready for signing. Please review and sign at your earliest convenience.",
         "Completed": "Your trust is now complete. A PDF summary is attached in a separate email.",
     }.get(status, f"Your case status has been updated to: {status}.")
@@ -311,6 +317,7 @@ class InviteReq(BaseModel):
     name: str
     email: EmailStr
     trust_type: Literal["single", "joint"] = "single"
+    trust_name: Optional[str] = ""
     message: Optional[str] = ""
 
 class AcceptInviteReq(BaseModel):
@@ -328,6 +335,17 @@ TrustType = Literal["single", "joint"]
 
 class TrustCaseCreate(BaseModel):
     trust_type: TrustType
+    trust_name: Optional[str] = ""
+
+class TrustNameUpdate(BaseModel):
+    trust_name: str = Field(min_length=3, max_length=200)
+
+class AcknowledgmentsUpdate(BaseModel):
+    state_laws_ack: Optional[bool] = None
+    notarization_ack: Optional[bool] = None
+    review_completed_ack: Optional[bool] = None
+    business_sos_ack: Optional[bool] = None
+    disclosure_ack: Optional[bool] = None
 
 class Address(BaseModel):
     line1: str = ""
@@ -391,8 +409,10 @@ class Asset(BaseModel):
     notes: Optional[str] = ""
 
 class EINInfo(BaseModel):
-    ssn: str
+    ssn: Optional[str] = ""
     authorized: bool = False
+    # New: admin-filed flag. Client only authorizes; firm files.
+    firm_will_file: bool = True
 
 STATUSES = [
     "Intake Started",
@@ -400,6 +420,8 @@ STATUSES = [
     "Waiting on Documents",
     "In Review",
     "Drafting Trust",
+    "Ready for Review",
+    "Payment Pending",
     "Ready for Signing",
     "Completed",
 ]
@@ -583,11 +605,21 @@ async def admin_invite_client(body: InviteReq, admin: dict = Depends(require_adm
         "client_email": email,
         "client_name": body.name,
         "trust_type": body.trust_type,
+        "trust_name": (body.trust_name or "").strip(),
         "status": "Intake Started",
         "grantors": [], "trustees": [], "successor_trustees": [],
         "beneficiaries": [], "assets": [],
         "ein": None, "ein_requested": False, "ein_letter": None,
         "documents": [], "admin_notes": [], "branding": {},
+        "acknowledgments": {
+            "state_laws_ack": False,
+            "notarization_ack": False,
+            "review_completed_ack": False,
+            "business_sos_ack": False,
+            "disclosure_ack": False,
+        },
+        "payment": {"status": "none"},
+        "trust_unlocked": False,
         "created_at": now_iso(), "updated_at": now_iso(),
         "invited": True,
     }
@@ -675,6 +707,7 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
         "client_email": user["email"],
         "client_name": user.get("name", ""),
         "trust_type": body.trust_type,
+        "trust_name": (body.trust_name or "").strip(),
         "status": "Intake Started",
         "grantors": [],
         "trustees": [],
@@ -687,6 +720,15 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
         "documents": [],
         "admin_notes": [],
         "branding": {},
+        "acknowledgments": {
+            "state_laws_ack": False,
+            "notarization_ack": False,
+            "review_completed_ack": False,
+            "business_sos_ack": False,
+            "disclosure_ack": False,
+        },
+        "payment": {"status": "none"},
+        "trust_unlocked": False,
         "created_at": now_iso(),
         "updated_at": now_iso(),
     }
@@ -880,14 +922,65 @@ async def set_ein(case_id: str, body: EINInfo, user: dict = Depends(get_current_
     await get_case(case_id, user)
     if not body.authorized:
         raise HTTPException(status_code=400, detail="EIN authorization is required")
-    await update_case(case_id, {"ein": body.model_dump()})
-    return body.model_dump()
+    payload = body.model_dump()
+    payload["firm_will_file"] = True  # Client never self-files
+    await update_case(case_id, {"ein": payload})
+    return payload
+
+
+# --- Trust Name ---
+@api_router.put("/trust-cases/{case_id}/trust-name")
+async def set_trust_name(case_id: str, body: TrustNameUpdate, user: dict = Depends(get_current_user)):
+    await get_case(case_id, user)
+    await update_case(case_id, {"trust_name": body.trust_name.strip()})
+    return {"trust_name": body.trust_name.strip()}
+
+
+# --- Client Acknowledgments (legal disclosures, notarization, review completed) ---
+@api_router.put("/trust-cases/{case_id}/acknowledgments")
+async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: dict = Depends(get_current_user)):
+    case = await get_case(case_id, user)
+    current = dict(case.get("acknowledgments") or {})
+    for k, v in body.model_dump(exclude_none=True).items():
+        current[k] = bool(v)
+    updates = {"acknowledgments": current}
+
+    # If client marks review completed, notify admin
+    was_review_ack = bool((case.get("acknowledgments") or {}).get("review_completed_ack"))
+    now_review_ack = bool(current.get("review_completed_ack"))
+    await update_case(case_id, updates)
+
+    if now_review_ack and not was_review_ack and user.get("role") != "admin":
+        try:
+            branding = await _branding_doc()
+            biz = branding.get("business_name", "Trust Portal")
+            accent = branding.get("accent_color", "#C5A880")
+            primary = branding.get("primary_color", "#1C252E")
+            admin_rec = await db.users.find_one({"role": "admin"})
+            if admin_rec:
+                link = f"{FRONTEND_URL}/admin/cases/{case_id}"
+                inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Client has completed trust review</p>
+<p><b>{case.get('client_name') or case.get('client_email')}</b> has reviewed their trust and is ready for payment.</p>
+<p>Case #{case_id[:8].upper()} · {case.get('trust_name') or ''}</p>
+{_cta(link, "Open case", accent)}
+"""
+                html = _email_shell(biz, primary, accent, inner)
+                await send_email_notification(
+                    admin_rec["email"],
+                    f"Ready for payment — {case.get('client_name') or case.get('client_email')}",
+                    html,
+                )
+        except Exception as e:
+            logger.error(f"Review-completed admin email failed: {e}")
+
+    return current
 
 # --- Documents ---
 REQUIRED_DOC_TYPES = {"government_id", "proof_of_address"}
 ALLOWED_DOC_TYPES = REQUIRED_DOC_TYPES | {
     "existing_trust", "bank_statement", "deed", "title", "insurance_policy",
-    "business_document", "supporting_file", "ein_letter"
+    "business_document", "supporting_file", "ein_letter", "trust_draft"
 }
 
 # ---------- DOC REQUESTS / PENDING ITEMS ----------
@@ -959,6 +1052,9 @@ async def upload_document(case_id: str,
     case = await get_case(case_id, user)
     if doc_type not in ALLOWED_DOC_TYPES:
         raise HTTPException(status_code=400, detail="Invalid document type")
+    # EIN letter may ONLY be uploaded by admin (IRS CP-575 / confirmation letter)
+    if doc_type == "ein_letter" and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only your trust team can upload the EIN letter.")
     ext = (file.filename.rsplit(".", 1)[-1] if "." in (file.filename or "") else "bin").lower()
     path = f"{APP_NAME}/uploads/{user['id']}/{case_id}/{new_id()}.{ext}"
     data = await file.read()
@@ -994,6 +1090,37 @@ async def upload_document(case_id: str,
     if changed:
         updates["requested_documents"] = reqs
     await update_case(case_id, updates)
+
+    # Admin notification when a CLIENT uploads a new document
+    if user.get("role") == "client":
+        try:
+            admin_rec = await db.users.find_one({"role": "admin"})
+            if admin_rec:
+                branding = await _branding_doc()
+                biz = branding.get("business_name", "Trust Portal")
+                accent = branding.get("accent_color", "#C5A880")
+                primary = branding.get("primary_color", "#1C252E")
+                link = f"{FRONTEND_URL}/admin/cases/{case_id}"
+                label = _doc_label(doc_type)
+                inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">New document uploaded</p>
+<p><b>{case.get('client_name') or case.get('client_email')}</b> uploaded a new document to their case.</p>
+<p style="color:#64748B;margin:0 0 8px 0;">
+  Type: <b>{label}</b><br>
+  File: {file.filename or 'file'}<br>
+  Case: #{case_id[:8].upper()}
+</p>
+{_cta(link, "Open case in admin", accent)}
+"""
+                html = _email_shell(biz, primary, accent, inner)
+                await send_email_notification(
+                    admin_rec["email"],
+                    f"New document: {label} — {case.get('client_name') or case.get('client_email')}",
+                    html,
+                )
+        except Exception as e:
+            logger.error(f"Doc-upload admin email failed: {e}")
+
     return doc
 
 @api_router.get("/trust-cases/{case_id}/documents/{doc_id}/download")
@@ -1349,6 +1476,230 @@ async def export_pdf(case_id: str, user: dict = Depends(get_current_user)):
             "Content-Disposition": f'attachment; filename="trust-intake-{case_id[:8]}.pdf"'
         },
     )
+
+
+# ---------- TRUST DRAFT PREVIEW (locked, page-by-page, watermarked) ----------
+# Admin uploads the draft trust PDF. Clients can view page-by-page via image
+# endpoints (low-res, watermarked). Raw PDF is NOT served to clients.
+
+@api_router.post("/admin/trust-cases/{case_id}/trust-draft")
+async def admin_upload_trust_draft(case_id: str,
+                                   file: UploadFile = File(...),
+                                   admin: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted for trust drafts")
+    try:
+        num_pages = pdf_page_count(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not parse PDF: {e}")
+
+    # Store the raw PDF privately (admin-only access)
+    path = f"{APP_NAME}/trust-drafts/{case_id}/{new_id()}.pdf"
+    put_object(path, data, "application/pdf")
+
+    draft = {
+        "id": new_id(),
+        "storage_path": path,
+        "filename": file.filename,
+        "size": len(data),
+        "pages": num_pages,
+        "uploaded_by": admin["id"],
+        "uploaded_at": now_iso(),
+        "version": int((case.get("trust_draft") or {}).get("version", 0)) + 1,
+    }
+    updates = {"trust_draft": draft, "status": "Ready for Review"}
+    await update_case(case_id, updates)
+
+    # Notify client: trust ready for review
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        link = f"{FRONTEND_URL}/portal/trust-preview/{case_id}"
+        inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Your trust is ready for review.</p>
+<p>Your draft trust for <b>{case.get('trust_name') or 'your case'}</b> is ready to review in the secure portal.</p>
+<p style="color:#64748B;font-size:13px;">The draft is watermarked and cannot be printed or downloaded until payment is received. You can schedule a Zoom review call or complete your review inside the portal.</p>
+{_cta(link, "Review your trust", accent)}
+"""
+        html = _email_shell(biz, primary, accent, inner)
+        await send_email_notification(
+            case.get("client_email"),
+            f"Your trust is ready for review — {biz}",
+            html,
+        )
+    except Exception as e:
+        logger.error(f"Trust-ready email failed: {e}")
+
+    return {"ok": True, **draft}
+
+
+async def _get_trust_draft(case_id: str, user: dict):
+    case = await get_case(case_id, user)
+    draft = case.get("trust_draft")
+    if not draft:
+        raise HTTPException(status_code=404, detail="No trust draft available yet")
+    return case, draft
+
+
+@api_router.get("/trust-cases/{case_id}/trust-preview/meta")
+async def trust_preview_meta(case_id: str, user: dict = Depends(get_current_user)):
+    case, draft = await _get_trust_draft(case_id, user)
+    unlocked = bool(case.get("trust_unlocked"))
+    return {
+        "pages": draft.get("pages", 0),
+        "version": draft.get("version", 1),
+        "uploaded_at": draft.get("uploaded_at"),
+        "trust_name": case.get("trust_name") or "",
+        "case_id": case_id,
+        "status": case.get("status"),
+        "unlocked": unlocked,
+        "payment_status": (case.get("payment") or {}).get("status", "none"),
+        "review_completed": bool((case.get("acknowledgments") or {}).get("review_completed_ack")),
+    }
+
+
+@api_router.get("/trust-cases/{case_id}/trust-preview/page/{page}.png")
+async def trust_preview_page(case_id: str, page: int, user: dict = Depends(get_current_user)):
+    case, draft = await _get_trust_draft(case_id, user)
+    total = int(draft.get("pages", 0))
+    if page < 1 or page > total:
+        raise HTTPException(status_code=404, detail="Page out of range")
+    # Always render with watermark unless the trust is unlocked AND user is admin OR client who paid.
+    # Even admins get the watermarked preview here — use `/admin/.../trust-draft/raw` for clean PDF.
+    try:
+        pdf_bytes, _ = get_object(draft["storage_path"])
+        pages = pdf_bytes_to_preview_pages(pdf_bytes)
+        img_bytes = pages[page - 1]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render preview: {e}")
+
+    headers = {
+        # Anti-caching so screenshots are not persisted
+        "Cache-Control": "private, no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        # Do not allow embedding outside our app
+        "X-Frame-Options": "SAMEORIGIN",
+        "Content-Disposition": "inline",
+        "X-Content-Type-Options": "nosniff",
+    }
+    return StreamingResponse(io.BytesIO(img_bytes), media_type="image/png", headers=headers)
+
+
+# Admin-only: raw (no watermark) trust draft download
+@api_router.get("/admin/trust-cases/{case_id}/trust-draft/raw")
+async def admin_download_trust_draft(case_id: str, _: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    draft = case.get("trust_draft")
+    if not draft:
+        raise HTTPException(status_code=404, detail="No trust draft uploaded")
+    data, _ct = get_object(draft["storage_path"])
+    return StreamingResponse(
+        io.BytesIO(data), media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="draft-trust-{case_id[:8]}.pdf"'},
+    )
+
+
+# Admin unlocks final trust after payment (or manual override)
+@api_router.post("/admin/trust-cases/{case_id}/unlock-final")
+async def admin_unlock_final(case_id: str, admin: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if not case.get("trust_draft"):
+        raise HTTPException(status_code=400, detail="No trust draft uploaded yet")
+    await update_case(case_id, {
+        "trust_unlocked": True,
+        "trust_unlocked_at": now_iso(),
+        "trust_unlocked_by": admin["id"],
+        "status": "Completed",
+    })
+
+    # Final email with notarization instructions
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        link = f"{FRONTEND_URL}/portal/trust-final/{case_id}"
+        inner = f"""
+<p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Your final trust is unlocked.</p>
+<p>Thank you for your payment. Your final, clean trust documents for <b>{case.get('trust_name') or 'your case'}</b> are now available to print and download from the portal.</p>
+
+<div style="margin-top:18px;background:#FEF6E0;border:1px solid #F4D58D;border-radius:8px;padding:14px 16px;">
+  <p style="margin:0 0 6px 0;font-family:Georgia,serif;font-size:16px;color:#78350F;">Next step — Notarize</p>
+  <p style="margin:0;color:#1C252E;font-size:14px;line-height:1.5;">
+    Your trust must be <b>printed and notarized</b> to become legally valid. Please sign in the
+    presence of a notary public and retain the original notarized copy with your important records.
+  </p>
+</div>
+
+{_cta(link, "Open your final trust", accent)}
+<p style="color:#64748B;font-size:13px;">If you placed a business under your trust, remember to file a Change of Ownership with your Secretary of State.</p>
+"""
+        html = _email_shell(biz, primary, accent, inner)
+        await send_email_notification(
+            case.get("client_email"),
+            f"Your final trust is ready — {biz}",
+            html,
+        )
+    except Exception as e:
+        logger.error(f"Final-unlock email failed: {e}")
+
+    return {"ok": True, "trust_unlocked": True}
+
+
+# Client downloads FINAL (clean, no watermark) trust PDF — only when unlocked
+@api_router.get("/trust-cases/{case_id}/trust-final")
+async def client_download_final_trust(case_id: str, user: dict = Depends(get_current_user)):
+    case, draft = await _get_trust_draft(case_id, user)
+    if not case.get("trust_unlocked"):
+        raise HTTPException(status_code=403, detail="Final trust is locked. Payment required.")
+    data, _ct = get_object(draft["storage_path"])
+    safe_name = (case.get("trust_name") or f"trust-{case_id[:8]}").replace("/", "-")
+    return StreamingResponse(
+        io.BytesIO(data), media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.pdf"'},
+    )
+
+
+@api_router.post("/admin/trust-cases/{case_id}/send-review-reminder")
+async def admin_send_review_reminder(case_id: str, admin: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if not case.get("trust_draft"):
+        raise HTTPException(status_code=400, detail="No trust draft uploaded — nothing to review")
+    branding = await _branding_doc()
+    biz = branding.get("business_name", "Trust Portal")
+    accent = branding.get("accent_color", "#C5A880")
+    primary = branding.get("primary_color", "#1C252E")
+    link = f"{FRONTEND_URL}/portal/trust-preview/{case_id}"
+    inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">A friendly reminder</p>
+<p>Your draft trust for <b>{case.get('trust_name') or 'your case'}</b> is ready and waiting for your review in the portal.</p>
+<p>When you're done reviewing, click <b>"Review Completed — I Am Satisfied With My Trust"</b> to move to the payment phase.</p>
+{_cta(link, "Review your trust", accent)}
+"""
+    html = _email_shell(biz, primary, accent, inner)
+    await send_email_notification(
+        case.get("client_email"),
+        f"Reminder: your trust is ready for review — {biz}",
+        html,
+    )
+    return {"ok": True, "sent_to": case.get("client_email")}
 
 
 # ---------- E-SIGN (Dropbox Sign) ----------
@@ -1716,6 +2067,330 @@ async def admin_resend_invite(case_id: str, admin: dict = Depends(require_admin)
         html,
     )
     return {"ok": True, "sent_to": user["email"]}
+
+
+# ---------- SQUARE: Payments & Invoices ----------
+class InvoiceCreateReq(BaseModel):
+    amount_cents: int = Field(gt=0, le=100_000_00)  # up to $100,000
+    description: Optional[str] = None
+    due_in_days: int = Field(default=14, ge=1, le=90)
+
+
+@api_router.get("/admin/square/health")
+async def square_health(_: dict = Depends(require_admin)):
+    return {
+        "enabled": square_service.is_enabled(),
+        "environment": os.environ.get("SQUARE_ENVIRONMENT", "production"),
+        "location_id": bool(os.environ.get("SQUARE_LOCATION_ID")),
+        "webhook_configured": bool(os.environ.get("SQUARE_WEBHOOK_SIGNATURE_KEY")),
+    }
+
+
+@api_router.post("/admin/trust-cases/{case_id}/invoice")
+async def admin_create_invoice(case_id: str, body: InvoiceCreateReq, admin: dict = Depends(require_admin)):
+    if not square_service.is_enabled():
+        raise HTTPException(status_code=503, detail="Square is not configured.")
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if not (case.get("client_email") or "").strip():
+        raise HTTPException(status_code=400, detail="Client has no email on file.")
+    try:
+        result = square_service.create_invoice(
+            client_email=case["client_email"],
+            client_name=case.get("client_name") or case.get("client_email"),
+            amount_cents=body.amount_cents,
+            description=body.description or f"Trust preparation & filing fee — {case.get('trust_name') or case['client_name']}",
+            case_id=case_id,
+            trust_name=case.get("trust_name") or f"Case #{case_id[:8].upper()}",
+            due_in_days=body.due_in_days,
+        )
+    except Exception as e:
+        logger.error(f"Square invoice create failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Square error: {e}")
+
+    payment = dict(case.get("payment") or {})
+    payment.update({
+        "status": "invoice_sent",
+        "amount_cents": body.amount_cents,
+        "invoice_id": result["invoice_id"],
+        "order_id": result["order_id"],
+        "public_url": result["public_url"],
+        "invoice_status": result["status"],
+        "due_date": result["due_date"],
+        "invoiced_at": now_iso(),
+    })
+    await update_case(case_id, {"payment": payment, "status": "Payment Pending"})
+
+    # Notify client with hosted payment link
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        amount_str = f"${body.amount_cents/100:,.2f}"
+        pay_link = result["public_url"] or f"{FRONTEND_URL}/portal"
+        inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Invoice ready for payment</p>
+<p>Your trust preparation fee of <b>{amount_str}</b> is ready. Square will send you a separate secure payment email as well.</p>
+<p style="color:#64748B;font-size:13px;">Once payment clears (ACH may take 3–5 business days), your final trust will be unlocked automatically.</p>
+{_cta(pay_link, "Pay securely with Square", accent)}
+"""
+        html = _email_shell(biz, primary, accent, inner)
+        await send_email_notification(
+            case.get("client_email"),
+            f"Invoice for your trust — {biz}",
+            html,
+        )
+    except Exception as e:
+        logger.error(f"Invoice email failed: {e}")
+
+    return {"ok": True, **result}
+
+
+@api_router.get("/admin/trust-cases/{case_id}/invoice")
+async def admin_get_invoice(case_id: str, _: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    payment = case.get("payment") or {}
+    invoice_id = payment.get("invoice_id")
+    if not invoice_id:
+        return {"has_invoice": False}
+    try:
+        live = square_service.get_invoice(invoice_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Square error: {e}")
+    payment_status = payment.get("status")
+    status_live = live.get("status")
+    # sync status mapping
+    new_status = payment_status
+    if status_live in ("PAID",):
+        new_status = "paid"
+    elif status_live in ("PAYMENT_PENDING",):
+        new_status = "ach_pending"
+    elif status_live in ("UNPAID", "SENT", "SCHEDULED"):
+        new_status = "invoice_sent"
+    elif status_live in ("CANCELED", "FAILED"):
+        new_status = "canceled"
+    if new_status != payment_status:
+        payment["status"] = new_status
+        payment["invoice_status"] = status_live
+        payment["synced_at"] = now_iso()
+        await update_case(case_id, {"payment": payment})
+    return {"has_invoice": True, "local": payment, "remote": live}
+
+
+@api_router.post("/admin/trust-cases/{case_id}/mark-payment-received")
+async def admin_mark_payment_received(case_id: str, admin: dict = Depends(require_admin)):
+    """Manual override — mark payment as received regardless of Square state."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    payment = dict(case.get("payment") or {})
+    payment["status"] = "paid_manual"
+    payment["manually_marked_at"] = now_iso()
+    payment["manually_marked_by"] = admin["id"]
+    await update_case(case_id, {"payment": payment, "status": "Completed"})
+    # Notify client
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Payment confirmed</p>
+<p>Thank you — we've confirmed receipt of your payment for <b>{case.get('trust_name') or 'your trust'}</b>.</p>
+<p>Your final trust is next. We'll email you when it's unlocked.</p>
+"""
+        html = _email_shell(biz, primary, accent, inner)
+        await send_email_notification(case.get("client_email"),
+                                      f"Payment received — {biz}", html)
+    except Exception as e:
+        logger.error(f"Mark-paid email failed: {e}")
+    return {"ok": True, "payment": payment}
+
+
+@api_router.get("/trust-cases/{case_id}/payment-status")
+async def client_payment_status(case_id: str, user: dict = Depends(get_current_user)):
+    case = await get_case(case_id, user)
+    p = case.get("payment") or {}
+    return {
+        "status": p.get("status", "none"),
+        "amount_cents": p.get("amount_cents"),
+        "public_url": p.get("public_url"),
+        "invoice_status": p.get("invoice_status"),
+        "due_date": p.get("due_date"),
+        "trust_unlocked": bool(case.get("trust_unlocked")),
+    }
+
+
+# Square webhook — receives invoice.* and payment.* events
+@api_router.post("/webhooks/square")
+async def square_webhook(request: Request):
+    body = await request.body()
+    signature = request.headers.get("x-square-hmacsha256-signature", "")
+    # Notification URL must match what's configured in Square Dashboard
+    # Reconstruct by concatenating base + /api/webhooks/square
+    configured_url = os.environ.get("SQUARE_WEBHOOK_URL") or f"{FRONTEND_URL}/api/webhooks/square"
+    sig_key = os.environ.get("SQUARE_WEBHOOK_SIGNATURE_KEY", "")
+
+    if sig_key:
+        ok = square_service.verify_webhook_signature(
+            body_bytes=body, signature_header=signature, url=configured_url, signature_key=sig_key,
+        )
+        if not ok:
+            logger.warning("Square webhook signature failed")
+            raise HTTPException(status_code=401, detail="Bad signature")
+    else:
+        logger.warning("Square webhook received but SQUARE_WEBHOOK_SIGNATURE_KEY is unset — accepting unverified (dev only).")
+
+    import json as _json
+    try:
+        payload = _json.loads(body.decode("utf-8") or "{}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    event_id = payload.get("event_id") or payload.get("id") or new_id()
+    event_type = payload.get("type") or ""
+    data_obj = ((payload.get("data") or {}).get("object")) or {}
+
+    # Idempotency
+    existing = await db.square_events.find_one({"event_id": event_id})
+    if existing:
+        return {"status": "duplicate"}
+    await db.square_events.insert_one({
+        "event_id": event_id, "type": event_type,
+        "payload": payload, "received_at": now_iso(),
+        "processed": False,
+    })
+
+    case_id = None
+    update = {}
+
+    # --- Invoice events ---
+    if event_type.startswith("invoice."):
+        inv = data_obj.get("invoice", {})
+        invoice_id = inv.get("id")
+        status_ = inv.get("status")
+        case = await db.trust_cases.find_one({"payment.invoice_id": invoice_id}, {"_id": 0})
+        if case:
+            case_id = case["id"]
+            p = dict(case.get("payment") or {})
+            p["invoice_status"] = status_
+            mapping = {
+                "PAID": "paid",
+                "PAYMENT_PENDING": "ach_pending",
+                "SENT": "invoice_sent",
+                "SCHEDULED": "invoice_sent",
+                "UNPAID": "invoice_sent",
+                "CANCELED": "canceled",
+                "FAILED": "failed",
+                "DRAFT": "draft",
+            }
+            p["status"] = mapping.get(status_, p.get("status"))
+            p["last_webhook_at"] = now_iso()
+            update["payment"] = p
+            if p["status"] == "paid":
+                update["status"] = "Payment Pending"  # will go to Completed when ACH clears / unlock
+            elif p["status"] == "ach_pending":
+                update["status"] = "Payment Pending"
+
+    # --- Payment events (ACH state changes) ---
+    elif event_type.startswith("payment."):
+        payment = data_obj.get("payment", {})
+        payment_id = payment.get("id")
+        amount_money = payment.get("amount_money", {})
+        p_status = payment.get("status")  # APPROVED/PENDING/COMPLETED/CANCELED/FAILED
+        source_type = payment.get("source_type")  # CARD / BANK_ACCOUNT / EXTERNAL
+        order_id = payment.get("order_id")
+        risk_eval = payment.get("risk_evaluation") or {}
+
+        # Find case by order_id (or invoice through order)
+        case = None
+        if order_id:
+            case = await db.trust_cases.find_one({"payment.order_id": order_id}, {"_id": 0})
+        if case:
+            case_id = case["id"]
+            p = dict(case.get("payment") or {})
+            p["payment_id"] = payment_id
+            p["amount_money"] = amount_money
+            p["source_type"] = source_type
+            p["square_payment_status"] = p_status
+            p["risk_level"] = risk_eval.get("risk_level")
+            p["last_webhook_at"] = now_iso()
+            # Map to internal
+            if source_type == "BANK_ACCOUNT":
+                if p_status == "COMPLETED":
+                    p["status"] = "paid"
+                elif p_status in ("APPROVED", "PENDING"):
+                    p["status"] = "ach_pending"
+                elif p_status in ("FAILED", "CANCELED"):
+                    p["status"] = "failed"
+            else:
+                # Card payments: APPROVED/COMPLETED = paid immediately
+                if p_status == "COMPLETED":
+                    p["status"] = "paid"
+                elif p_status == "FAILED":
+                    p["status"] = "failed"
+            update["payment"] = p
+            if p["status"] == "paid":
+                update["status"] = "Payment Pending"
+
+    # --- Refunds ---
+    elif event_type.startswith("refund."):
+        refund = data_obj.get("refund", {})
+        payment_id = refund.get("payment_id")
+        case = await db.trust_cases.find_one({"payment.payment_id": payment_id}, {"_id": 0})
+        if case:
+            case_id = case["id"]
+            p = dict(case.get("payment") or {})
+            p["refund_initiated"] = True
+            p["refund_id"] = refund.get("id")
+            p["refund_status"] = refund.get("status")
+            p["last_webhook_at"] = now_iso()
+            update["payment"] = p
+
+    if case_id and update:
+        await update_case(case_id, update)
+
+    # --- Auto-unlock final trust when payment is fully paid (card or ACH cleared) ---
+    auto_unlock = (os.environ.get("SQUARE_AUTO_UNLOCK_ON_PAID", "false").lower() == "true")
+    if auto_unlock and case_id:
+        fresh = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+        if fresh and (fresh.get("payment") or {}).get("status") == "paid" and not fresh.get("trust_unlocked") and fresh.get("trust_draft"):
+            try:
+                await update_case(case_id, {
+                    "trust_unlocked": True,
+                    "trust_unlocked_at": now_iso(),
+                    "trust_unlocked_by": "auto-webhook",
+                    "status": "Completed",
+                })
+                branding = await _branding_doc()
+                biz = branding.get("business_name", "Trust Portal")
+                accent = branding.get("accent_color", "#C5A880")
+                primary = branding.get("primary_color", "#1C252E")
+                link = f"{FRONTEND_URL}/portal/trust-final/{case_id}"
+                inner = f"""
+<p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Your final trust is unlocked.</p>
+<p>Thank you for your payment. Your final, clean trust documents are now available to print and download.</p>
+<div style="margin-top:18px;background:#FEF6E0;border:1px solid #F4D58D;border-radius:8px;padding:14px 16px;">
+  <p style="margin:0 0 6px 0;font-family:Georgia,serif;font-size:16px;color:#78350F;">Next step — Notarize</p>
+  <p style="margin:0;color:#1C252E;font-size:14px;line-height:1.5;">Your trust must be printed and notarized to become legally valid.</p>
+</div>
+{_cta(link, "Open your final trust", accent)}
+"""
+                html = _email_shell(biz, primary, accent, inner)
+                await send_email_notification(
+                    fresh.get("client_email"),
+                    f"Your final trust is ready — {biz}", html,
+                )
+            except Exception as e:
+                logger.error(f"Auto-unlock failed: {e}")
+
+    await db.square_events.update_one({"event_id": event_id},
+                                      {"$set": {"processed": True, "processed_at": now_iso()}})
+    return {"status": "ok"}
 
 
 # ---------- BRANDING ----------
