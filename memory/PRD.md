@@ -108,3 +108,17 @@ This is a Resend account restriction, not a code bug. To go live:
 - `POST /api/admin/trust-cases/{id}/doc-requests/{req_id}/mark-fulfilled`
 - Case GETs now include `pending_items: [{kind, doc_type, label, note, step}]`
 
+
+## Updates — 2026-02-20 (Session 6 — AI assistant + Notes/Questions)
+### ✅ Shipped
+- **Notes/Questions box per section** — `NotesQuestionsBox` added to Grantors, Trustee, Successor, Beneficiaries, Assets, Documents. Client types → AI answers inline if confident, otherwise escalates. Past questions/answers/admin replies render as an inline thread.
+- **AI assistant** — `ai_assistant.py` uses Claude Sonnet 4.5 via Emergent LLM key + `emergentintegrations`. System prompt contains plain-English role definitions and scope rules; outputs `CONFIDENCE: CONFIDENT/NOT_CONFIDENT` prefix which backend parses. One retry with 0.6s backoff on transient LLM errors.
+- **Plain-English role definitions** — `RoleDefinition` helper blocks with "What this means / Who this is / Who to put here" rendered on each role step.
+- **SMS (key-gated)** — `sms.py` with Twilio SDK; blank env vars currently. When a question is escalated: `send_admin_sms()` attempts SMS (no-op + `[sms-mock]` log if disabled), then **email fallback** to admin via Resend with the question + admin reply link.
+- **Admin "Client Questions" page** — `/admin/questions` with 4 count cards (Needs reply / AI answered / Replied / All), per-question cards showing AI response + reply textarea. Reply emails the client, flips status to `admin_replied`. Nav link added.
+
+### Testing
+- Iteration 4: **55/55 backend tests pass** (47 regression + 8 new `TestQuestionsAndAI`). No critical or frontend issues. Minor: LLM budget-exceeded transient handled by retry + graceful escalation.
+
+### Environment
+- `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `ADMIN_PHONE_NUMBER` present in `.env` but blank. Fill them in + restart backend to enable real SMS; email fallback stays in place.

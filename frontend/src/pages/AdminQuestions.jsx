@@ -78,7 +78,7 @@ export default function AdminQuestions() {
           className={`bg-white border rounded-xl p-5 text-left transition-all ${filter === "admin_replied" ? "border-green-400 shadow-md" : "border-[#E2E0DA] hover:border-bronze"}`}
           data-testid="filter-replied">
           <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Replied</p>
-          <p className="font-serif text-3xl text-green-700 mt-1">—</p>
+          <p className="font-serif text-3xl text-green-700 mt-1">{data.counts?.admin_replied ?? 0}</p>
         </button>
         <button onClick={() => setFilter("")}
           className={`bg-white border rounded-xl p-5 text-left transition-all ${filter === "" ? "border-navy shadow-md" : "border-[#E2E0DA] hover:border-bronze"}`}

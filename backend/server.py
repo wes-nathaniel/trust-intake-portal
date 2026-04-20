@@ -1180,7 +1180,8 @@ async def admin_list_questions(status: Optional[str] = None, case_id: Optional[s
     # counts
     pending = await db.questions.count_documents({"status": "escalated"})
     ai_answered = await db.questions.count_documents({"status": "ai_answered"})
-    return {"questions": qs, "counts": {"escalated": pending, "ai_answered": ai_answered}}
+    admin_replied = await db.questions.count_documents({"status": "admin_replied"})
+    return {"questions": qs, "counts": {"escalated": pending, "ai_answered": ai_answered, "admin_replied": admin_replied}}
 
 
 @api_router.post("/admin/questions/{qid}/reply")

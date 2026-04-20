@@ -48,32 +48,39 @@ async def answer_question(section: str, question: str, client_name: str = "") ->
             "confident": False,
             "raw": "",
         }
-    try:
-        chat = (
-            LlmChat(api_key=EMERGENT_KEY, session_id="trust-portal", system_message=SYSTEM_PROMPT)
-            .with_model("anthropic", "claude-sonnet-4-5-20250929")
-        )
-        prompt = (
-            f"Section in the intake: {section}\n"
-            f"Client name: {client_name or 'client'}\n"
-            f"Question: {question}"
-        )
-        raw = await chat.send_message(UserMessage(text=prompt))
-        text = (raw or "").strip()
-        confident = False
-        answer = text
-        m = re.match(r"^\s*CONFIDENCE:\s*(CONFIDENT|NOT_CONFIDENT)\s*\n?", text, re.IGNORECASE)
-        if m:
-            confident = m.group(1).upper() == "CONFIDENT"
-            answer = text[m.end():].strip()
-        if not answer:
-            answer = "Let me get that to our team — they'll reply in this same box shortly."
+    import asyncio
+    last_err = None
+    for attempt in range(2):
+        try:
+            chat = (
+                LlmChat(api_key=EMERGENT_KEY, session_id="trust-portal", system_message=SYSTEM_PROMPT)
+                .with_model("anthropic", "claude-sonnet-4-5-20250929")
+            )
+            prompt = (
+                f"Section in the intake: {section}\n"
+                f"Client name: {client_name or 'client'}\n"
+                f"Question: {question}"
+            )
+            raw = await chat.send_message(UserMessage(text=prompt))
+            text = (raw or "").strip()
             confident = False
-        return {"text": answer, "confident": confident, "raw": raw}
-    except Exception as e:
-        logger.error(f"AI assistant failed: {e}")
-        return {
-            "text": "Our team will get back to you on this one shortly.",
-            "confident": False,
-            "raw": "",
-        }
+            answer = text
+            m = re.match(r"^\s*CONFIDENCE:\s*(CONFIDENT|NOT_CONFIDENT)\s*\n?", text, re.IGNORECASE)
+            if m:
+                confident = m.group(1).upper() == "CONFIDENT"
+                answer = text[m.end():].strip()
+            if not answer:
+                answer = "Let me get that to our team — they'll reply in this same box shortly."
+                confident = False
+            return {"text": answer, "confident": confident, "raw": raw}
+        except Exception as e:
+            last_err = e
+            logger.warning(f"AI assistant attempt {attempt + 1} failed: {e}")
+            if attempt == 0:
+                await asyncio.sleep(0.6)
+    logger.error(f"AI assistant failed after retries: {last_err}")
+    return {
+        "text": "Our team will get back to you on this one shortly.",
+        "confident": False,
+        "raw": "",
+    }
