@@ -166,9 +166,6 @@ export default function IntakeWizard() {
             <StepComp trustCase={trustCase} caseId={caseId} reload={reload} />
           </div>
 
-          {/* Help box per section */}
-          <MessageThread caseId={caseId} section={stepKey} title={`Questions about ${STEP_DEFS[stepIdx].label}?`} />
-
           <div className="flex items-center justify-between">
             <button onClick={() => gotoStep(stepIdx - 1)} disabled={stepIdx === 0}
               className="btn-secondary" data-testid="wizard-prev-btn">

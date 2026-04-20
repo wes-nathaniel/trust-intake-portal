@@ -2,6 +2,8 @@ import React, { useState, useEffect } from "react";
 import { Field, Txt, TA, AddressFields, SectionHeader, validateRequired } from "./_shared";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
+import RoleDefinition from "@/components/RoleDefinition";
+import NotesQuestionsBox from "@/components/NotesQuestionsBox";
 
 const REQ = ["full_legal_name", "relationship", "phone", "email"];
 
@@ -34,6 +36,12 @@ export default function TrusteeStep({ caseId, trustCase, reload }) {
       <SectionHeader num={2} total={8} title="Trustee Information"
         subtitle="The trustee will manage the trust's assets. This is often one of the grantors." />
 
+      <RoleDefinition
+        role="Trustee"
+        who_is="The person who manages the trust and follows your instructions."
+        who_to_put="Someone you trust to handle money and property responsibly."
+      />
+
       <div className="space-y-5" data-testid="trustee-form">
         <div className="grid sm:grid-cols-2 gap-4">
           <Field id="t-name" label="Full legal name" required>
@@ -60,6 +68,8 @@ export default function TrusteeStep({ caseId, trustCase, reload }) {
           {saving ? "Saving…" : "Save Trustee"}
         </button>
       </div>
+
+      <NotesQuestionsBox caseId={caseId} section="trustee" />
     </div>
   );
 }

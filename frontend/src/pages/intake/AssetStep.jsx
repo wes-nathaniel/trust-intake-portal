@@ -3,6 +3,7 @@ import { Field, Txt, TA, SectionHeader, validateRequired } from "./_shared";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import { Plus, Trash2, Landmark, Home, Car, Shield, TrendingUp, Briefcase, Cloud, Upload, FileText, Download, ListPlus, FileUp } from "lucide-react";
+import NotesQuestionsBox from "@/components/NotesQuestionsBox";
 
 const TYPES = [
   { v: "bank", l: "Bank Account", icon: Landmark },
@@ -261,6 +262,8 @@ export default function AssetStep({ caseId, trustCase, reload }) {
           <strong>Required:</strong> Please add at least one asset (upload a document or enter manually) to continue.
         </div>
       )}
+
+      <NotesQuestionsBox caseId={caseId} section="assets" />
     </div>
   );
 }

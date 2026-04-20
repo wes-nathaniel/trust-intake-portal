@@ -3,6 +3,8 @@ import { Field, Txt, TA, AddressFields, SectionHeader, maskSSN, displaySSN, vali
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import { Trash2, Plus, Eye, EyeOff } from "lucide-react";
+import RoleDefinition from "@/components/RoleDefinition";
+import NotesQuestionsBox from "@/components/NotesQuestionsBox";
 
 const REQ = ["full_legal_name", "date_of_birth", "ssn", "phone", "email", "marital_status", "citizenship",
              "address.line1", "address.city", "address.state", "address.zip"];
@@ -123,6 +125,12 @@ export default function GrantorStep({ caseId, trustCase, reload }) {
       <SectionHeader num={1} total={8} title="Grantor Information"
         subtitle={trustCase.trust_type === "joint" ? "Please provide details for both grantors (2 required for a joint trust)." : "Please provide grantor details."} />
 
+      <RoleDefinition
+        role="Grantor / Settlor"
+        who_is="The person creating the trust and putting their assets into it."
+        who_to_put="Usually you, the person filling out this form."
+      />
+
       <div className="space-y-4">
         {grantors.map((g, i) =>
           editing === i ? (
@@ -161,6 +169,8 @@ export default function GrantorStep({ caseId, trustCase, reload }) {
           <strong>Required:</strong> Please add {max - grantors.length} more grantor{(max - grantors.length) > 1 ? "s" : ""} to continue.
         </div>
       )}
+
+      <NotesQuestionsBox caseId={caseId} section="grantors" />
     </div>
   );
 }

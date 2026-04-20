@@ -3,6 +3,8 @@ import { Field, Txt, TA, AddressFields, SectionHeader, validateRequired } from "
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import { Plus, Trash2 } from "lucide-react";
+import RoleDefinition from "@/components/RoleDefinition";
+import NotesQuestionsBox from "@/components/NotesQuestionsBox";
 
 const REQ = ["full_legal_name", "date_of_birth", "relationship", "percentage"];
 const empty = () => ({
@@ -110,6 +112,12 @@ export default function BeneficiaryStep({ caseId, trustCase, reload }) {
     <div>
       <SectionHeader num={4} total={8} title="Beneficiaries"
         subtitle="Add at least one primary beneficiary. Percentages should ideally sum to 100%." />
+
+      <RoleDefinition
+        role="Beneficiaries"
+        who_is="The people who will receive money, property, or benefits from the trust."
+        who_to_put="Children, spouse, family members, or anyone you want to receive something."
+      />
       <div className="space-y-4">
         {list.map((b, i) =>
           editing === i ? (
@@ -151,6 +159,8 @@ export default function BeneficiaryStep({ caseId, trustCase, reload }) {
           <strong>Required:</strong> Please add at least one primary beneficiary.
         </div>
       )}
+
+      <NotesQuestionsBox caseId={caseId} section="beneficiaries" />
     </div>
   );
 }

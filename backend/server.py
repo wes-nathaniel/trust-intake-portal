@@ -25,6 +25,8 @@ from starlette.middleware.cors import CORSMiddleware
 import io
 from pdf_export import build_intake_pdf
 import esign
+import sms
+from ai_assistant import answer_question as ai_answer_question
 
 # ---------- CONFIG ----------
 JWT_ALGORITHM = "HS256"
@@ -314,6 +316,13 @@ class InviteReq(BaseModel):
 class AcceptInviteReq(BaseModel):
     token: str
     password: str = Field(min_length=6)
+
+class QuestionCreate(BaseModel):
+    section: str
+    question: str = Field(min_length=1, max_length=2000)
+
+class QuestionReply(BaseModel):
+    reply: str = Field(min_length=1, max_length=4000)
 
 TrustType = Literal["single", "joint"]
 
@@ -1068,6 +1077,156 @@ async def status_get(case_id: str, user: dict = Depends(get_current_user)):
     case = await get_case(case_id, user)
     return {"status": case.get("status"), "updated_at": case.get("updated_at")}
 
+# ---------- CLIENT QUESTIONS / AI ASSISTANT ----------
+SECTION_LABELS = {
+    "grantors": "Grantor / Settlor",
+    "trustee": "Trustee",
+    "successor": "Successor Trustee",
+    "beneficiaries": "Beneficiaries",
+    "assets": "Assets",
+    "ein": "EIN",
+    "documents": "Documents",
+    "review": "Review",
+    "help": "General",
+}
+
+
+@api_router.post("/trust-cases/{case_id}/questions")
+async def post_question(case_id: str, body: QuestionCreate, user: dict = Depends(get_current_user)):
+    case = await get_case(case_id, user)
+    section_label = SECTION_LABELS.get(body.section, body.section.title())
+
+    # Run AI assistant
+    ai_result = await ai_answer_question(section=section_label, question=body.question,
+                                         client_name=user.get("name", ""))
+
+    qid = new_id()
+    now = now_iso()
+    q = {
+        "id": qid,
+        "case_id": case_id,
+        "client_id": user["id"],
+        "client_name": user.get("name", case.get("client_name", "")),
+        "client_email": user.get("email", ""),
+        "section": body.section,
+        "section_label": section_label,
+        "question": body.question,
+        "ai_response": ai_result.get("text"),
+        "ai_confident": bool(ai_result.get("confident")),
+        "admin_reply": None,
+        "admin_replied_at": None,
+        "admin_replied_by": None,
+        "status": "ai_answered" if ai_result.get("confident") else "escalated",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.questions.insert_one(q)
+    q.pop("_id", None)
+
+    # Escalate via SMS (key-gated) + email fallback
+    if not ai_result.get("confident"):
+        admin_link = f"{FRONTEND_URL}/admin/questions"
+        sms_body = (
+            f"[IGC Trust Portal] New question from {q['client_name']} in '{section_label}': "
+            f"\"{body.question[:180]}{'…' if len(body.question) > 180 else ''}\" — Reply: {admin_link}"
+        )
+        sms_sent = sms.send_admin_sms(sms_body)
+        if not sms_sent:
+            # Fallback to email (keeps admin in the loop while SMS is not configured)
+            try:
+                branding = await _branding_doc()
+                biz = branding.get("business_name", "Trust Portal")
+                accent = branding.get("accent_color", "#C5A880")
+                primary = branding.get("primary_color", "#1C252E")
+                inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">New question from {q['client_name']}</p>
+<p style="color:#64748B;margin:0 0 12px 0;">Section: <b>{section_label}</b> · {now[:19].replace('T',' ')}</p>
+<blockquote style="margin:0 0 16px 0;padding:12px 14px;background:#F6F4F0;border-left:3px solid {accent};font-style:italic;">{body.question}</blockquote>
+{_cta(admin_link, "Reply in admin dashboard", accent)}
+"""
+                html = _email_shell(biz, primary, accent, inner)
+                admin_rec = await db.users.find_one({"role": "admin"})
+                if admin_rec:
+                    await send_email_notification(
+                        admin_rec["email"],
+                        f"Client question ({section_label}) — {q['client_name']}",
+                        html,
+                    )
+            except Exception as e:
+                logger.error(f"Escalation email failed: {e}")
+    return q
+
+
+@api_router.get("/trust-cases/{case_id}/questions")
+async def list_questions(case_id: str, section: Optional[str] = None,
+                         user: dict = Depends(get_current_user)):
+    await get_case(case_id, user)
+    flt = {"case_id": case_id}
+    if section:
+        flt["section"] = section
+    qs = await db.questions.find(flt, {"_id": 0}).sort("created_at", 1).to_list(500)
+    return qs
+
+
+@api_router.get("/admin/questions")
+async def admin_list_questions(status: Optional[str] = None, case_id: Optional[str] = None,
+                               _: dict = Depends(require_admin)):
+    flt = {}
+    if status:
+        flt["status"] = status
+    if case_id:
+        flt["case_id"] = case_id
+    qs = await db.questions.find(flt, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # counts
+    pending = await db.questions.count_documents({"status": "escalated"})
+    ai_answered = await db.questions.count_documents({"status": "ai_answered"})
+    return {"questions": qs, "counts": {"escalated": pending, "ai_answered": ai_answered}}
+
+
+@api_router.post("/admin/questions/{qid}/reply")
+async def admin_reply_question(qid: str, body: QuestionReply, admin: dict = Depends(require_admin)):
+    q = await db.questions.find_one({"id": qid}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found")
+    now = now_iso()
+    await db.questions.update_one(
+        {"id": qid},
+        {"$set": {
+            "admin_reply": body.reply,
+            "admin_replied_at": now,
+            "admin_replied_by": admin.get("name") or "Admin",
+            "status": "admin_replied",
+            "updated_at": now,
+        }},
+    )
+    # Email the client with the reply
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        section_label = q.get("section_label") or SECTION_LABELS.get(q.get("section", ""), "your intake")
+        link = f"{FRONTEND_URL}/intake/{q['case_id']}?step={q['section']}"
+        inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Reply from your trust team</p>
+<p style="color:#64748B;margin:0 0 10px 0;">Section: <b>{section_label}</b></p>
+<blockquote style="margin:0 0 10px 0;padding:10px 14px;background:#F6F4F0;border-left:3px solid {accent};font-style:italic;color:#64748B;">{q.get('question')}</blockquote>
+<div style="padding:12px 14px;background:#ffffff;border:1px solid #EBE7DF;border-radius:6px;">{body.reply}</div>
+{_cta(link, "Open your portal", accent)}
+"""
+        html = _email_shell(biz, primary, accent, inner)
+        await send_email_notification(q["client_email"],
+                                      f"{biz} replied to your question",
+                                      html)
+    except Exception as e:
+        logger.error(f"Reply email failed: {e}")
+    q["admin_reply"] = body.reply
+    q["status"] = "admin_replied"
+    q["admin_replied_at"] = now
+    q["admin_replied_by"] = admin.get("name") or "Admin"
+    return q
+
+
 # ---------- ADMIN ----------
 @api_router.get("/admin/trust-cases")
 async def admin_list_cases(
@@ -1610,6 +1769,8 @@ async def startup():
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=3600)
     await db.invites.create_index("token", unique=True)
     await db.invites.create_index("expires_at", expireAfterSeconds=0)
+    await db.questions.create_index([("case_id", 1), ("created_at", 1)])
+    await db.questions.create_index("status")
 
     # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()

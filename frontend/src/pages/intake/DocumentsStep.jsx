@@ -3,6 +3,7 @@ import { SectionHeader } from "./_shared";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import { Upload, FileText, Trash2, Download, CheckCircle2, AlertCircle, ChevronDown, ChevronUp } from "lucide-react";
+import NotesQuestionsBox from "@/components/NotesQuestionsBox";
 
 const REQUIRED_DOC_TYPES = [
   { v: "government_id", l: "Government-issued ID", hint: "Driver's license, passport, or state ID." },
@@ -174,6 +175,8 @@ export default function DocumentsStep({ caseId, trustCase, reload }) {
           <strong>Required:</strong> Please upload both a Government-issued ID and Proof of Address to continue.
         </div>
       )}
+
+      <NotesQuestionsBox caseId={caseId} section="documents" />
     </div>
   );
 }

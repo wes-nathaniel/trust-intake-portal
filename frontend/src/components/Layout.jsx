@@ -39,6 +39,7 @@ export default function Layout({ children }) {
               {user.role === "admin" ? (
                 <>
                   <Link to="/admin" className="text-navy hover:text-bronze transition-colors" data-testid="nav-admin-cases">Cases</Link>
+                  <Link to="/admin/questions" className="text-navy hover:text-bronze transition-colors" data-testid="nav-admin-questions">Questions</Link>
                   <Link to="/admin/branding" className="text-navy hover:text-bronze transition-colors" data-testid="nav-admin-branding">Branding</Link>
                 </>
               ) : (

@@ -575,3 +575,128 @@ class TestDocRequestsAndPending:
         # pending_items should NOT have an 'asset' kind
         kinds = {p["kind"] for p in case.get("pending_items", [])}
         assert "asset" not in kinds
+
+
+# ---------- QUESTIONS / AI ASSISTANT (NEW iteration 4) ----------
+class TestQuestionsAndAI:
+    def _new_case(self, client_session):
+        r = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        assert r.status_code == 200
+        return r.json()["id"]
+
+    def test_post_simple_role_question_returns_ai_confident(self, client_session):
+        cid = self._new_case(client_session)
+        r = client_session.post(
+            f"{API}/trust-cases/{cid}/questions",
+            json={"section": "trustee", "question": "What exactly is a trustee?"},
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["section"] == "trustee"
+        assert data["question"] == "What exactly is a trustee?"
+        assert data.get("ai_response"), "AI response should be populated"
+        # We expect this simple definitional Q to be confident
+        assert data["ai_confident"] is True, f"Expected confident=True, got: {data}"
+        assert data["status"] == "ai_answered"
+        assert data.get("admin_reply") is None
+
+    def test_post_legal_advice_question_escalates(self, client_session):
+        cid = self._new_case(client_session)
+        legal_q = (
+            "If I disinherit my son and leave everything to my daughter, "
+            "what are the tax consequences and can he successfully contest the trust in California?"
+        )
+        r = client_session.post(
+            f"{API}/trust-cases/{cid}/questions",
+            json={"section": "beneficiaries", "question": legal_q},
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["ai_confident"] is False, f"Expected escalation, got: {data}"
+        assert data["status"] == "escalated"
+        assert data.get("ai_response")
+
+    def test_list_questions_filtered_by_section(self, client_session):
+        cid = self._new_case(client_session)
+        client_session.post(f"{API}/trust-cases/{cid}/questions",
+                            json={"section": "grantors", "question": "Who is a grantor?"})
+        client_session.post(f"{API}/trust-cases/{cid}/questions",
+                            json={"section": "trustee", "question": "Who is a trustee?"})
+        r = client_session.get(f"{API}/trust-cases/{cid}/questions",
+                               params={"section": "grantors"})
+        assert r.status_code == 200
+        qs = r.json()
+        assert len(qs) >= 1
+        assert all(q["section"] == "grantors" for q in qs)
+
+    def test_admin_questions_listing_and_counts(self, admin_session, client_session):
+        cid = self._new_case(client_session)
+        # create one escalation
+        legal_q = "Can you give me legal advice on contesting this specific trust?"
+        client_session.post(f"{API}/trust-cases/{cid}/questions",
+                            json={"section": "beneficiaries", "question": legal_q})
+        # one confident
+        client_session.post(f"{API}/trust-cases/{cid}/questions",
+                            json={"section": "trustee", "question": "What is a trustee?"})
+
+        r = admin_session.get(f"{API}/admin/questions")
+        assert r.status_code == 200
+        data = r.json()
+        assert "questions" in data and "counts" in data
+        assert "escalated" in data["counts"]
+        assert "ai_answered" in data["counts"]
+
+        r2 = admin_session.get(f"{API}/admin/questions", params={"status": "escalated"})
+        assert r2.status_code == 200
+        assert all(q["status"] == "escalated" for q in r2.json()["questions"])
+
+        r3 = admin_session.get(f"{API}/admin/questions", params={"status": "ai_answered"})
+        assert r3.status_code == 200
+        assert all(q["status"] == "ai_answered" for q in r3.json()["questions"])
+
+    def test_admin_reply_updates_status_and_returns_to_client(self, admin_session, client_session):
+        cid = self._new_case(client_session)
+        post = client_session.post(
+            f"{API}/trust-cases/{cid}/questions",
+            json={"section": "beneficiaries",
+                  "question": "Specific case advice please about my situation"},
+        )
+        qid = post.json()["id"]
+
+        reply_text = "Thanks — our attorney will follow up directly within 1 business day."
+        r = admin_session.post(f"{API}/admin/questions/{qid}/reply",
+                               json={"reply": reply_text})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "admin_replied"
+        assert body["admin_reply"] == reply_text
+
+        # filter admin_replied
+        rfilter = admin_session.get(f"{API}/admin/questions",
+                                    params={"status": "admin_replied"})
+        assert rfilter.status_code == 200
+        assert any(q["id"] == qid for q in rfilter.json()["questions"])
+
+        # client sees the admin_reply in their own listing
+        r3 = client_session.get(f"{API}/trust-cases/{cid}/questions",
+                                params={"section": "beneficiaries"})
+        assert r3.status_code == 200
+        match = next((q for q in r3.json() if q["id"] == qid), None)
+        assert match is not None
+        assert match["admin_reply"] == reply_text
+        assert match["status"] == "admin_replied"
+
+    def test_admin_reply_unknown_question_404(self, admin_session):
+        r = admin_session.post(f"{API}/admin/questions/nonexistent-id/reply",
+                               json={"reply": "hi"})
+        assert r.status_code == 404
+
+    def test_non_admin_cannot_list_admin_questions(self, client_session):
+        r = client_session.get(f"{API}/admin/questions")
+        assert r.status_code == 403
+
+    def test_question_validation_empty(self, client_session):
+        cid = self._new_case(client_session)
+        r = client_session.post(f"{API}/trust-cases/{cid}/questions",
+                                json={"section": "trustee", "question": ""})
+        assert r.status_code in (400, 422)

@@ -13,6 +13,7 @@ import AdminDashboard from "@/pages/AdminDashboard";
 import AdminCaseDetail from "@/pages/AdminCaseDetail";
 import BrandingPage from "@/pages/BrandingPage";
 import AcceptInvite from "@/pages/AcceptInvite";
+import AdminQuestions from "@/pages/AdminQuestions";
 import ProtectedRoute from "@/components/ProtectedRoute";
 
 function Root() {
@@ -39,6 +40,7 @@ function App() {
             <Route path="/intake/:caseId" element={<ProtectedRoute><IntakeWizard /></ProtectedRoute>} />
 
             <Route path="/admin" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
+            <Route path="/admin/questions" element={<ProtectedRoute adminOnly><AdminQuestions /></ProtectedRoute>} />
             <Route path="/admin/cases/:caseId" element={<ProtectedRoute adminOnly><AdminCaseDetail /></ProtectedRoute>} />
             <Route path="/admin/branding" element={<ProtectedRoute adminOnly><BrandingPage /></ProtectedRoute>} />
 

@@ -3,6 +3,8 @@ import { Field, Txt, TA, AddressFields, SectionHeader, validateRequired } from "
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import { Plus, Trash2 } from "lucide-react";
+import RoleDefinition from "@/components/RoleDefinition";
+import NotesQuestionsBox from "@/components/NotesQuestionsBox";
 
 const REQ = ["full_legal_name", "relationship", "phone", "email"];
 const empty = () => ({ full_legal_name: "", relationship: "", phone: "", email: "",
@@ -76,6 +78,12 @@ export default function SuccessorStep({ caseId, trustCase, reload }) {
     <div>
       <SectionHeader num={3} total={8} title="Successor Trustees"
         subtitle="At least one successor trustee is required. You may add up to 3, listed in order of succession." />
+
+      <RoleDefinition
+        role="Successor Trustee"
+        who_is="The backup Trustee who takes over if the main Trustee can't serve."
+        who_to_put="A reliable person who can step in later."
+      />
       <div className="space-y-4">
         {list.map((t, i) =>
           editing === i ? (
@@ -110,6 +118,8 @@ export default function SuccessorStep({ caseId, trustCase, reload }) {
           <strong>Required:</strong> Please add at least one successor trustee to continue.
         </div>
       )}
+
+      <NotesQuestionsBox caseId={caseId} section="successor" />
     </div>
   );
 }

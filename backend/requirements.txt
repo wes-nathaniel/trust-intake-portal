@@ -28,3 +28,4 @@ emergentintegrations==0.1.0
 resend>=2.0.0
 reportlab>=4.4.0
 dropbox-sign>=1.10.0
+twilio>=9.0.0
