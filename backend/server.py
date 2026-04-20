@@ -2243,7 +2243,9 @@ async def square_webhook(request: Request):
             logger.warning("Square webhook signature failed")
             raise HTTPException(status_code=401, detail="Bad signature")
     else:
-        logger.warning("Square webhook received but SQUARE_WEBHOOK_SIGNATURE_KEY is unset — accepting unverified (dev only).")
+        # Signature key not yet configured (user hasn't pasted it into .env after registering
+        # the webhook in Square Dashboard). Log loudly but accept so the registration flow works.
+        logger.warning("Square webhook received but SQUARE_WEBHOOK_SIGNATURE_KEY is unset — accepting unverified. Set the key to enable verification.")
 
     import json as _json
     try:

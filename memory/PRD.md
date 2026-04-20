@@ -1,124 +1,117 @@
 # Trust Intake & Client Portal — PRD
 
 ## Problem Statement
-Full Trust Intake & Client Portal web app with strict section-by-section (HARD STOP) validation, single/joint trust support, document uploads, EIN workflow, client↔admin messaging, status tracking, admin dashboard, and branding customization.
+Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facing 8-step intake wizard, admin dashboard, secure page-by-page trust draft preview (watermarked, anti-copy/print), Square-powered payment workflow with ACH tracking, final trust unlock with notarization instructions, legal disclosures + acknowledgments, business asset SOS advisory, EIN admin-filing, branding, and messaging.
 
 ## Architecture
-- **Backend**: FastAPI + MongoDB (motor). JWT auth (httpOnly cookies), bcrypt hashing, brute-force lockout using X-Forwarded-For. Emergent object storage for file uploads. Resend email notifications (mocked when key not set).
-- **Frontend**: React (CRA + craco) + Tailwind + shadcn/ui. Cormorant Garamond + IBM Plex Sans. Deep Slate Navy / Warm Sand / Legacy Bronze palette.
+- **Backend**: FastAPI + MongoDB (motor). JWT auth (httpOnly cookies), bcrypt, brute-force lockout.
+- **Frontend**: React (CRA + craco) + Tailwind + shadcn/ui. Cormorant Garamond + IBM Plex Sans.
+- **3rd-party**: Resend (email), Emergent LLM key (AI Q&A — Claude Sonnet), Dropbox Sign (dormant), Square (invoices + webhooks — live production).
+- **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
 ## User Personas
-- **Client (age 50+)**: completes intake wizard, uploads docs, messages the firm, tracks status.
-- **Admin (estate attorney/paralegal)**: reviews cases, updates status, adds notes, uploads EIN letter, sends messages, customizes branding.
+- **Client**: 50+, completes intake, reviews watermarked trust draft, pays via Square, downloads/prints notarizable final trust.
+- **Admin** (Iron Gate staff): invites clients, reviews cases, uploads EIN letter (IRS CP-575), uploads trust draft PDF, creates Square invoices, confirms payment, unlocks final trust.
 
-## Core Requirements (Done)
-- Single/Joint Trust selector
-- Grantor intake (1 or 2 grantors, required + optional fields, masked SSN)
-- Trustee intake (required)
-- Successor Trustees (up to 3, at least 1 required)
-- Beneficiaries (primary + contingent, percentage)
-- Assets (7 categories with category-specific required fields)
-- EIN workflow with auth checkbox + masked SSN; admin can upload EIN letter; client can download
-- Documents: ID + Proof of Address required; deeds, titles, statements, etc. optional
-- Messaging per section + general thread
-- 7-stage status tracker
-- Admin dashboard: list, filters, search, status, notes, EIN request, messaging
-- Branding (business name, colors, logo URL, header image URL)
-- HARD STOP: step navigation locks future steps until prior required sections are complete
+## Core Requirements — ✅ Done
+- 8-step intake wizard with HARD STOP validation
+- Trust Name required field on case creation
+- Admin-only EIN filing (client only authorizes — no SSN required)
+- Admin EIN letter upload (RBAC enforced — clients get 403)
+- Asset intake (manual or document-upload mode)
+- Business Asset advisory (Secretary of State filing notice) on Asset step, Review step, Trust preview, emails, and PDF
+- Legal disclosures + checkboxes: (1) military-legal disclosure, (2) state-laws-vary, (3) notarization required, (4) business-SOS (conditional)
+- Review Completed button — notifies admin when client is satisfied
+- Schedule Zoom Meeting button — uses https://us06web.zoom.us/j/7194164805?pwd=OTkyQlQ2QXNwWm5xeTBjbDkxWklJUT09
+- **Secure draft trust preview**:
+  - Admin uploads draft PDF → converted to watermarked low-res PNGs per page
+  - Client views page-by-page with anti-copy / anti-print / anti-screenshot deterrents (dim on blur, disable Ctrl+P/S/C/U, disable right-click/drag, cache-control no-store, X-Frame-Options, overlay watermark, visibility-change dim)
+  - Watermark: "IGC — SAMPLE ONLY — NOT VALID UNTIL PAID" (diagonal, tiled)
+- **Square payment integration (PRODUCTION)**:
+  - Admin creates invoice with amount + due date → Square sends hosted payment link via email
+  - Invoice + Payment webhooks (`/api/webhooks/square`) update payment.status: invoice_sent → ach_pending → paid
+  - Distinguishes CARD vs BANK_ACCOUNT (ACH) payments
+  - Manual override: "Mark payment received"
+  - Optional auto-unlock via `SQUARE_AUTO_UNLOCK_ON_PAID=true`
+  - Signature verification when `SQUARE_WEBHOOK_SIGNATURE_KEY` is set
+- **Unlock Final Trust** — admin action that:
+  - Flips `trust_unlocked=true`, status=Completed
+  - Enables clean-PDF download + print via `/api/trust-cases/{id}/trust-final`
+  - Sends notarization instruction email
+- **Admin status flow**: Intake Started → Intake In Progress → Waiting on Documents → In Review → Drafting Trust → **Ready for Review** → **Payment Pending** → Ready for Signing → Completed
+- **Send Review Reminder** admin action
+- **Document upload by client** triggers admin email notification
+- Branding footer: "Prepared by Iron Gate Consulting · Reviewed through military legal benefits" on portal, emails, PDF cover, PDF footer on every page
 
-## Implementation Status (2026-02-18)
-- ✅ Backend: auth, trust-cases CRUD, documents upload/download via Emergent storage, messaging, admin endpoints, branding
-- ✅ Frontend: login/register, client portal, 8-step wizard with HARD STOP, admin dashboard + case detail, branding page
-- ✅ Admin seeded: support@igcfirm.com / Wllorenzo03!
-- ✅ Brute-force lockout via X-Forwarded-For
+## Prior Work (earlier sessions)
+- JWT auth, admin seeding, brute-force lockout
+- Client invites / magic links / resend invite
+- Resend email: welcome, status-change, completion (with PDF + referral block)
+- PDF generator with SSN masking, disclosures, business advisory, acknowledgments
+- Branded messaging: section threads + general thread + admin "Client Questions" page
+- AI assistant Q&A with confidence gating + admin escalation
+- Doc-requests workflow (required/optional/requested labels, pending-items)
+- Admin notifications bell, pending-invite banner
 
-## Backlog (Next Phase)
-- **P0**: Provide real Resend API key to enable email notifications (currently mocked/logged)
-- **P1**: Email templates branded with firm colors
-- **P1**: Server-side beneficiary percentage sum validation (must equal 100)
-- **P1**: PDF export of completed intake for client records
-- **P2**: Signed download URLs with expiry
-- **P2**: 2FA for admin accounts
-- **P2**: Multi-admin roles (paralegal vs attorney)
-- **P2**: Industry-template clones (real estate intake, business formation intake)
-
-## Endpoints Summary
-See `/app/memory/test_credentials.md` and `/app/backend/server.py`.
-
-## Updates — 2026-02-18 (later)
-- ✅ Branded welcome email (HTML with navy/bronze palette) sent to client on case creation
-- ✅ Admin notification email on new case
-- ✅ Server-side beneficiary percentage validation (cannot exceed 100%)
-- ✅ PDF export (reportlab) — branded summary with masked SSNs; endpoints: `GET /api/trust-cases/{id}/export.pdf`
-- ✅ PDF auto-emailed to client (as attachment) when admin sets status to **Completed**
-- ✅ Download buttons on Client Portal, Admin Case Detail, and the wizard Review step
-- ✅ Resend API key configured
-
-## Resend — Important Note
-Resend returned: *"You can only send testing emails to your own email address (wes@igcfirm.com). To send emails to other recipients, please verify a domain at resend.com/domains, and change the `from` address to an email using this domain."*
-
-This is a Resend account restriction, not a code bug. To go live:
-1. Go to https://resend.com/domains → Add Domain → add `igcfirm.com` → add the DNS records shown
-2. Wait a few minutes for DNS verification
-3. Update `SENDER_EMAIL` in `/app/backend/.env` to something like `noreply@igcfirm.com`
-4. `sudo supervisorctl restart backend`
-
-## Updates — 2026-02-18 (Session 3 — build-to-completion)
+## Implementation Status (2026-04-20, Session 7 — Iron Gate Full Package)
 
 ### ✅ Shipped
-- **Admin-initiated client invite** — `POST /api/admin/invite-client`, `GET /api/auth/invite-info`, `POST /api/auth/accept-invite`. Admin dashboard has "Invite client" button → dialog → branded magic-link email → `/accept-invite?token=…` page → set password → auto-login → land on intake wizard.
-- **Progress-status emails** — every admin status change sends a branded email to the client with the new status and copy explaining what it means (incl. "Waiting on Documents", "In Review", "Drafting Trust", "Ready for Signing", "Completed").
-- **Referral block** — the completion email now has "Your family deserves the same peace of mind" block with a unique referral link (`/register?ref=<case-prefix>`).
-- **E-sign integration (code complete, key-gated)** — Dropbox Sign via `dropbox-sign` SDK. Endpoints: `POST /admin/trust-cases/{id}/send-for-signing`, `GET /admin/trust-cases/{id}/signature-status`, `GET /admin/trust-cases/{id}/download-signed`, `GET /trust-cases/{id}/download-signed` (client side). UI: "E-Signature" section on AdminCaseDetail with Send-for-Signing dialog, refresh, and download. Client portal shows "Signed Trust" download button when signed.
-- **E-sign intentionally disabled** — `DROPBOX_SIGN_API_KEY` blank in `.env`; endpoints return 503 with clean setup message. Flip this by pasting a key and restarting backend.
+- Trust Name on all flows (create + update + EIN step + Review + PDF + emails)
+- Admin-only EIN (client only authorizes)
+- Acknowledgments API + persisted on case
+- Secure draft preview (`trust_preview.py`) — page-by-page PNG with watermark, low DPI
+- Anti-copy / anti-print / dim-on-blur / disabled shortcuts on `/portal/trust-preview/:id`
+- Unlock Final Trust action + `/portal/trust-final/:id` clean download
+- Square integration (`square_service.py`): `create_invoice` + `get_invoice` + `cancel_invoice` + `get_payment` + `verify_webhook_signature`
+- Admin UI: "Create Square invoice", "Refresh status", "Mark payment received (manual)"
+- Client UI: payment banner on portal + preview with Square pay link
+- `/api/webhooks/square` handling invoice.* and payment.* and refund.* events; idempotent via `square_events` collection
+- Schedule Zoom Meeting button on Review + Trust Preview
+- Document-upload admin notification email
+- Send Review Reminder admin action
+- Two new statuses: "Ready for Review", "Payment Pending"
+- Footer + PDF + email templates now include "Prepared by Iron Gate Consulting · Reviewed through military legal benefits" + multi-paragraph legal disclaimer
 
 ### Testing
-- Iteration 2: 39/39 backend tests pass. Brute-force lockout (iteration 1 issue) now passes. All new flows verified.
+- Iteration 5: **90/90 backend tests pass** (55 regression + 35 new Phase 1-5 coverage). Minor low-priority items logged (422 vs 400 on amount validation; webhook signature enforcement policy; filename-extension PDF check). No critical or blocker issues.
 
-### To activate e-sign later
-1. Get key from https://sign.dropbox.com → Settings → API → Generate key
-2. Set `DROPBOX_SIGN_API_KEY="..."` in `/app/backend/.env`
-3. `sudo supervisorctl restart backend`
-4. Flip test mode to production when ready with `DROPBOX_SIGN_TEST_MODE="false"`
+### Environment Variables (new)
+- `SQUARE_APPLICATION_ID`, `SQUARE_ACCESS_TOKEN`, `SQUARE_LOCATION_ID` — set (production)
+- `SQUARE_ENVIRONMENT=production`
+- `SQUARE_WEBHOOK_SIGNATURE_KEY` — **blank; user will set after registering webhook in Square Dashboard**
+- `SQUARE_AUTO_UNLOCK_ON_PAID=false` — flip to `true` if they want automatic unlock when payment clears
 
-## Updates — 2026-02-19 (Session 4)
-### ✅ Admin inbox + Resend invite
-- **Admin notifications bell** — new `GET /api/admin/notifications` returns unread messages grouped by case (limit 50, 30s polling). Layout header shows a bell icon with red unread-count badge + popover listing groups (client name/email, trust type/status, latest message preview, time-ago). Click a group → navigates to admin case detail; messages become read on load.
-- **Pending-invite banner + Resend invite** — `admin_get_case` now returns `pending_invite: {email, expires_at, created_at}` when the case was invited but the client hasn't accepted. AdminCaseDetail shows an amber "Invitation pending acceptance" banner with a one-click "Resend invite" button → `POST /api/admin/trust-cases/{id}/resend-invite` invalidates old tokens, creates a new one, resends the branded invite email.
+### User next steps (required to activate payment)
+1. Register webhook URL in Square Dashboard → Developer → Webhooks:
+   - URL: `https://trust-intake-portal.preview.emergentagent.com/api/webhooks/square`
+   - Events: `invoice.created`, `invoice.updated`, `invoice.payment_made`, `invoice.scheduled_charge_failed`, `payment.created`, `payment.updated`, `refund.created`, `refund.updated`
+2. Copy the **Signature Key** Square generates
+3. Paste into `/app/backend/.env` as `SQUARE_WEBHOOK_SIGNATURE_KEY="<key>"` and restart backend
+4. (Optional) set `SQUARE_AUTO_UNLOCK_ON_PAID=true` for hands-free unlock after ACH clears
 
-## Updates — 2026-02-19 (Session 5 — workflow alignment)
-### ✅ Fixed issues raised by user
-- **Status ≠ reality** → `pending_items` now computed server-side (required-doc-missing + open admin requests) and attached to every case read (client & admin). Admin case detail shows a "Client-facing outstanding items" summary right under the status selector.
-- **Generic 'Waiting on Documents' email** → `_status_change_email_html` now accepts `pending_items`; when status is set to "Waiting on Documents", the email lists **exactly which documents are still needed** (label + optional note) in a yellow callout and the CTA deep-links to `/intake/{id}?step=documents`.
-- **Email link looping back to Step 1** → `IntakeWizard` now reads `useSearchParams('step')` and jumps straight to the requested step (respects HARD STOP; if prior steps aren't complete it remains at the earliest incomplete step by design).
-- **Optional uploads looked required** → `DocumentsStep` rewritten with clear "Required" and collapsible "Optional uploads" sections; each upload shows a colored tag (Required / Optional / Requested by your team) and a green check when filled.
-- **Admin had no way to request specific docs** → new `POST /api/admin/trust-cases/{id}/doc-requests`, `DELETE …/doc-requests/{req_id}`, `POST …/mark-fulfilled`. Auto-fulfill when client uploads a matching `doc_type`. New admin UI component `DocRequestsPanel` with type dropdown, optional custom label, note to client, per-row "mark received" and "cancel". Creating a request sends a branded "Document requested" email to the client.
-- **Assets should be document-based** → `AssetStep` redesigned with a mode toggle:
-  - **Upload documents** (default): select type (Bank Statement / Deed / Title / Insurance Policy / Business Document), upload; admin reviews and extracts. Step-complete when any such doc exists.
-  - **Enter manually**: original form preserved.
-  - `isStepComplete('assets')` now true if (manual asset list ≥ 1) OR (at least one asset-category doc uploaded).
-- **Client portal "Action required" card** → top of each case row with `pending_items.length`, bullet list (label + note), and a primary "Upload now" button that deep-links to Documents step.
+## Backlog
+- P2: Dropbox Sign e-sign activation (pending user-provided key)
+- P2: Twilio SMS escalation (explicitly skipped by user)
+- P3: Server-side magic-byte check on trust-draft uploads
+- P3: Cache rendered preview PNGs (currently re-rendered on every page request)
 
-### Testing
-- iteration_3: **47/47 backend tests pass** (39 regression + 8 new for doc-requests/pending-items). One critical runtime issue (missing `AlertTriangle` import) caught and auto-fixed by testing agent.
+## Endpoints Summary (new in Session 7)
+- `POST /api/trust-cases` — now accepts `trust_name`
+- `PUT /api/trust-cases/{id}/trust-name`
+- `PUT /api/trust-cases/{id}/acknowledgments`
+- `POST /api/admin/trust-cases/{id}/trust-draft` (admin uploads PDF)
+- `GET /api/trust-cases/{id}/trust-preview/meta`
+- `GET /api/trust-cases/{id}/trust-preview/page/{n}.png`
+- `GET /api/admin/trust-cases/{id}/trust-draft/raw`
+- `POST /api/admin/trust-cases/{id}/unlock-final`
+- `GET /api/trust-cases/{id}/trust-final`
+- `POST /api/admin/trust-cases/{id}/send-review-reminder`
+- `POST /api/admin/trust-cases/{id}/invoice`
+- `GET  /api/admin/trust-cases/{id}/invoice`
+- `POST /api/admin/trust-cases/{id}/mark-payment-received`
+- `GET  /api/trust-cases/{id}/payment-status`
+- `GET  /api/admin/square/health`
+- `POST /api/webhooks/square`
 
-### Endpoints added
-- `POST /api/admin/trust-cases/{id}/doc-requests`
-- `DELETE /api/admin/trust-cases/{id}/doc-requests/{req_id}`
-- `POST /api/admin/trust-cases/{id}/doc-requests/{req_id}/mark-fulfilled`
-- Case GETs now include `pending_items: [{kind, doc_type, label, note, step}]`
-
-
-## Updates — 2026-02-20 (Session 6 — AI assistant + Notes/Questions)
-### ✅ Shipped
-- **Notes/Questions box per section** — `NotesQuestionsBox` added to Grantors, Trustee, Successor, Beneficiaries, Assets, Documents. Client types → AI answers inline if confident, otherwise escalates. Past questions/answers/admin replies render as an inline thread.
-- **AI assistant** — `ai_assistant.py` uses Claude Sonnet 4.5 via Emergent LLM key + `emergentintegrations`. System prompt contains plain-English role definitions and scope rules; outputs `CONFIDENCE: CONFIDENT/NOT_CONFIDENT` prefix which backend parses. One retry with 0.6s backoff on transient LLM errors.
-- **Plain-English role definitions** — `RoleDefinition` helper blocks with "What this means / Who this is / Who to put here" rendered on each role step.
-- **SMS (key-gated)** — `sms.py` with Twilio SDK; blank env vars currently. When a question is escalated: `send_admin_sms()` attempts SMS (no-op + `[sms-mock]` log if disabled), then **email fallback** to admin via Resend with the question + admin reply link.
-- **Admin "Client Questions" page** — `/admin/questions` with 4 count cards (Needs reply / AI answered / Replied / All), per-question cards showing AI response + reply textarea. Reply emails the client, flips status to `admin_replied`. Nav link added.
-
-### Testing
-- Iteration 4: **55/55 backend tests pass** (47 regression + 8 new `TestQuestionsAndAI`). No critical or frontend issues. Minor: LLM budget-exceeded transient handled by retry + graceful escalation.
-
-### Environment
-- `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `ADMIN_PHONE_NUMBER` present in `.env` but blank. Fill them in + restart backend to enable real SMS; email fallback stays in place.
+## Credentials
+See `/app/memory/test_credentials.md` — admin: support@igcfirm.com / Wllorenzo03!
