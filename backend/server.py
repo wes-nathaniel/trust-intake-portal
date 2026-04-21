@@ -2429,7 +2429,11 @@ app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL],
+    allow_origins=[
+        FRONTEND_URL,
+        "https://trust.igcfirm.com",
+        "https://trust-intake-portal.preview.emergentagent.com",  # keep preview working for QA
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
