@@ -12,7 +12,7 @@ import SendForSigningDialog from "@/components/SendForSigningDialog";
 import DocRequestsPanel from "@/components/DocRequestsPanel";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
-                  "Drafting Trust", "Ready for Signing", "Completed"];
+                  "Drafting Trust", "Ready for Payment", "Completed"];
 
 function Section({ title, children }) {
   return (

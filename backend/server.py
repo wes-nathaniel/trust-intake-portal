@@ -27,8 +27,39 @@ from pdf_export import build_intake_pdf
 import esign
 import sms
 from ai_assistant import answer_question as ai_answer_question
-from trust_preview import pdf_bytes_to_preview_pages, page_count as pdf_page_count
+from trust_preview import pdf_bytes_to_preview_pages, pdf_bytes_to_preview_page, page_count as pdf_page_count
 import square_service
+from functools import lru_cache
+import threading
+
+# In-process preview page cache — keyed by (draft_storage_path, page_index) → JPEG bytes
+# Small bounded cache so a single trust draft doesn't have to re-render every click.
+_preview_cache: dict = {}
+_preview_cache_order: list = []
+_preview_cache_lock = threading.Lock()
+_PREVIEW_CACHE_MAX = 200  # ~20MB with ~100KB JPEGs
+
+def _cache_get(key):
+    with _preview_cache_lock:
+        return _preview_cache.get(key)
+
+def _cache_put(key, value):
+    with _preview_cache_lock:
+        if key in _preview_cache:
+            return
+        _preview_cache[key] = value
+        _preview_cache_order.append(key)
+        while len(_preview_cache_order) > _PREVIEW_CACHE_MAX:
+            old = _preview_cache_order.pop(0)
+            _preview_cache.pop(old, None)
+
+def _cache_bust_prefix(prefix: str):
+    with _preview_cache_lock:
+        bad = [k for k in _preview_cache_order if k[0] == prefix]
+        for k in bad:
+            _preview_cache.pop(k, None)
+            try: _preview_cache_order.remove(k)
+            except ValueError: pass
 
 # ---------- CONFIG ----------
 JWT_ALGORITHM = "HS256"
@@ -235,9 +266,7 @@ def _status_change_email_html(business, accent, primary, client_name, status, ca
         "Waiting on Documents": "We're waiting on a few documents from you to move forward. Please sign in to upload them.",
         "In Review": "Your intake is now under attorney review. No action is required from you at this time.",
         "Drafting Trust": "Our team is now drafting your trust documents. We'll reach out if we need anything.",
-        "Ready for Review": "Your draft trust is ready for review in the secure portal. Please read through it page-by-page and acknowledge the disclosures when done.",
-        "Payment Pending": "We've sent you an invoice for your trust. Once payment is received and cleared, we'll unlock your final trust documents.",
-        "Ready for Signing": "Your trust documents are ready for signing. Please review and sign at your earliest convenience.",
+        "Ready for Payment": "Your draft trust is ready. When payment is received, your final trust will be unlocked for printing and notarization.",
         "Completed": "Your trust is now complete. A PDF summary is attached in a separate email.",
     }.get(status, f"Your case status has been updated to: {status}.")
 
@@ -420,9 +449,7 @@ STATUSES = [
     "Waiting on Documents",
     "In Review",
     "Drafting Trust",
-    "Ready for Review",
-    "Payment Pending",
-    "Ready for Signing",
+    "Ready for Payment",
     "Completed",
 ]
 
@@ -945,9 +972,13 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
         current[k] = bool(v)
     updates = {"acknowledgments": current}
 
-    # If client marks review completed, notify admin
+    # If client marks review completed, flip case to "Ready for Payment" + notify admin (email + SMS)
     was_review_ack = bool((case.get("acknowledgments") or {}).get("review_completed_ack"))
     now_review_ack = bool(current.get("review_completed_ack"))
+
+    if now_review_ack and not was_review_ack and user.get("role") != "admin":
+        updates["status"] = "Ready for Payment"
+
     await update_case(case_id, updates)
 
     if now_review_ack and not was_review_ack and user.get("role") != "admin":
@@ -960,21 +991,74 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
             if admin_rec:
                 link = f"{FRONTEND_URL}/admin/cases/{case_id}"
                 inner = f"""
-<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Client has completed trust review</p>
-<p><b>{case.get('client_name') or case.get('client_email')}</b> has reviewed their trust and is ready for payment.</p>
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Client completed trust review — Ready for Payment</p>
+<p><b>{case.get('client_name') or case.get('client_email')}</b> has reviewed their trust. Case status is now <b>Ready for Payment</b>.</p>
 <p>Case #{case_id[:8].upper()} · {case.get('trust_name') or ''}</p>
-{_cta(link, "Open case", accent)}
+{_cta(link, "Create invoice", accent)}
 """
                 html = _email_shell(biz, primary, accent, inner)
                 await send_email_notification(
                     admin_rec["email"],
-                    f"Ready for payment — {case.get('client_name') or case.get('client_email')}",
+                    f"Ready for Payment — {case.get('client_name') or case.get('client_email')}",
                     html,
                 )
         except Exception as e:
             logger.error(f"Review-completed admin email failed: {e}")
 
+        # --- SMS to admin ---
+        try:
+            sms.send_admin_sms(
+                f"IGC: {case.get('client_name') or case.get('client_email')} completed review. "
+                f"Case #{case_id[:8].upper()} is Ready for Payment."
+            )
+        except Exception as e:
+            logger.error(f"Review-completed SMS failed: {e}")
+
     return current
+
+
+class ScheduleCallReq(BaseModel):
+    note: Optional[str] = None
+
+
+@api_router.post("/trust-cases/{case_id}/schedule-call")
+async def client_schedule_call(case_id: str, body: ScheduleCallReq, user: dict = Depends(get_current_user)):
+    case = await get_case(case_id, user)
+    stamp = now_iso()
+    await update_case(case_id, {"call_requested_at": stamp, "call_requested_note": (body.note or "")[:500]})
+
+    # SMS admin
+    try:
+        sms.send_admin_sms(
+            f"IGC: {case.get('client_name') or case.get('client_email')} requested a call. "
+            f"Case #{case_id[:8].upper()}. Call them back from a 954 number within 10 minutes."
+        )
+    except Exception as e:
+        logger.error(f"Schedule-call SMS failed: {e}")
+
+    # Email admin
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        admin_rec = await db.users.find_one({"role": "admin"})
+        if admin_rec:
+            link = f"{FRONTEND_URL}/admin/cases/{case_id}"
+            inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Client requested a call</p>
+<p><b>{case.get('client_name') or case.get('client_email')}</b> is waiting for a callback on case #{case_id[:8].upper()}.</p>
+<p style="color:#64748B;">Note: {body.note or '(no note)'}</p>
+{_cta(link, "Open case", accent)}
+"""
+            html = _email_shell(biz, primary, accent, inner)
+            await send_email_notification(admin_rec["email"],
+                                          f"Call requested — {case.get('client_name') or case.get('client_email')}",
+                                          html)
+    except Exception as e:
+        logger.error(f"Schedule-call email failed: {e}")
+
+    return {"ok": True, "message": "Thank you. A team member will call you from a 954 number within 10 minutes."}
 
 # --- Documents ---
 REQUIRED_DOC_TYPES = {"government_id", "proof_of_address"}
@@ -1513,8 +1597,15 @@ async def admin_upload_trust_draft(case_id: str,
         "uploaded_at": now_iso(),
         "version": int((case.get("trust_draft") or {}).get("version", 0)) + 1,
     }
-    updates = {"trust_draft": draft, "status": "Ready for Review"}
+    updates = {"trust_draft": draft, "status": "Drafting Trust"}
     await update_case(case_id, updates)
+    # Bust any cached pages from a previous draft version
+    try:
+        old_path = (case.get("trust_draft") or {}).get("storage_path")
+        if old_path:
+            _cache_bust_prefix(old_path)
+    except Exception:
+        pass
 
     # Notify client: trust ready for review
     try:
@@ -1572,28 +1663,29 @@ async def trust_preview_page(case_id: str, page: int, user: dict = Depends(get_c
     total = int(draft.get("pages", 0))
     if page < 1 or page > total:
         raise HTTPException(status_code=404, detail="Page out of range")
-    # Always render with watermark unless the trust is unlocked AND user is admin OR client who paid.
-    # Even admins get the watermarked preview here — use `/admin/.../trust-draft/raw` for clean PDF.
-    try:
-        pdf_bytes, _ = get_object(draft["storage_path"])
-        pages = pdf_bytes_to_preview_pages(pdf_bytes)
-        img_bytes = pages[page - 1]
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to render preview: {e}")
+    storage_path = draft["storage_path"]
+    cache_key = (storage_path, page)
+    cached = _cache_get(cache_key)
+    if cached is None:
+        try:
+            pdf_bytes, _ct = get_object(storage_path)
+            img_bytes = pdf_bytes_to_preview_page(pdf_bytes, page - 1, fmt="JPEG")
+            _cache_put(cache_key, img_bytes)
+            cached = img_bytes
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to render preview: {e}")
 
     headers = {
-        # Anti-caching so screenshots are not persisted
         "Cache-Control": "private, no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
         "Expires": "0",
-        # Do not allow embedding outside our app
         "X-Frame-Options": "SAMEORIGIN",
         "Content-Disposition": "inline",
         "X-Content-Type-Options": "nosniff",
     }
-    return StreamingResponse(io.BytesIO(img_bytes), media_type="image/png", headers=headers)
+    return StreamingResponse(io.BytesIO(cached), media_type="image/jpeg", headers=headers)
 
 
 # Admin-only: raw (no watermark) trust draft download
@@ -1766,7 +1858,7 @@ async def admin_send_for_signing(
     }
     await update_case(case_id, {
         "esign": esign_record,
-        "status": "Ready for Signing",
+        "status": "Ready for Payment",
     })
 
     # Status-change email already fires from admin_update_status; here we hand-send because we bypassed it
@@ -1776,17 +1868,17 @@ async def admin_send_for_signing(
             accent=branding.get("accent_color", "#C5A880"),
             primary=branding.get("primary_color", "#1C252E"),
             client_name=case.get("client_name") or case.get("client_email"),
-            status="Ready for Signing",
+            status="Ready for Payment",
             case_id=case_id[:8].upper(),
             link=f"{FRONTEND_URL}/portal",
         )
         await send_email_notification(
             case.get("client_email"),
-            f"Your trust is ready for signing — {biz}",
+            f"Your trust is ready — {biz}",
             html,
         )
     except Exception as e:
-        logger.error(f"Ready-for-signing email failed: {e}")
+        logger.error(f"Ready-for-payment email failed: {e}")
 
     return {"ok": True, **esign_record}
 
@@ -2120,7 +2212,7 @@ async def admin_create_invoice(case_id: str, body: InvoiceCreateReq, admin: dict
         "due_date": result["due_date"],
         "invoiced_at": now_iso(),
     })
-    await update_case(case_id, {"payment": payment, "status": "Payment Pending"})
+    await update_case(case_id, {"payment": payment, "status": "Ready for Payment"})
 
     # Notify client with hosted payment link
     try:
@@ -2208,6 +2300,14 @@ async def admin_mark_payment_received(case_id: str, admin: dict = Depends(requir
                                       f"Payment received — {biz}", html)
     except Exception as e:
         logger.error(f"Mark-paid email failed: {e}")
+    # SMS admin
+    try:
+        sms.send_admin_sms(
+            f"IGC: Payment manually marked RECEIVED for {case.get('client_name') or case.get('client_email')} "
+            f"(case #{case_id[:8].upper()})."
+        )
+    except Exception as e:
+        logger.error(f"Mark-paid SMS failed: {e}")
     return {"ok": True, "payment": payment}
 
 
@@ -2293,10 +2393,8 @@ async def square_webhook(request: Request):
             p["status"] = mapping.get(status_, p.get("status"))
             p["last_webhook_at"] = now_iso()
             update["payment"] = p
-            if p["status"] == "paid":
-                update["status"] = "Payment Pending"  # will go to Completed when ACH clears / unlock
-            elif p["status"] == "ach_pending":
-                update["status"] = "Payment Pending"
+            if p["status"] in ("paid", "ach_pending"):
+                update["status"] = "Ready for Payment"
 
     # --- Payment events (ACH state changes) ---
     elif event_type.startswith("payment."):
@@ -2337,7 +2435,7 @@ async def square_webhook(request: Request):
                     p["status"] = "failed"
             update["payment"] = p
             if p["status"] == "paid":
-                update["status"] = "Payment Pending"
+                update["status"] = "Ready for Payment"
 
     # --- Refunds ---
     elif event_type.startswith("refund."):
@@ -2355,6 +2453,26 @@ async def square_webhook(request: Request):
 
     if case_id and update:
         await update_case(case_id, update)
+
+    # SMS admin on payment lifecycle changes
+    try:
+        if case_id and update.get("payment"):
+            p_new = update["payment"]
+            prev_status = (case.get("payment") if case else {}).get("status")
+            new_status = p_new.get("status")
+            if new_status != prev_status and case:
+                client_label = case.get("client_name") or case.get("client_email") or "client"
+                short = case_id[:8].upper()
+                if new_status == "paid":
+                    sms.send_admin_sms(f"IGC: Payment CLEARED for {client_label} (case #{short}).")
+                elif new_status == "ach_pending":
+                    sms.send_admin_sms(f"IGC: ACH pending for {client_label} (case #{short}). Waiting 3-5 business days.")
+                elif new_status == "failed":
+                    sms.send_admin_sms(f"IGC: Payment FAILED for {client_label} (case #{short}). Please follow up.")
+                elif new_status == "canceled":
+                    sms.send_admin_sms(f"IGC: Invoice canceled for {client_label} (case #{short}).")
+    except Exception as e:
+        logger.error(f"Payment webhook SMS failed: {e}")
 
     # --- Auto-unlock final trust when payment is fully paid (card or ACH cleared) ---
     auto_unlock = (os.environ.get("SQUARE_AUTO_UNLOCK_ON_PAID", "false").lower() == "true")

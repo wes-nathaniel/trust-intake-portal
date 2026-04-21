@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { SectionHeader, Field, Txt } from "./_shared";
-import { CheckCircle2, ShieldCheck, Download, Scale, Building2, Stamp, Video } from "lucide-react";
+import { CheckCircle2, ShieldCheck, Download, Scale, Building2, Stamp } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -11,8 +11,6 @@ const LINE = ({ l, v }) => (
     <span className="text-navy font-medium text-right">{v || "—"}</span>
   </div>
 );
-
-const ZOOM_LINK = "https://us06web.zoom.us/j/7194164805?pwd=OTkyQlQ2QXNwWm5xeTBjbDkxWklJUT09";
 
 export default function ReviewStep({ trustCase, caseId, reload }) {
   const g = trustCase.grantors || [];
@@ -104,13 +102,6 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
           </div>
         </div>
         <div className="flex gap-2 shrink-0">
-          <a
-            href={ZOOM_LINK}
-            target="_blank" rel="noreferrer"
-            className="btn-secondary shrink-0"
-            data-testid="schedule-zoom-btn">
-            <Video className="h-4 w-4 inline mr-1" /> Schedule Review Call
-          </a>
           <button
             onClick={async () => {
               try {
@@ -274,30 +265,35 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
         </div>
       </div>
 
-      {/* ----- Review Completed ----- */}
-      <div className="mt-8 bg-navy text-white rounded-xl p-6 sm:p-8 flex flex-col sm:flex-row items-start sm:items-center gap-4 justify-between" data-testid="review-completed-section">
-        <div>
-          <p className="font-serif text-2xl mb-1">{reviewCompleted ? "Thank you for reviewing your trust." : "Ready to finalize your review?"}</p>
-          <p className="text-sm text-white/80">
-            {reviewCompleted
-              ? "Your agent has been notified and will contact you shortly. This moves your case to the payment phase."
-              : "When you're satisfied with your trust intake and have acknowledged all disclosures, press the button below."}
-          </p>
-        </div>
-        {reviewCompleted ? (
-          <span className="inline-flex items-center gap-2 text-bronze font-semibold" data-testid="review-completed-badge">
-            <CheckCircle2 className="h-5 w-5" /> Review completed
-          </span>
-        ) : (
+      {/* ----- Complete Review / Post-review CTAs ----- */}
+      {!reviewCompleted ? (
+        <div className="mt-10" data-testid="review-completed-section">
           <button
             onClick={submitReviewCompleted}
             disabled={saving}
-            className="btn-accent shrink-0"
+            className="w-full py-5 sm:py-6 rounded-xl text-white text-xl sm:text-2xl font-bold shadow-lg transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ backgroundColor: "#28a745", minHeight: 64 }}
             data-testid="review-completed-btn">
-            {saving ? "Submitting…" : "Review Completed — I Am Satisfied With My Trust"}
+            {saving ? "Submitting…" : "✓  Complete Review"}
           </button>
-        )}
-      </div>
+          <p className="mt-3 text-center text-xs text-[#64748B]">
+            Pressing this button notifies your agent and moves your case to “Ready for Payment.”
+          </p>
+        </div>
+      ) : (
+        <div className="mt-10 rounded-xl bg-green-50 border border-green-300 p-6 sm:p-8 text-center" data-testid="review-completed-badge">
+          <CheckCircle2 className="h-10 w-10 text-green-700 mx-auto mb-2" />
+          <p className="font-serif text-2xl text-navy mb-1">Review complete</p>
+          <p className="text-sm text-[#334155] max-w-lg mx-auto">
+            Thank you — your agent has been notified. Next steps will be shown on your portal.
+          </p>
+          <div className="mt-5 flex flex-col sm:flex-row gap-3 justify-center">
+            <a href="/portal" className="btn-primary inline-flex items-center justify-center gap-1" data-testid="review-back-to-portal">
+              Back to portal
+            </a>
+          </div>
+        </div>
+      )}
 
       <p className="mt-8 text-center text-xs text-[#94A3B8]" data-testid="review-footer-brand">
         Prepared by <b>Iron Gate Consulting</b> · Reviewed through military legal benefits

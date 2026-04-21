@@ -7,7 +7,7 @@ const STEPS = [
   "Waiting on Documents",
   "In Review",
   "Drafting Trust",
-  "Ready for Signing",
+  "Ready for Payment",
   "Completed",
 ];
 

@@ -8,7 +8,7 @@ import InviteClientDialog from "@/components/InviteClientDialog";
 import { toast } from "sonner";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
-                  "Drafting Trust", "Ready for Signing", "Completed"];
+                  "Drafting Trust", "Ready for Payment", "Completed"];
 
 export default function AdminDashboard() {
   const [cases, setCases] = useState([]);

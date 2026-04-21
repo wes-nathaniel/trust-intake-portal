@@ -86,24 +86,55 @@ def _downres(img: Image.Image) -> Image.Image:
     return img
 
 
-def pdf_bytes_to_preview_pages(pdf_bytes: bytes) -> List[bytes]:
-    """Return a list of PNG bytes (one per page) with watermark + low-res."""
+def pdf_bytes_to_preview_pages(pdf_bytes: bytes, fmt: str = "JPEG") -> List[bytes]:
+    """Return a list of image bytes (one per page) with watermark + low-res.
+    Default format is JPEG (quality 72) for fast network transfer.
+    """
     pdf = pdfium.PdfDocument(pdf_bytes)
     out: List[bytes] = []
     try:
         for i in range(len(pdf)):
             page = pdf[i]
-            # scale low
             pil = page.render(scale=SCALE).to_pil()
             pil = _downres(pil)
             pil = _apply_watermark(pil)
             buf = BytesIO()
-            pil.save(buf, format="PNG", optimize=True)
+            if fmt.upper() == "JPEG":
+                pil.convert("RGB").save(buf, format="JPEG", quality=72, optimize=True, progressive=True)
+            elif fmt.upper() == "WEBP":
+                pil.save(buf, format="WEBP", quality=75, method=4)
+            else:
+                pil.save(buf, format="PNG", optimize=True)
             out.append(buf.getvalue())
             page.close()
     finally:
         pdf.close()
     return out
+
+
+def pdf_bytes_to_preview_page(pdf_bytes: bytes, page_index: int, fmt: str = "JPEG") -> bytes:
+    """Render a single page (0-indexed). Much faster than rendering all pages."""
+    pdf = pdfium.PdfDocument(pdf_bytes)
+    try:
+        if page_index < 0 or page_index >= len(pdf):
+            raise IndexError("page out of range")
+        page = pdf[page_index]
+        try:
+            pil = page.render(scale=SCALE).to_pil()
+            pil = _downres(pil)
+            pil = _apply_watermark(pil)
+            buf = BytesIO()
+            if fmt.upper() == "JPEG":
+                pil.convert("RGB").save(buf, format="JPEG", quality=72, optimize=True, progressive=True)
+            elif fmt.upper() == "WEBP":
+                pil.save(buf, format="WEBP", quality=75, method=4)
+            else:
+                pil.save(buf, format="PNG", optimize=True)
+            return buf.getvalue()
+        finally:
+            page.close()
+    finally:
+        pdf.close()
 
 
 def page_count(pdf_bytes: bytes) -> int:

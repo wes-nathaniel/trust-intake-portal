@@ -4,12 +4,10 @@ import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import {
-  ChevronLeft, ChevronRight, Lock, Shield, Video, CheckCircle2,
-  AlertTriangle, Eye, Stamp, ScrollText,
+  ChevronLeft, ChevronRight, Lock, Shield, CheckCircle2,
+  AlertTriangle, Stamp, ScrollText, PhoneCall, CreditCard, Loader2,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
-
-const ZOOM_LINK = "https://us06web.zoom.us/j/7194164805?pwd=OTkyQlQ2QXNwWm5xeTBjbDkxWklJUT09";
 
 // Anti-copy / anti-print helpers
 function useNoCopyAndBlurOnLeave(containerRef, setDimmed) {
@@ -18,27 +16,21 @@ function useNoCopyAndBlurOnLeave(containerRef, setDimmed) {
     if (!el) return;
 
     const stop = (e) => { e.preventDefault(); return false; };
-
-    // Disable context menu, copy, cut, drag-start within the preview
     const events = ["contextmenu", "copy", "cut", "dragstart", "selectstart"];
     events.forEach((evt) => el.addEventListener(evt, stop));
 
-    // Block keyboard shortcuts that try to print/save while focused
     const keyBlock = (e) => {
       const k = (e.key || "").toLowerCase();
       const meta = e.ctrlKey || e.metaKey;
       if (meta && ["p", "s", "c", "u"].includes(k)) { e.preventDefault(); toast.error("Draft is locked. Printing and copying are disabled."); return false; }
-      // PrintScreen attempt (can't truly block OS, but blur and notify)
       if (k === "printscreen") { setDimmed(true); toast.warning("Screenshots are disabled for draft trusts."); setTimeout(() => setDimmed(false), 1200); }
       return true;
     };
     window.addEventListener("keydown", keyBlock);
 
-    // Global print block while viewing preview
     const onBeforePrint = (e) => { e?.preventDefault?.(); toast.error("Printing is disabled for draft trusts."); };
     window.addEventListener("beforeprint", onBeforePrint);
 
-    // Dim on blur / visibility change (defeats many screenshot tools)
     const onBlur = () => setDimmed(true);
     const onFocus = () => setDimmed(false);
     const onVis = () => setDimmed(document.visibilityState !== "visible");
@@ -62,21 +54,27 @@ export default function TrustPreview() {
   const navigate = useNavigate();
   const [meta, setMeta] = useState(null);
   const [pageIdx, setPageIdx] = useState(1);
-  const [pageBlobUrl, setPageBlobUrl] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [pageLoading, setPageLoading] = useState(false);
   const [dimmed, setDimmed] = useState(false);
   const containerRef = useRef(null);
 
-  // Disclosure acks
+  // Per-page in-memory blob-url cache (avoids re-downloading + re-rendering)
+  const pageCacheRef = useRef({}); // { [pageNum]: blobUrl }
+  const [pageBlobUrl, setPageBlobUrl] = useState(null);
+
   const [trustCase, setTrustCase] = useState(null);
   const [disclosureAck, setDisclosureAck] = useState(false);
   const [stateLawsAck, setStateLawsAck] = useState(false);
   const [notarizationAck, setNotarizationAck] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // "Schedule a call" modal
+  const [callOpen, setCallOpen] = useState(false);
+  const [callMessage, setCallMessage] = useState(null);
+  const [callNote, setCallNote] = useState("");
+  const [callSending, setCallSending] = useState(false);
+
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       const [{ data: m }, { data: c }] = await Promise.all([
         api.get(`/trust-cases/${caseId}/trust-preview/meta`),
@@ -91,29 +89,67 @@ export default function TrustPreview() {
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail) || "Could not load trust preview.");
       navigate("/portal");
-    } finally { setLoading(false); }
+    }
   }, [caseId, navigate]);
 
   useEffect(() => { load(); }, [load]);
 
+  // Fetch one page + cache it. Returns blob url.
+  const fetchPage = useCallback(async (n) => {
+    if (!n || n < 1) return null;
+    if (pageCacheRef.current[n]) return pageCacheRef.current[n];
+    try {
+      const res = await api.get(`/trust-cases/${caseId}/trust-preview/page/${n}.png`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      pageCacheRef.current[n] = url;
+      return url;
+    } catch (e) {
+      return null;
+    }
+  }, [caseId]);
+
+  // Display current page (and preload neighbors)
   useEffect(() => {
-    let current = null;
     if (!meta) return;
+    let cancelled = false;
     setPageLoading(true);
-    const fetchPage = async () => {
-      try {
-        const res = await api.get(`/trust-cases/${caseId}/trust-preview/page/${pageIdx}.png`, { responseType: "blob" });
-        const url = URL.createObjectURL(res.data);
-        current = url;
-        setPageBlobUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
-      } catch (e) {
-        toast.error("Could not load page.");
-      } finally { setPageLoading(false); }
+    (async () => {
+      const url = await fetchPage(pageIdx);
+      if (cancelled) return;
+      setPageBlobUrl(url);
+      setPageLoading(false);
+      // Preload next + previous + next+1 to keep the viewer snappy
+      const toPreload = [pageIdx + 1, pageIdx - 1, pageIdx + 2];
+      toPreload.forEach((n) => { if (n >= 1 && n <= (meta.pages || 0)) fetchPage(n); });
+    })();
+    return () => { cancelled = true; };
+  }, [pageIdx, meta, fetchPage]);
+
+  // Aggressive full prefetch in the background (1 at a time) so navigation is instant
+  useEffect(() => {
+    if (!meta) return;
+    let cancelled = false;
+    (async () => {
+      const total = meta.pages || 0;
+      for (let n = 1; n <= total; n++) {
+        if (cancelled) return;
+        if (!pageCacheRef.current[n]) {
+          // eslint-disable-next-line no-await-in-loop
+          await fetchPage(n);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [meta, fetchPage]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    const ref = pageCacheRef;
+    return () => {
+      Object.values(ref.current || {}).forEach((u) => { try { URL.revokeObjectURL(u); } catch (_) {} });
+      ref.current = {};
     };
-    fetchPage();
-    return () => { if (current) { /* keep until replaced */ } };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meta?.pages, pageIdx, caseId]);
+  }, []);
 
   useNoCopyAndBlurOnLeave(containerRef, setDimmed);
 
@@ -122,26 +158,24 @@ export default function TrustPreview() {
   const payUrl = payment.public_url;
   const paymentBadgeCopy = {
     none: null,
-    invoice_sent: "Invoice sent — pay anytime below.",
+    invoice_sent: "Invoice is ready — press Pay Now to complete payment.",
     ach_pending: "ACH payment received — waiting for bank to clear (3–5 business days).",
-    paid: "Payment received. Final trust will unlock shortly.",
-    paid_manual: "Payment received. Final trust will unlock shortly.",
-    canceled: "Invoice was canceled.",
+    paid: "Payment received. Your final trust will unlock shortly.",
+    paid_manual: "Payment received. Your final trust will unlock shortly.",
+    canceled: "Invoice was canceled. Please contact your agent.",
     failed: "Payment failed. Please contact your agent.",
   }[payment.status] || null;
 
+  const reviewCompleted = !!meta?.review_completed;
+
   const saveAck = async (patch) => {
-    setSaving(true);
-    try {
-      await api.put(`/trust-cases/${caseId}/acknowledgments`, patch);
-      await load();
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-    finally { setSaving(false); }
+    try { await api.put(`/trust-cases/${caseId}/acknowledgments`, patch); await load(); }
+    catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
   const submitReview = async () => {
     if (!disclosureAck || !stateLawsAck || !notarizationAck) {
-      toast.error("Please acknowledge all disclosures before completing review.");
+      toast.error("Please acknowledge all three disclosures before completing your review.");
       return;
     }
     setSaving(true);
@@ -149,16 +183,26 @@ export default function TrustPreview() {
       await api.put(`/trust-cases/${caseId}/acknowledgments`, {
         disclosure_ack: true, state_laws_ack: true, notarization_ack: true, review_completed_ack: true,
       });
-      toast.success("Thank you for reviewing your trust. Your agent will contact you shortly.");
+      toast.success("Thank you for completing your review.");
       await load();
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
     finally { setSaving(false); }
   };
 
-  if (loading || !meta) return <Layout><p className="text-[#64748B]">Loading secure preview…</p></Layout>;
+  const scheduleCall = async () => {
+    setCallSending(true);
+    try {
+      const { data } = await api.post(`/trust-cases/${caseId}/schedule-call`, { note: callNote || "" });
+      setCallMessage(data.message || "Thank you. A team member will call you from a 954 number within 10 minutes.");
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally { setCallSending(false); }
+  };
+
+  if (!meta) return <Layout><p className="text-[#64748B]">Loading secure preview…</p></Layout>;
 
   const totalPages = meta.pages || 0;
-  const reviewCompleted = !!meta.review_completed;
 
   return (
     <Layout>
@@ -166,38 +210,26 @@ export default function TrustPreview() {
         <ChevronLeft className="h-4 w-4" /> Back to portal
       </Link>
 
-      <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
-        <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Secure Draft Preview</p>
-          <h1 className="font-serif text-3xl sm:text-4xl text-navy">{meta.trust_name || "Trust Draft"}</h1>
-          <p className="text-[#64748B] text-sm mt-1">Case #{caseId.slice(0, 8).toUpperCase()} · {totalPages} page(s) · Version {meta.version}</p>
-        </div>
-        <div className="flex gap-2 flex-wrap">
-          <a href={ZOOM_LINK} target="_blank" rel="noreferrer" className="btn-secondary text-sm" data-testid="preview-zoom-btn">
-            <Video className="h-4 w-4 inline mr-1" /> Schedule Review Call
-          </a>
-        </div>
+      <div className="mb-6">
+        <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Secure Draft Preview</p>
+        <h1 className="font-serif text-3xl sm:text-4xl text-navy">{meta.trust_name || "Trust Draft"}</h1>
+        <p className="text-[#64748B] text-sm mt-1">Case #{caseId.slice(0, 8).toUpperCase()} · {totalPages} page(s) · Version {meta.version}</p>
       </div>
 
       <div className="mb-4 bg-navy/5 border border-navy/20 rounded-xl p-4 text-sm text-navy flex items-start gap-3" data-testid="preview-security-notice">
         <Shield className="h-5 w-5 text-bronze shrink-0 mt-0.5" />
         <div className="flex-1">
           <p className="font-semibold">This draft is locked until payment is received.</p>
-          <p className="text-[#334155]">Printing, downloading, right-click, and copying are disabled. The preview is watermarked and shown in low resolution. Every page says <b>"IGC — SAMPLE ONLY — NOT VALID UNTIL PAID."</b></p>
+          <p className="text-[#334155]">Printing, downloading, right-click, and copying are disabled. The preview is watermarked. Every page says <b>"IGC — SAMPLE ONLY — NOT VALID UNTIL PAID."</b></p>
         </div>
       </div>
 
-      {hasInvoice && (
+      {hasInvoice && paymentBadgeCopy && (
         <div className="mb-4 bg-bronze/10 border border-bronze/40 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-3 justify-between" data-testid="preview-payment-banner">
           <div>
             <p className="font-semibold text-navy">Payment</p>
             <p className="text-sm text-[#334155]">{paymentBadgeCopy}</p>
           </div>
-          {payUrl && payment.status !== "paid" && payment.status !== "paid_manual" && (
-            <a href={payUrl} target="_blank" rel="noreferrer" className="btn-accent text-sm shrink-0" data-testid="preview-pay-btn">
-              Pay securely with Square
-            </a>
-          )}
         </div>
       )}
 
@@ -221,8 +253,10 @@ export default function TrustPreview() {
 
         <div className="relative flex items-center justify-center bg-[#0f1620] p-4 min-h-[500px]">
           {pageLoading && (
-            <div className="absolute inset-0 flex items-center justify-center text-white/60 text-sm">
-              Rendering page…
+            <div className="absolute inset-0 flex items-center justify-center bg-[#0f1620]/80 z-10" data-testid="preview-loader">
+              <div className="flex items-center gap-2 text-white/80 text-sm">
+                <Loader2 className="h-5 w-5 animate-spin" /> Loading page…
+              </div>
             </div>
           )}
           {pageBlobUrl && (
@@ -245,7 +279,6 @@ export default function TrustPreview() {
           )}
         </div>
 
-        {/* Overlay watermark layer (on top of image to defeat quick copy of the img alone) */}
         <div
           className="pointer-events-none absolute inset-0 flex items-center justify-center"
           style={{ mixBlendMode: "multiply" }}
@@ -265,12 +298,12 @@ export default function TrustPreview() {
             data-testid="preview-prev-page">
             <ChevronLeft className="h-4 w-4" /> Previous
           </button>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 overflow-x-auto max-w-[60%] no-scrollbar">
             {Array.from({ length: totalPages }).map((_, i) => (
               <button
                 key={i}
                 onClick={() => setPageIdx(i + 1)}
-                className={`h-2.5 w-2.5 rounded-full transition-colors ${pageIdx === i + 1 ? "bg-bronze" : "bg-white/30 hover:bg-white/60"}`}
+                className={`h-2.5 w-2.5 rounded-full transition-colors shrink-0 ${pageIdx === i + 1 ? "bg-bronze" : "bg-white/30 hover:bg-white/60"}`}
                 aria-label={`Go to page ${i + 1}`}
                 data-testid={`preview-dot-${i + 1}`}
               />
@@ -286,7 +319,7 @@ export default function TrustPreview() {
         </div>
       </div>
 
-      {/* Legal disclosures (persisted) */}
+      {/* Legal disclosures */}
       <div className="mt-10">
         <h3 className="font-serif text-2xl text-navy mb-4 flex items-center gap-2">
           <ScrollText className="h-5 w-5 text-bronze" /> Legal Disclosures
@@ -321,26 +354,62 @@ export default function TrustPreview() {
         </div>
       </div>
 
-      {/* Review completed CTA */}
-      <div className="mt-8 bg-navy text-white rounded-xl p-6 sm:p-8 flex flex-col sm:flex-row items-start sm:items-center gap-4 justify-between" data-testid="preview-review-complete-section">
-        <div>
-          <p className="font-serif text-2xl mb-1">{reviewCompleted ? "Thank you for reviewing your trust." : "Satisfied with your trust?"}</p>
-          <p className="text-sm text-white/80">
-            {reviewCompleted
-              ? "Your agent has been notified and will contact you shortly about payment."
-              : "When you're satisfied with the draft and have acknowledged the disclosures, press the button below. Your agent will contact you to arrange payment."}
+      {/* ===================== Complete Review (or post-review Pay / Call) ===================== */}
+      {!reviewCompleted ? (
+        <div className="mt-10" data-testid="complete-review-section">
+          <button
+            onClick={submitReview}
+            disabled={saving || !disclosureAck || !stateLawsAck || !notarizationAck}
+            className="w-full py-5 sm:py-6 rounded-xl text-white text-xl sm:text-2xl font-bold shadow-lg transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ backgroundColor: "#28a745", minHeight: 64 }}
+            data-testid="complete-review-btn">
+            {saving ? "Submitting…" : "✓  Complete Review"}
+          </button>
+          <p className="mt-3 text-center text-xs text-[#64748B]">
+            {(!disclosureAck || !stateLawsAck || !notarizationAck)
+              ? "Check all three disclosures above to enable this button."
+              : "Pressing this button notifies your agent and moves your case to \"Ready for Payment.\""}
           </p>
         </div>
-        {reviewCompleted ? (
-          <span className="inline-flex items-center gap-2 text-bronze font-semibold" data-testid="preview-review-completed-badge">
-            <CheckCircle2 className="h-5 w-5" /> Review completed
-          </span>
-        ) : (
-          <button onClick={submitReview} disabled={saving} className="btn-accent shrink-0" data-testid="preview-review-completed-btn">
-            {saving ? "Submitting…" : "Review Completed — I Am Satisfied With My Trust"}
-          </button>
-        )}
-      </div>
+      ) : (
+        <div className="mt-10 rounded-xl bg-green-50 border border-green-300 p-6 sm:p-8 text-center" data-testid="post-review-section">
+          <CheckCircle2 className="h-10 w-10 text-green-700 mx-auto mb-2" />
+          <p className="font-serif text-2xl text-navy mb-1">Review complete</p>
+          <p className="text-sm text-[#334155] max-w-lg mx-auto">
+            Thank you — your agent has been notified. Please choose how you'd like to continue:
+          </p>
+
+          <div className="mt-6 grid gap-3 sm:grid-cols-2">
+            {hasInvoice && payUrl && payment.status !== "paid" && payment.status !== "paid_manual" ? (
+              <a
+                href={payUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="w-full py-5 rounded-xl text-white text-xl font-bold shadow-lg transition-all active:scale-[0.99] inline-flex items-center justify-center gap-2"
+                style={{ backgroundColor: "#28a745", minHeight: 64 }}
+                data-testid="pay-now-btn">
+                <CreditCard className="h-6 w-6" /> Pay Now
+              </a>
+            ) : payment.status === "paid" || payment.status === "paid_manual" ? (
+              <div className="w-full py-5 rounded-xl border-2 border-green-500 text-green-800 text-lg font-semibold inline-flex items-center justify-center gap-2 bg-white" data-testid="pay-now-paid">
+                <CheckCircle2 className="h-5 w-5" /> Payment received
+              </div>
+            ) : (
+              <div className="w-full py-5 rounded-xl border border-[#E2E0DA] text-[#64748B] text-sm inline-flex items-center justify-center px-4 text-center bg-white" data-testid="pay-now-waiting">
+                Your agent is preparing your invoice — the Pay Now button will appear here shortly.
+              </div>
+            )}
+
+            <button
+              onClick={() => { setCallOpen(true); setCallMessage(null); setCallNote(""); }}
+              className="w-full py-5 rounded-xl bg-navy hover:bg-navy/90 text-white text-xl font-bold shadow-lg transition-all active:scale-[0.99] inline-flex items-center justify-center gap-2"
+              style={{ minHeight: 64 }}
+              data-testid="schedule-call-btn">
+              <PhoneCall className="h-6 w-6" /> Schedule a Call
+            </button>
+          </div>
+        </div>
+      )}
 
       <p className="mt-8 text-center text-xs text-[#94A3B8]">
         Prepared by <b>Iron Gate Consulting</b> · Reviewed through military legal benefits
@@ -351,6 +420,43 @@ export default function TrustPreview() {
           <div className="flex items-center gap-3 px-5 py-3 bg-white rounded-full text-navy text-sm">
             <AlertTriangle className="h-4 w-4 text-red-500" />
             Preview hidden — please return to this tab to view the draft.
+          </div>
+        </div>
+      )}
+
+      {/* Schedule-a-call modal */}
+      {callOpen && (
+        <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4" onClick={() => !callSending && setCallOpen(false)} data-testid="call-modal">
+          <div className="bg-white rounded-xl p-6 sm:p-8 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            {callMessage ? (
+              <div className="text-center">
+                <div className="mx-auto mb-3 h-12 w-12 rounded-full bg-green-100 flex items-center justify-center">
+                  <PhoneCall className="h-6 w-6 text-green-700" />
+                </div>
+                <p className="font-serif text-2xl text-navy mb-2">Call scheduled</p>
+                <p className="text-sm text-[#334155] mb-5" data-testid="call-confirmation">{callMessage}</p>
+                <button onClick={() => setCallOpen(false)} className="btn-primary w-full" data-testid="call-close-btn">Close</button>
+              </div>
+            ) : (
+              <>
+                <p className="font-serif text-2xl text-navy mb-1">Request a callback</p>
+                <p className="text-sm text-[#64748B] mb-4">Tell us anything you'd like us to know before the call (optional).</p>
+                <textarea
+                  value={callNote}
+                  onChange={(e) => setCallNote(e.target.value)}
+                  rows={4}
+                  placeholder="Questions, best time to call, etc."
+                  className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
+                  data-testid="call-note-input"
+                />
+                <div className="mt-4 flex gap-2">
+                  <button onClick={() => setCallOpen(false)} className="btn-secondary flex-1" disabled={callSending} data-testid="call-cancel-btn">Cancel</button>
+                  <button onClick={scheduleCall} className="btn-primary flex-1" disabled={callSending} data-testid="call-confirm-btn">
+                    {callSending ? "Requesting…" : "Request callback"}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
