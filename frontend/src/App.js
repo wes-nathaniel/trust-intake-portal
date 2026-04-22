@@ -16,6 +16,7 @@ import AdminCaseDetail from "@/pages/AdminCaseDetail";
 import BrandingPage from "@/pages/BrandingPage";
 import AcceptInvite from "@/pages/AcceptInvite";
 import AdminQuestions from "@/pages/AdminQuestions";
+import Company from "@/pages/Company";
 import ProtectedRoute from "@/components/ProtectedRoute";
 
 function Root() {
@@ -36,6 +37,13 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/accept-invite" element={<AcceptInvite />} />
+
+            {/* Public A2P / compliance landing page — no auth */}
+            <Route path="/company" element={<Company />} />
+            <Route path="/about" element={<Company />} />
+            <Route path="/privacy" element={<Company />} />
+            <Route path="/terms" element={<Company />} />
+            <Route path="/sms-terms" element={<Company />} />
 
             <Route path="/portal" element={<ProtectedRoute><ClientPortal /></ProtectedRoute>} />
             <Route path="/portal/new" element={<ProtectedRoute><StartNew /></ProtectedRoute>} />
