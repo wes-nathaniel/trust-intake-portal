@@ -102,6 +102,66 @@ def _idem() -> str:
     return str(uuid.uuid4())
 
 
+def _find_or_create_customer(*, email: str, first_name: str = "", last_name: str = "") -> str:
+    """Return Square customer_id for the given email, creating one if missing.
+
+    Square requires invoices to reference an existing Customer (by customer_id)
+    and forbids setting given_name / email_address on the invoice directly.
+    """
+    sq = _client()
+    email = (email or "").strip().lower()
+    if not email:
+        raise RuntimeError("Email required to create/find Square customer.")
+
+    # 1. Try to find existing customer by email (exact match)
+    try:
+        resp = sq.customers.search(
+            query={
+                "filter": {"email_address": {"exact": email}},
+            },
+            limit=1,
+        )
+        cust_list = getattr(resp, "customers", None) or (resp.get("customers") if isinstance(resp, dict) else None) or []
+        if cust_list:
+            first = cust_list[0]
+            cid = getattr(first, "id", None) if not isinstance(first, dict) else first.get("id")
+            if cid:
+                return cid
+    except Exception as e:
+        logger.warning("Square customers.search failed, will try create: %s", e)
+
+    # 2. Create a new customer
+    try:
+        create_resp = sq.customers.create(
+            idempotency_key=_idem(),
+            given_name=first_name or None,
+            family_name=last_name or None,
+            email_address=email,
+        )
+        cust = getattr(create_resp, "customer", None) or (create_resp.get("customer") if isinstance(create_resp, dict) else None)
+        cid = getattr(cust, "id", None) if (cust is not None and not isinstance(cust, dict)) else (cust or {}).get("id")
+        if not cid:
+            raise RuntimeError(f"customer create returned no id: {create_resp!r}")
+        return cid
+    except Exception as e:
+        # If the email already exists and we failed to find it in step 1, retry search
+        logger.warning("Square customers.create failed: %s — retrying search once", e)
+        try:
+            resp = sq.customers.search(
+                query={"filter": {"email_address": {"exact": email}}},
+                limit=1,
+            )
+            cust_list = getattr(resp, "customers", None) or (resp.get("customers") if isinstance(resp, dict) else None) or []
+            if cust_list:
+                first = cust_list[0]
+                cid = getattr(first, "id", None) if not isinstance(first, dict) else first.get("id")
+                if cid:
+                    return cid
+        except Exception:
+            pass
+        raise
+
+
 def create_invoice(
     *,
     client_email: str,
@@ -116,6 +176,17 @@ def create_invoice(
     from datetime import datetime, timedelta, timezone
     sq = _client()
     location_id = _resolve_location_id()
+
+    # --- Step 0: Resolve Square Customer for this client (create if needed) ---
+    # Square requires invoice.primary_recipient.customer_id; it derives
+    # given_name/email_address from the customer record.
+    first_name = (client_name or "").split(" ")[0][:50] if client_name else ""
+    last_name = " ".join((client_name or "").split(" ")[1:])[:50] if client_name else ""
+    customer_id = _find_or_create_customer(
+        email=client_email,
+        first_name=first_name,
+        last_name=last_name,
+    )
 
     # --- Step 1: Create an order with a single line item so the invoice has content ---
     order_req = {
@@ -152,9 +223,9 @@ def create_invoice(
             "location_id": location_id,
             "order_id": order_id,
             "primary_recipient": {
-                "email_address": client_email,
-                "given_name": (client_name or client_email).split(" ")[0][:50],
-                "family_name": " ".join((client_name or "").split(" ")[1:])[:50] or None,
+                # Square requires customer_id. given_name/email_address are derived
+                # from the customer record and must NOT be sent on the invoice.
+                "customer_id": customer_id,
             },
             "payment_requests": [{
                 "request_type": "BALANCE",
@@ -168,17 +239,19 @@ def create_invoice(
             "delivery_method": "EMAIL",
             "invoice_number": f"IGC-{case_id[:8].upper()}-{int(datetime.now(timezone.utc).timestamp())}",
             "title": f"Trust fee — {trust_name[:120]}",
-            "description": description or "Trust preparation and filing fee.",
+            "description": (
+                (description or "Trust preparation and filing fee.")
+                + f"\n\nCase ID: {case_id[:8].upper()}\nTrust Name: {trust_name[:120]}"
+            ),
             "accepted_payment_methods": {
                 "card": True,
                 "bank_account": True,
                 "square_gift_card": False,
                 "buy_now_pay_later": False,
             },
-            "custom_fields": [
-                {"label": "Case ID", "value": case_id[:8].upper(), "placement": "ABOVE_LINE_ITEMS"},
-                {"label": "Trust Name", "value": trust_name[:120], "placement": "ABOVE_LINE_ITEMS"},
-            ],
+            # NOTE: custom_fields intentionally omitted — requires a paid
+            # Square Invoices Plus subscription. Case ID & trust name are
+            # already captured in the invoice title/description.
             "sale_or_service_date": datetime.now(timezone.utc).date().isoformat(),
         },
     }
