@@ -2170,11 +2170,26 @@ class InvoiceCreateReq(BaseModel):
 
 @api_router.get("/admin/square/health")
 async def square_health(_: dict = Depends(require_admin)):
+    resolved_loc = None
+    loc_ok = False
+    try:
+        if square_service.is_enabled():
+            resolved_loc = square_service._resolve_location_id()
+            loc_ok = bool(resolved_loc)
+    except Exception as e:
+        logger.warning(f"Square health: location resolution failed: {e}")
     return {
         "enabled": square_service.is_enabled(),
         "environment": os.environ.get("SQUARE_ENVIRONMENT", "production"),
-        "location_id": bool(os.environ.get("SQUARE_LOCATION_ID")),
+        "location_id": loc_ok,
+        "resolved_location_id": resolved_loc,
+        "configured_location_id": os.environ.get("SQUARE_LOCATION_ID") or None,
         "webhook_configured": bool(os.environ.get("SQUARE_WEBHOOK_SIGNATURE_KEY")),
+        "twilio_configured": bool(
+            os.environ.get("TWILIO_ACCOUNT_SID")
+            and os.environ.get("TWILIO_AUTH_TOKEN")
+            and os.environ.get("TWILIO_FROM_NUMBER")
+        ),
     }
 
 

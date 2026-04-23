@@ -33,15 +33,65 @@ def _env(key: str, default: str = "") -> str:
 
 
 def is_enabled() -> bool:
-    return _SQUARE_OK and bool(_env("SQUARE_ACCESS_TOKEN")) and bool(_env("SQUARE_LOCATION_ID"))
+    return _SQUARE_OK and bool(_env("SQUARE_ACCESS_TOKEN"))
+
+
+# Cache for auto-discovered location id
+_DISCOVERED_LOCATION_ID: Optional[str] = None
+
+
+def _resolve_location_id() -> str:
+    """Return a usable location_id. Falls back to auto-discovery from Square
+    if the configured SQUARE_LOCATION_ID is missing or doesn't belong to this token.
+    This makes the integration resilient to stale/typo env vars."""
+    global _DISCOVERED_LOCATION_ID
+    configured = _env("SQUARE_LOCATION_ID")
+
+    if _DISCOVERED_LOCATION_ID:
+        return _DISCOVERED_LOCATION_ID
+
+    sq = _client_raw()
+    if configured:
+        try:
+            resp = sq.locations.get(location_id=configured)
+            loc = getattr(resp, "location", None) or (resp.get("location") if isinstance(resp, dict) else None)
+            lid = getattr(loc, "id", None) if loc is not None and not isinstance(loc, dict) else (loc or {}).get("id")
+            if lid:
+                _DISCOVERED_LOCATION_ID = lid
+                return lid
+        except Exception as e:
+            logger.warning("Configured SQUARE_LOCATION_ID '%s' is invalid — auto-discovering from Square API: %s",
+                           configured, e)
+
+    # Fallback: list active locations on this token and pick the first active one
+    try:
+        resp = sq.locations.list()
+        locs = getattr(resp, "locations", None) or (resp.get("locations") if isinstance(resp, dict) else [])
+        for loc in (locs or []):
+            lid = getattr(loc, "id", None) if not isinstance(loc, dict) else loc.get("id")
+            status = getattr(loc, "status", None) if not isinstance(loc, dict) else loc.get("status")
+            if lid and status == "ACTIVE":
+                _DISCOVERED_LOCATION_ID = lid
+                logger.info("Square auto-discovered location_id=%s", lid)
+                return lid
+    except Exception as e:
+        logger.error("Square locations.list failed: %s", e)
+
+    raise RuntimeError("No usable Square location found for this access token")
+
+
+def _client_raw() -> "Square":
+    if not _SQUARE_OK or not _env("SQUARE_ACCESS_TOKEN"):
+        raise RuntimeError("Square is not configured")
+    env_name = (_env("SQUARE_ENVIRONMENT", "production") or "production").lower()
+    env = SquareEnvironment.PRODUCTION if env_name == "production" else SquareEnvironment.SANDBOX
+    return Square(token=_env("SQUARE_ACCESS_TOKEN"), environment=env)
 
 
 def _client() -> "Square":
     if not is_enabled():
         raise RuntimeError("Square is not configured")
-    env_name = (_env("SQUARE_ENVIRONMENT", "production") or "production").lower()
-    env = SquareEnvironment.PRODUCTION if env_name == "production" else SquareEnvironment.SANDBOX
-    return Square(token=_env("SQUARE_ACCESS_TOKEN"), environment=env)
+    return _client_raw()
 
 
 def _money(cents: int) -> dict:
@@ -65,7 +115,7 @@ def create_invoice(
     """Create + publish an invoice. Returns dict with invoice_id, public_url, status."""
     from datetime import datetime, timedelta, timezone
     sq = _client()
-    location_id = _env("SQUARE_LOCATION_ID")
+    location_id = _resolve_location_id()
 
     # --- Step 1: Create an order with a single line item so the invoice has content ---
     order_req = {
