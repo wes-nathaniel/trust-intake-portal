@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
-import { Search, Users, FileClock, ArrowRight, UserPlus, Trash2, Archive } from "lucide-react";
+import { Search, Users, FileClock, ArrowRight, UserPlus, Trash2, Archive, X, CheckSquare, Square } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import InviteClientDialog from "@/components/InviteClientDialog";
 import { toast } from "sonner";
@@ -18,6 +18,90 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [includeArchived, setIncludeArchived] = useState(false);
+  const [selected, setSelected] = useState(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const toggleRow = (id) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllVisible = () => {
+    setSelected((prev) => {
+      const visibleIds = cases.map((c) => c.id);
+      const allSelected = visibleIds.every((id) => prev.has(id));
+      if (allSelected) {
+        const next = new Set(prev);
+        visibleIds.forEach((id) => next.delete(id));
+        return next;
+      }
+      const next = new Set(prev);
+      visibleIds.forEach((id) => next.add(id));
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelected(new Set());
+
+  const bulkArchive = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    if (!window.confirm(`Archive ${ids.length} case${ids.length === 1 ? "" : "s"}? You can restore them later.`)) return;
+    setBulkBusy(true);
+    try {
+      const { data } = await api.post("/admin/trust-cases/bulk-archive", { case_ids: ids });
+      toast.success(`Archived ${data.archived} case${data.archived === 1 ? "" : "s"}.`);
+      clearSelection();
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setBulkBusy(false); }
+  };
+
+  const bulkUnarchive = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const { data } = await api.post("/admin/trust-cases/bulk-unarchive", { case_ids: ids });
+      toast.success(`Restored ${data.restored} case${data.restored === 1 ? "" : "s"}.`);
+      clearSelection();
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setBulkBusy(false); }
+  };
+
+  const bulkDelete = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    const typed = window.prompt(
+      `⚠️ Permanently DELETE ${ids.length} case${ids.length === 1 ? "" : "s"}?\n\n` +
+      `This removes the cases, messages, documents, invites, and questions. This cannot be undone.\n\n` +
+      `Type DELETE to confirm:`
+    );
+    if (typed !== "DELETE") { toast.message("Cancelled — nothing was deleted."); return; }
+    const alsoUser = window.confirm(
+      `Also delete client user accounts that have no other cases remaining?\n\nOK = delete client users too · Cancel = keep client accounts.`
+    );
+    setBulkBusy(true);
+    try {
+      const { data } = await api.post(`/admin/trust-cases/bulk-delete?delete_user=${alsoUser}`, { case_ids: ids });
+      const bits = [
+        `Deleted ${data.deleted_cases} case${data.deleted_cases === 1 ? "" : "s"}`,
+        data.storage_objects_deleted ? `${data.storage_objects_deleted} docs` : "",
+        data.users_deleted ? `${data.users_deleted} user${data.users_deleted === 1 ? "" : "s"}` : "",
+      ].filter(Boolean).join(" · ");
+      toast.success(bits);
+      clearSelection();
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setBulkBusy(false); }
+  };
+
+  // Reset selection when filters change (selection might include cases no longer in view)
+  useEffect(() => { clearSelection(); }, [status, includeArchived, q]);
 
   const load = async () => {
     setLoading(true);
@@ -106,6 +190,58 @@ export default function AdminDashboard() {
         <button onClick={load} className="btn-primary" data-testid="admin-search-btn">Search</button>
       </div>
 
+      {selected.size > 0 && (
+        <div
+          className="sticky top-0 z-20 mb-4 bg-navy text-white rounded-xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center gap-3 justify-between"
+          data-testid="bulk-action-bar">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex items-center justify-center h-8 w-8 rounded-full bg-bronze text-navy font-bold text-sm">
+              {selected.size}
+            </span>
+            <div>
+              <p className="font-semibold leading-tight">
+                {selected.size} case{selected.size === 1 ? "" : "s"} selected
+              </p>
+              <button onClick={clearSelection} className="text-xs text-white/70 hover:text-bronze underline-offset-4 hover:underline" data-testid="bulk-clear-btn">
+                Clear selection
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {includeArchived && (
+              <button
+                onClick={bulkUnarchive}
+                disabled={bulkBusy}
+                className="inline-flex items-center gap-1 px-4 py-2 rounded-md bg-white/10 hover:bg-white/20 text-white text-sm font-medium disabled:opacity-50"
+                data-testid="bulk-unarchive-btn">
+                Restore
+              </button>
+            )}
+            <button
+              onClick={bulkArchive}
+              disabled={bulkBusy}
+              className="inline-flex items-center gap-1 px-4 py-2 rounded-md bg-white/10 hover:bg-white/20 text-white text-sm font-medium disabled:opacity-50"
+              data-testid="bulk-archive-btn">
+              <Archive className="h-4 w-4" /> Archive selected
+            </button>
+            <button
+              onClick={bulkDelete}
+              disabled={bulkBusy}
+              className="inline-flex items-center gap-1 px-4 py-2 rounded-md bg-red-600 hover:bg-red-700 text-white text-sm font-semibold disabled:opacity-50"
+              data-testid="bulk-delete-btn">
+              <Trash2 className="h-4 w-4" /> {bulkBusy ? "Working…" : "Delete permanently"}
+            </button>
+            <button
+              onClick={clearSelection}
+              className="inline-flex items-center gap-1 px-3 py-2 rounded-md text-white/70 hover:text-white text-sm"
+              data-testid="bulk-close-btn"
+              aria-label="Close">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <p className="text-[#64748B]">Loading…</p>
       ) : cases.length === 0 ? (
@@ -115,6 +251,17 @@ export default function AdminDashboard() {
           <table className="w-full text-sm">
             <thead className="bg-sand-200/60 text-xs uppercase tracking-wider text-[#64748B]">
               <tr>
+                <th className="px-4 py-3 w-10">
+                  <button
+                    onClick={toggleAllVisible}
+                    className="inline-flex items-center text-[#64748B] hover:text-navy"
+                    title="Select / deselect all visible"
+                    data-testid="bulk-select-all">
+                    {cases.length > 0 && cases.every((c) => selected.has(c.id))
+                      ? <CheckSquare className="h-4 w-4 text-bronze" />
+                      : <Square className="h-4 w-4" />}
+                  </button>
+                </th>
                 <th className="text-left px-5 py-3">Client</th>
                 <th className="text-left px-5 py-3">Type</th>
                 <th className="text-left px-5 py-3">Status</th>
@@ -126,7 +273,17 @@ export default function AdminDashboard() {
             </thead>
             <tbody>
               {cases.map((c) => (
-                <tr key={c.id} className="border-t border-[#E2E0DA] hover:bg-sand-200/30 transition-colors" data-testid={`admin-case-row-${c.id}`}>
+                <tr key={c.id} className={`border-t border-[#E2E0DA] transition-colors ${selected.has(c.id) ? "bg-bronze/10" : "hover:bg-sand-200/30"}`} data-testid={`admin-case-row-${c.id}`}>
+                  <td className="px-4 py-3 w-10 align-middle">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(c.id)}
+                      onChange={() => toggleRow(c.id)}
+                      className="h-4 w-4 rounded border-[#94A3B8] cursor-pointer accent-bronze"
+                      onClick={(e) => e.stopPropagation()}
+                      data-testid={`bulk-select-${c.id}`}
+                    />
+                  </td>
                   <td className="px-5 py-3">
                     <p className="font-medium text-navy">
                       {c.client_name || c.client_email}

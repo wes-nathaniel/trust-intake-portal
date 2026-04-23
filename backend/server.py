@@ -1575,6 +1575,109 @@ async def admin_delete_case(
         "client_email": client_email,
     }
 
+# ---------- Bulk archive / delete (routes must appear before /{case_id} for FastAPI matching) ----------
+class BulkCaseIds(BaseModel):
+    case_ids: List[str] = Field(min_length=1, max_length=500)
+
+
+@api_router.post("/admin/trust-cases/bulk-archive")
+async def admin_bulk_archive(body: BulkCaseIds, admin: dict = Depends(require_admin)):
+    found = await db.trust_cases.find({"id": {"$in": body.case_ids}}, {"_id": 0, "id": 1}).to_list(1000)
+    found_ids = [c["id"] for c in found]
+    missing = [cid for cid in body.case_ids if cid not in found_ids]
+    if found_ids:
+        await db.trust_cases.update_many(
+            {"id": {"$in": found_ids}},
+            {"$set": {
+                "archived": True, "archived_at": now_iso(),
+                "archived_by": admin["id"], "updated_at": now_iso(),
+            }},
+        )
+    logger.info("Admin %s bulk-archived %d cases (%d missing)", admin["id"], len(found_ids), len(missing))
+    return {"ok": True, "archived": len(found_ids), "archived_ids": found_ids, "missing": missing}
+
+
+@api_router.post("/admin/trust-cases/bulk-unarchive")
+async def admin_bulk_unarchive(body: BulkCaseIds, _: dict = Depends(require_admin)):
+    r = await db.trust_cases.update_many(
+        {"id": {"$in": body.case_ids}},
+        {"$set": {"archived": False, "archived_at": None, "archived_by": None, "updated_at": now_iso()}},
+    )
+    return {"ok": True, "restored": r.modified_count}
+
+
+@api_router.post("/admin/trust-cases/bulk-delete")
+async def admin_bulk_delete(
+    body: BulkCaseIds,
+    delete_user: bool = Query(False),
+    admin: dict = Depends(require_admin),
+):
+    """Permanently delete many cases + their related records. Irreversible."""
+    cases = await db.trust_cases.find({"id": {"$in": body.case_ids}}, {"_id": 0}).to_list(1000)
+    found_ids = [c["id"] for c in cases]
+    missing = [cid for cid in body.case_ids if cid not in found_ids]
+
+    total_storage = 0
+    total_messages = total_questions = total_invites = total_notifs = 0
+    client_ids_touched = set()
+
+    for case in cases:
+        cid = case["id"]
+        try:
+            for doc in (case.get("documents") or []):
+                if doc.get("storage_path") and delete_object(doc["storage_path"]): total_storage += 1
+            ein = case.get("ein_letter") or {}
+            if ein.get("storage_path") and delete_object(ein["storage_path"]): total_storage += 1
+            draft = case.get("trust_draft") or {}
+            if draft.get("storage_path") and delete_object(draft["storage_path"]): total_storage += 1
+        except Exception as e:
+            logger.warning(f"Storage cleanup error for case {cid}: {e}")
+
+        if case.get("client_id"):
+            client_ids_touched.add(case["client_id"])
+
+        try:
+            total_messages += (await db.messages.delete_many({"case_id": cid})).deleted_count
+            total_questions += (await db.questions.delete_many({"case_id": cid})).deleted_count
+            total_invites += (await db.invites.delete_many({"case_id": cid})).deleted_count
+            total_notifs += (await db.notifications.delete_many({"case_id": cid})).deleted_count
+        except Exception as e:
+            logger.warning(f"Related cleanup error for case {cid}: {e}")
+
+    deleted_cases = 0
+    if found_ids:
+        r = await db.trust_cases.delete_many({"id": {"$in": found_ids}})
+        deleted_cases = r.deleted_count
+
+    users_deleted = 0
+    if delete_user and client_ids_touched:
+        for uid in client_ids_touched:
+            remaining = await db.trust_cases.count_documents({"client_id": uid})
+            if remaining == 0:
+                ur = await db.users.delete_one({"id": uid, "role": "client"})
+                users_deleted += (ur.deleted_count or 0)
+
+    logger.info(
+        "Admin %s BULK-DELETED %d cases (missing=%d, storage=%d, msgs=%d, qs=%d, invites=%d, notifs=%d, users=%d)",
+        admin["id"], deleted_cases, len(missing), total_storage,
+        total_messages, total_questions, total_invites, total_notifs, users_deleted,
+    )
+    return {
+        "ok": True,
+        "deleted_cases": deleted_cases,
+        "deleted_case_ids": found_ids,
+        "missing": missing,
+        "storage_objects_deleted": total_storage,
+        "messages_deleted": total_messages,
+        "questions_deleted": total_questions,
+        "invites_deleted": total_invites,
+        "notifications_deleted": total_notifs,
+        "users_deleted": users_deleted,
+    }
+
+
+
+
 @api_router.get("/admin/trust-cases/{case_id}")
 async def admin_get_case(case_id: str, _: dict = Depends(require_admin)):
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
