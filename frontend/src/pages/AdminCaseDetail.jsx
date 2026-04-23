@@ -1,14 +1,13 @@
 import React, { useEffect, useState, useRef } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
 import StatusTracker from "@/components/StatusTracker";
 import MessageThread from "@/components/MessageThread";
 import { toast } from "sonner";
-import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, FilePen, RefreshCw, MailPlus, Clock, Lock, Unlock, BellRing, ExternalLink } from "lucide-react";
+import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, RefreshCw, MailPlus, Clock, Lock, Unlock, BellRing, ExternalLink, Trash2 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { displaySSN } from "@/pages/intake/_shared";
-import SendForSigningDialog from "@/components/SendForSigningDialog";
 import DocRequestsPanel from "@/components/DocRequestsPanel";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
@@ -32,12 +31,11 @@ const KV = ({ k, v }) => (
 
 export default function AdminCaseDetail() {
   const { caseId } = useParams();
+  const navigate = useNavigate();
   const [c, setC] = useState(null);
   const [note, setNote] = useState("");
   const einInputRef = useRef();
   const [uploadingEin, setUploadingEin] = useState(false);
-  const [signOpen, setSignOpen] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [resending, setResending] = useState(false);
 
   const trustDraftInputRef = useRef();
@@ -106,26 +104,6 @@ export default function AdminCaseDetail() {
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a");
       a.href = url; a.download = d.filename || "file"; a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-  };
-
-  const refreshSignatureStatus = async () => {
-    setRefreshing(true);
-    try {
-      await api.get(`/admin/trust-cases/${caseId}/signature-status`);
-      await load();
-      toast.success("Signature status refreshed");
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-    finally { setRefreshing(false); }
-  };
-
-  const downloadSigned = async () => {
-    try {
-      const res = await api.get(`/admin/trust-cases/${caseId}/download-signed`, { responseType: "blob" });
-      const url = URL.createObjectURL(res.data);
-      const a = document.createElement("a");
-      a.href = url; a.download = `signed-trust-${caseId.slice(0,8)}.pdf`; a.click();
       URL.revokeObjectURL(url);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
@@ -221,6 +199,49 @@ export default function AdminCaseDetail() {
 
   const docs = (c.documents || []).filter((d) => !d.is_deleted);
 
+  const archiveCase = async () => {
+    if (!window.confirm(`Archive case for ${c.client_name || c.client_email}? It will be hidden from the default admin list and the client's portal. You can unarchive later.`)) return;
+    try {
+      await api.post(`/admin/trust-cases/${caseId}/archive`);
+      toast.success("Case archived.");
+      navigate("/admin");
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const unarchiveCase = async () => {
+    try {
+      await api.post(`/admin/trust-cases/${caseId}/unarchive`);
+      toast.success("Case restored.");
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const deleteCase = async () => {
+    const label = c.client_name || c.client_email;
+    const confirm1 = window.prompt(
+      `⚠️ DELETE case for ${label} permanently?\n\n` +
+      `This removes the case, all messages, all uploaded documents, invites, and questions. ` +
+      `This cannot be undone.\n\n` +
+      `Type DELETE to confirm:`
+    );
+    if (confirm1 !== "DELETE") { toast.message("Cancelled — nothing was deleted."); return; }
+    const alsoUser = window.confirm(
+      `Also delete the client user account for ${c.client_email}? ` +
+      `(Only deletes if this is their only case. Cancel to keep the user.)`
+    );
+    try {
+      const { data } = await api.delete(`/admin/trust-cases/${caseId}`, { params: { delete_user: alsoUser } });
+      const bits = [
+        `Case deleted.`,
+        `Messages: ${data.deleted?.messages || 0}`,
+        `Documents: ${data.storage_objects_deleted || 0}`,
+        data.user_deleted ? "Client user deleted." : "",
+      ].filter(Boolean).join(" · ");
+      toast.success(bits);
+      navigate("/admin");
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
   return (
     <Layout>
       <Link to="/admin" className="text-sm text-[#64748B] hover:text-navy inline-flex items-center gap-1 mb-6" data-testid="admin-back-btn">
@@ -229,25 +250,45 @@ export default function AdminCaseDetail() {
 
       <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
         <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Case #{c.id.slice(0, 8).toUpperCase()}</p>
+          <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Case #{c.id.slice(0, 8).toUpperCase()}
+            {c.archived && <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px]" data-testid="archived-badge">ARCHIVED</span>}
+          </p>
           <h1 className="font-serif text-4xl text-navy">{c.client_name || c.client_email}</h1>
           {c.trust_name && <p className="text-navy/80 font-serif text-lg mt-0.5" data-testid="admin-trust-name">{c.trust_name}</p>}
           <p className="text-[#64748B] mt-1">{c.client_email} · {c.trust_type === "joint" ? "Joint Trust" : "Single Trust"}</p>
         </div>
-        <button
-          onClick={async () => {
-            try {
-              const res = await api.get(`/trust-cases/${caseId}/export.pdf`, { responseType: "blob" });
-              const url = URL.createObjectURL(res.data);
-              const a = document.createElement("a");
-              a.href = url; a.download = `trust-intake-${caseId.slice(0,8)}.pdf`; a.click();
-              URL.revokeObjectURL(url);
-            } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-          }}
-          className="btn-accent"
-          data-testid="admin-download-pdf-btn">
-          <Download className="h-4 w-4 inline mr-1" /> Download Intake PDF
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={async () => {
+              try {
+                const res = await api.get(`/trust-cases/${caseId}/export.pdf`, { responseType: "blob" });
+                const url = URL.createObjectURL(res.data);
+                const a = document.createElement("a");
+                a.href = url; a.download = `trust-intake-${caseId.slice(0,8)}.pdf`; a.click();
+                URL.revokeObjectURL(url);
+              } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+            }}
+            className="btn-accent"
+            data-testid="admin-download-pdf-btn">
+            <Download className="h-4 w-4 inline mr-1" /> Download Intake PDF
+          </button>
+          {c.archived ? (
+            <button onClick={unarchiveCase} className="btn-secondary" data-testid="unarchive-case-btn">
+              <RefreshCw className="h-4 w-4 inline mr-1" /> Restore
+            </button>
+          ) : (
+            <button onClick={archiveCase} className="btn-secondary" data-testid="archive-case-btn" title="Hide from admin list and client portal (reversible)">
+              <Clock className="h-4 w-4 inline mr-1" /> Archive
+            </button>
+          )}
+          <button
+            onClick={deleteCase}
+            className="inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium border-2 border-red-600 text-red-700 hover:bg-red-600 hover:text-white transition-colors"
+            data-testid="delete-case-btn"
+            title="Permanently delete this case (irreversible)">
+            <Trash2 className="h-4 w-4 inline mr-1" /> Delete
+          </button>
+        </div>
       </div>
 
       <div className="mb-6">
@@ -513,45 +554,6 @@ export default function AdminCaseDetail() {
           )}
         </Section>
 
-        <Section title="E-Signature (Dropbox Sign)">
-          {!c.esign ? (
-            <div>
-              <p className="text-sm text-[#64748B] mb-3">No signature request sent yet. Upload the final trust PDF to send the client an e-sign request.</p>
-              <button onClick={() => setSignOpen(true)} className="btn-accent text-sm" data-testid="send-for-signing-btn">
-                <FilePen className="h-4 w-4 inline mr-1" /> Send for Signing
-              </button>
-            </div>
-          ) : (
-            <div>
-              <KV k="Title" v={c.esign.title} />
-              <KV k="Signer" v={`${c.esign.signer_name} <${c.esign.signer_email}>`} />
-              <KV k="Status" v={c.esign.status} />
-              <KV k="Sent" v={c.esign.created_at?.slice(0, 19).replace("T", " ")} />
-              {c.esign.signed_at && <KV k="Signed" v={c.esign.signed_at?.slice(0, 19).replace("T", " ")} />}
-              <div className="flex flex-wrap gap-2 mt-4">
-                <button onClick={refreshSignatureStatus} disabled={refreshing} className="btn-secondary text-sm" data-testid="esign-refresh-btn">
-                  <RefreshCw className={`h-4 w-4 inline mr-1 ${refreshing ? "animate-spin" : ""}`} /> {refreshing ? "Refreshing…" : "Refresh status"}
-                </button>
-                {c.esign.details_url && (
-                  <a href={c.esign.details_url} target="_blank" rel="noreferrer" className="btn-secondary text-sm" data-testid="esign-details-link">
-                    Open in Dropbox Sign
-                  </a>
-                )}
-                {c.esign.status === "signed" && (
-                  <button onClick={downloadSigned} className="btn-accent text-sm" data-testid="esign-download-btn">
-                    <Download className="h-4 w-4 inline mr-1" /> Download signed PDF
-                  </button>
-                )}
-                {c.esign.status !== "signed" && (
-                  <button onClick={() => setSignOpen(true)} className="text-sm text-navy hover:text-bronze" data-testid="esign-resend-btn">
-                    Send replacement document
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-        </Section>
-
         <Section title="Document Requests from client">
           <DocRequestsPanel caseId={caseId} requests={c.requested_documents} reload={load} />
         </Section>
@@ -594,15 +596,6 @@ export default function AdminCaseDetail() {
       <div className="mt-6">
         <MessageThread caseId={caseId} title="Client Messages" />
       </div>
-
-      <SendForSigningDialog
-        open={signOpen}
-        onOpenChange={setSignOpen}
-        caseId={caseId}
-        clientEmail={c.client_email}
-        clientName={c.client_name}
-        onSent={load}
-      />
     </Layout>
   );
 }

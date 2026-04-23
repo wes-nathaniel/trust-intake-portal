@@ -130,22 +130,6 @@ export default function ClientPortal() {
                       <FilePen className="h-4 w-4 inline mr-1" /> Final Trust
                     </Link>
                   )}
-                  {c.esign?.status === "signed" && (
-                    <button
-                      onClick={async () => {
-                        try {
-                          const res = await api.get(`/trust-cases/${c.id}/download-signed`, { responseType: "blob" });
-                          const url = URL.createObjectURL(res.data);
-                          const a = document.createElement("a");
-                          a.href = url; a.download = `signed-trust-${c.id.slice(0,8)}.pdf`; a.click();
-                          URL.revokeObjectURL(url);
-                        } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-                      }}
-                      className="btn-accent text-sm"
-                      data-testid={`download-signed-${c.id}`}>
-                      <FilePen className="h-4 w-4 inline mr-1" /> Signed Trust
-                    </button>
-                  )}
                   <button
                     onClick={async () => {
                       try {

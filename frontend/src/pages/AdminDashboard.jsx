@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
-import { Search, Users, FileClock, ArrowRight, UserPlus } from "lucide-react";
+import { Search, Users, FileClock, ArrowRight, UserPlus, Trash2, Archive } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import InviteClientDialog from "@/components/InviteClientDialog";
 import { toast } from "sonner";
@@ -17,6 +17,7 @@ export default function AdminDashboard() {
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [includeArchived, setIncludeArchived] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -24,6 +25,7 @@ export default function AdminDashboard() {
       const params = {};
       if (q) params.q = q;
       if (status) params.status = status;
+      if (includeArchived) params.include_archived = true;
       const [{ data: cs }, { data: st }] = await Promise.all([
         api.get("/admin/trust-cases", { params }),
         api.get("/admin/stats"),
@@ -33,7 +35,22 @@ export default function AdminDashboard() {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, [status]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [status, includeArchived]);
+
+  const quickArchive = async (id, label, e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!window.confirm(`Archive case for ${label}? You can restore it later.`)) return;
+    try { await api.post(`/admin/trust-cases/${id}/archive`); toast.success("Archived."); await load(); }
+    catch (err) { toast.error(formatApiError(err.response?.data?.detail)); }
+  };
+
+  const quickDelete = async (id, label, e) => {
+    e.preventDefault(); e.stopPropagation();
+    const confirm1 = window.prompt(`⚠️ DELETE case for ${label} permanently?\n\nThis removes the case, messages, documents, and invites. Type DELETE to confirm:`);
+    if (confirm1 !== "DELETE") { toast.message("Cancelled."); return; }
+    try { await api.delete(`/admin/trust-cases/${id}`); toast.success("Case deleted."); await load(); }
+    catch (err) { toast.error(formatApiError(err.response?.data?.detail)); }
+  };
 
   return (
     <Layout>
@@ -82,6 +99,10 @@ export default function AdminDashboard() {
           <option value="">All statuses</option>
           {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
+        <label className="inline-flex items-center gap-2 text-sm text-[#64748B] cursor-pointer select-none" data-testid="include-archived-toggle">
+          <input type="checkbox" checked={includeArchived} onChange={(e) => setIncludeArchived(e.target.checked)} />
+          Show archived
+        </label>
         <button onClick={load} className="btn-primary" data-testid="admin-search-btn">Search</button>
       </div>
 
@@ -107,8 +128,12 @@ export default function AdminDashboard() {
               {cases.map((c) => (
                 <tr key={c.id} className="border-t border-[#E2E0DA] hover:bg-sand-200/30 transition-colors" data-testid={`admin-case-row-${c.id}`}>
                   <td className="px-5 py-3">
-                    <p className="font-medium text-navy">{c.client_name || c.client_email}</p>
+                    <p className="font-medium text-navy">
+                      {c.client_name || c.client_email}
+                      {c.archived && <span className="ml-2 inline-block text-[9px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 uppercase tracking-wide" data-testid={`archived-badge-${c.id}`}>Archived</span>}
+                    </p>
                     <p className="text-xs text-[#64748B]">{c.client_email}</p>
+                    {c.trust_name && <p className="text-xs text-[#94A3B8] truncate max-w-xs italic">{c.trust_name}</p>}
                   </td>
                   <td className="px-5 py-3 capitalize">{c.trust_type}</td>
                   <td className="px-5 py-3">
@@ -117,10 +142,26 @@ export default function AdminDashboard() {
                   <td className="px-5 py-3">{c.grantors?.length || 0}</td>
                   <td className="px-5 py-3">{c.assets?.length || 0}</td>
                   <td className="px-5 py-3 text-[#64748B]">{new Date(c.updated_at).toLocaleDateString()}</td>
-                  <td className="px-5 py-3 text-right">
-                    <Link to={`/admin/cases/${c.id}`} className="text-bronze hover:text-bronze-dark inline-flex items-center gap-1" data-testid={`admin-case-view-${c.id}`}>
-                      View <ArrowRight className="h-4 w-4" />
-                    </Link>
+                  <td className="px-5 py-3 text-right whitespace-nowrap">
+                    <div className="inline-flex items-center gap-1">
+                      <button
+                        onClick={(e) => quickArchive(c.id, c.client_name || c.client_email, e)}
+                        className="p-1.5 rounded hover:bg-amber-50 text-[#64748B] hover:text-amber-700 transition-colors"
+                        title="Archive"
+                        data-testid={`admin-case-archive-${c.id}`}>
+                        <Archive className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={(e) => quickDelete(c.id, c.client_name || c.client_email, e)}
+                        className="p-1.5 rounded hover:bg-red-50 text-[#64748B] hover:text-red-700 transition-colors"
+                        title="Delete permanently"
+                        data-testid={`admin-case-delete-${c.id}`}>
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                      <Link to={`/admin/cases/${c.id}`} className="ml-1 text-bronze hover:text-bronze-dark inline-flex items-center gap-1" data-testid={`admin-case-view-${c.id}`}>
+                        View <ArrowRight className="h-4 w-4" />
+                      </Link>
+                    </div>
                   </td>
                 </tr>
               ))}

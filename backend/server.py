@@ -192,6 +192,20 @@ def get_object(path: str) -> tuple:
     r.raise_for_status()
     return r.content, r.headers.get("Content-Type", "application/octet-stream")
 
+
+def delete_object(path: str) -> bool:
+    """Best-effort deletion of an object from storage. Returns True on 2xx."""
+    key = init_storage()
+    if not key:
+        return False
+    try:
+        r = requests.delete(f"{STORAGE_URL}/objects/{path}",
+                            headers={"X-Storage-Key": key}, timeout=30)
+        return r.status_code < 400
+    except Exception as e:
+        logger.warning(f"delete_object({path}) failed: {e}")
+        return False
+
 # ---------- EMAIL ----------
 async def _branding_doc() -> dict:
     rec = await db.branding.find_one({"id": "global"}, {"_id": 0})
@@ -789,7 +803,10 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
 
 @api_router.get("/trust-cases/mine")
 async def my_cases(user: dict = Depends(get_current_user)):
-    cases = await db.trust_cases.find({"client_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    cases = await db.trust_cases.find(
+        {"client_id": user["id"], "archived": {"$ne": True}},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(100)
     return [_attach_pending(c) for c in cases]
 
 @api_router.get("/trust-cases/{case_id}")
@@ -1444,18 +1461,119 @@ async def admin_reply_question(qid: str, body: QuestionReply, admin: dict = Depe
 async def admin_list_cases(
     q: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    include_archived: bool = Query(False),
     _: dict = Depends(require_admin),
 ):
     flt = {}
+    if not include_archived:
+        flt["archived"] = {"$ne": True}
     if status:
         flt["status"] = status
     if q:
         flt["$or"] = [
             {"client_name": {"$regex": q, "$options": "i"}},
             {"client_email": {"$regex": q, "$options": "i"}},
+            {"trust_name": {"$regex": q, "$options": "i"}},
         ]
     cases = await db.trust_cases.find(flt, {"_id": 0}).sort("updated_at", -1).to_list(500)
     return cases
+
+
+@api_router.post("/admin/trust-cases/{case_id}/archive")
+async def admin_archive_case(case_id: str, admin: dict = Depends(require_admin)):
+    """Soft-archive a case: hides it from the default admin list and the client's portal.
+    Reversible via /unarchive."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    await update_case(case_id, {
+        "archived": True,
+        "archived_at": now_iso(),
+        "archived_by": admin["id"],
+    })
+    return {"ok": True, "archived": True}
+
+
+@api_router.post("/admin/trust-cases/{case_id}/unarchive")
+async def admin_unarchive_case(case_id: str, _: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    await update_case(case_id, {
+        "archived": False,
+        "archived_at": None,
+        "archived_by": None,
+    })
+    return {"ok": True, "archived": False}
+
+
+@api_router.delete("/admin/trust-cases/{case_id}")
+async def admin_delete_case(
+    case_id: str,
+    delete_user: bool = Query(False, description="Also delete the client user + all their cases"),
+    admin: dict = Depends(require_admin),
+):
+    """Permanently delete a case and all related records (messages, questions, invites,
+    square events, object storage documents). Optionally also delete the client user account.
+    This action is irreversible."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    client_id = case.get("client_id")
+    client_email = case.get("client_email")
+
+    # Try to delete uploaded documents from object storage (best-effort)
+    removed_paths = 0
+    try:
+        for doc in (case.get("documents") or []):
+            p = doc.get("storage_path")
+            if p:
+                try:
+                    delete_object(p)
+                    removed_paths += 1
+                except Exception as e:
+                    logger.warning(f"Failed to delete object {p}: {e}")
+        # EIN letter
+        ein = case.get("ein_letter") or {}
+        if ein.get("storage_path"):
+            try: delete_object(ein["storage_path"]); removed_paths += 1
+            except Exception as e: logger.warning(f"delete ein_letter: {e}")
+        # Trust draft
+        draft = case.get("trust_draft") or {}
+        if draft.get("storage_path"):
+            try: delete_object(draft["storage_path"]); removed_paths += 1
+            except Exception as e: logger.warning(f"delete trust_draft: {e}")
+    except Exception as e:
+        logger.error(f"Storage cleanup error for case {case_id}: {e}")
+
+    # Delete related records
+    deleted_counts = {}
+    deleted_counts["case"] = (await db.trust_cases.delete_one({"id": case_id})).deleted_count
+    deleted_counts["messages"] = (await db.messages.delete_many({"case_id": case_id})).deleted_count
+    deleted_counts["questions"] = (await db.questions.delete_many({"case_id": case_id})).deleted_count
+    deleted_counts["invites"] = (await db.invites.delete_many({"case_id": case_id})).deleted_count
+    deleted_counts["square_events"] = 0  # leave audit trail
+    if client_id:
+        deleted_counts["notifications"] = (await db.notifications.delete_many({"case_id": case_id})).deleted_count
+
+    # Optionally delete the client user (if they have no other cases)
+    user_deleted = False
+    if delete_user and client_id:
+        other = await db.trust_cases.count_documents({"client_id": client_id})
+        if other == 0:
+            ures = await db.users.delete_one({"id": client_id, "role": "client"})
+            user_deleted = bool(ures.deleted_count)
+
+    logger.info("Admin %s deleted case %s (client %s): %s, objects=%d, user_deleted=%s",
+                admin["id"], case_id, client_email, deleted_counts, removed_paths, user_deleted)
+    return {
+        "ok": True,
+        "deleted": deleted_counts,
+        "storage_objects_deleted": removed_paths,
+        "user_deleted": user_deleted,
+        "client_email": client_email,
+    }
 
 @api_router.get("/admin/trust-cases/{case_id}")
 async def admin_get_case(case_id: str, _: dict = Depends(require_admin)):
