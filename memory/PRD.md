@@ -89,11 +89,37 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 3. Paste into `/app/backend/.env` as `SQUARE_WEBHOOK_SIGNATURE_KEY="<key>"` and restart backend
 4. (Optional) set `SQUARE_AUTO_UNLOCK_ON_PAID=true` for hands-free unlock after ACH clears
 
+## Implementation Status (2026-04-29, Session 8 — Custom Payment Step)
+
+### ✅ Shipped (this session)
+- **Custom multi-option Payment Step** (`PaymentMethodPicker.jsx`) replacing single-Square button:
+  - Zelle option: opens modal with phone (954-598-3681), name (Wesley Nathaniel), exact amount + copy buttons
+  - Cash App option: opens https://cash.app/$WNate1971 in new tab
+  - Square option: opens existing `payment.public_url` (disabled if no Square invoice)
+  - Big green "I Made My Payment" button → flips `payment.status='pending_verification'` + `case.status='Pending Payment Verification'`
+- **Admin Set Amount-only flow** — `PUT /api/admin/trust-cases/{id}/payment-amount` for non-Square clients (no invoice generated)
+- **Admin Verify Payment flow** — `POST /api/admin/trust-cases/{id}/payment-verify` flips `payment.status='verified'` + `case.status='Payment Verified'`, emails+SMSs client
+- New statuses added: "Drafting Trust", "Ready for Payment", "Pending Payment Verification", "Payment Verified"
+- Removed: Dropbox Sign / e-signature block (entire section deleted from UI)
+- Bulk archive + bulk delete in admin dashboard (with storage cleanup)
+- A2P Compliance landing page (`/company`, `/privacy`, `/terms`)
+- Twilio SMS triggers wired to status changes + payment events
+- Self-healing Square `LOCATION_ID` lookup at runtime (bypasses production env-var typo)
+- Emergent badge removal via `MutationObserver` in `index.html`
+
+### Testing — Session 8
+- Iteration 6: **9/9 frontend scenarios passed** end-to-end on Payment Step + Admin Verification flow
+- Backend smoke-tested via curl in iteration 5 (no regressions)
+- DB-confirmed: case.status correctly advances to "Payment Verified" after admin verify
+
 ## Backlog
+- P0 (Blocked, awaiting Emergent Support): Production env-var access for `TWILIO_*` and `SQUARE_WEBHOOK_SIGNATURE_KEY`
+- P1: Refactor `server.py` (~3000 lines) into FastAPI APIRouter modules under `/app/backend/routes/` (auth, admin, cases, webhooks, payment)
+- P2: PDF post-processor (reportlab) to rearrange Notary/Trustee blocks on uploaded trust PDFs (alternative: user updates Word template)
 - P2: Dropbox Sign e-sign activation (pending user-provided key)
-- P2: Twilio SMS escalation (explicitly skipped by user)
 - P3: Server-side magic-byte check on trust-draft uploads
 - P3: Cache rendered preview PNGs (currently re-rendered on every page request)
+- P3: Replace `window.prompt`-based admin amount/verify dialogs with shadcn `Dialog`
 
 ## Endpoints Summary (new in Session 7)
 - `POST /api/trust-cases` — now accepts `trust_name`
