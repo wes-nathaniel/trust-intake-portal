@@ -1,0 +1,37 @@
+{
+  "summary": "End-to-end frontend verification of the new multi-option Payment Step (Zelle / Cash App / Square + 'I Made My Payment'). Set up a fresh client + case via API, uploaded a 2-page trust draft, and drove the entire UI flow with Playwright through admin + client sessions. ALL 9 critical scenarios from the request passed: (1) admin login → admin dashboard, (2) set-amount-only-btn opens window.prompt and PUT /payment-amount succeeds (button label flips 'Set payment amount' → 'Update amount'), (3) PaymentMethodPicker renders on /portal/trust-preview/{caseId} with 'Amount due: $750.00' chip, (4) Zelle button opens zelle-modal showing phone=954-598-3681, name='Wesley Nathaniel', amount=$750.00 — all 3 copy buttons present, modal closes via zelle-done-btn, (5) Cash App button opens new tab at exactly https://cash.app/$WNate1971 (verified via context.expect_event('page')), (6) Square button is correctly DISABLED when payment.public_url is absent, (7) 'I Made My Payment' → POST /trust-cases/{id}/payment-claimed succeeds (toast 'Thank you — your payment is now pending verification.' shown) and UI flips to payment-pending-verification-block with the spec'd copy, (8) Admin reload shows payment-claimed-banner ('Client claims payment via ZELLE') + verify-payment-btn — clicking opens the verify prompt and POST /payment-verify succeeds, (9) Client TrustPreview after verification shows payment-verified-block with copy 'Payment verified — Thank you. Your final trust will be unlocked shortly.' All data-testids in the spec are present and functioning. No backend errors observed during the flow.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/admin/trust-cases/{id}/payment-verify", "issue": "After admin clicks Verify Payment, payment.status correctly flips to 'verified' (client UI confirms via payment-verified-block), but the case-level case.status appears to remain at 'Pending Payment Verification' rather than advancing to 'Payment Verified' as the spec requires (admin Case Status header tag still shows 'PENDING PAYMENT VERIFICATION' and the status dropdown is selected on 'Pending Payment Verification' after a hard reload). This does not break the client-facing flow (which keys off payment.status) but it does break the admin's own status timeline. Suggest verifying that the payment-verify endpoint also updates case.status='Payment Verified'."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/setup_payment_case.py",
+    "/app/backend/tests/backend_test.py"
+  ],
+  "action_items": [
+    "(MEDIUM) Backend: confirm POST /api/admin/trust-cases/{id}/payment-verify also sets case.status='Payment Verified' (currently appears to leave it at 'Pending Payment Verification'). Verify in server.py around the payment-verify handler that the case document is updated with both payment.status and status fields atomically."
+  ],
+  "critical_code_review_comments": [
+    "PaymentMethodPicker.jsx is clean and correct: uses ZELLE constants, hardcoded CASHAPP_URL, formats cents → dollars, gates Square on payment.public_url, returns 3 distinct UI states (verified / pending / picker) keyed off payment.status. All data-testids are present and match the spec.",
+    "AdminCaseDetail.jsx setAmountOnly + verifyPayment use window.prompt — works for testing but a real shadcn Dialog with controlled inputs would be more accessible (no validation, no cancel-vs-empty distinction). LOW priority.",
+    "TrustPreview.jsx correctly renders PaymentMethodPicker only inside post-review-section (after review_completed_ack=true). Good gating.",
+    "data-testid coverage is excellent across the picker, modal, copy buttons, claim button, pending block, verified block, admin set-amount-only-btn, verify-payment-btn, and payment-claimed-banner — fully testable end-to-end."
+  ],
+  "updated_files": [
+    "/app/test_reports/setup_payment_case.py (new — fixture seeder used by Playwright UI run)"
+  ],
+  "success_rate": {"backend": "skipped (per request)", "frontend": "100% (9/9 critical scenarios passed)"},
+  "test_credentials": "Admin: support@igcfirm.com / Wllorenzo03!. Test client created during run: paytest_e8a9ccd2@example.com / PayTest12345!. Test case ID: e7fdbbe1-3aa7-4a39-aa7e-d45d40ea24c8 (now in 'Pending Payment Verification' / payment.status='verified' state).",
+  "seed_data_creation": "1 client account + 1 trust case + 1 trust draft PDF + 1 payment claim cycle (claimed via Zelle, then admin-verified). Production Square API was NEVER called — Square button was confirmed disabled because no public_url exists.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The Payment UI flow is fully working end-to-end on the frontend. The setup helper at /app/test_reports/setup_payment_case.py registers a fresh client, creates a case, sets all 4 acks (incl review_completed_ack), and uploads a draft PDF as admin — output line is 'RESULT|<email>|<password>|<caseId>'. Re-use this helper when re-testing. Note the one minor backend concern: case.status may not advance to 'Payment Verified' after admin verify — recommend backend re-test of POST /api/admin/trust-cases/{id}/payment-verify checking BOTH payment.status==='verified' AND case.status==='Payment Verified' on the GET response.",
+  "rca of the issue": "Only one minor concern: case.status not advancing to 'Payment Verified' after payment-verify. Reproduction: complete the entire flow, then GET /api/admin/trust-cases/{id} after the admin clicks Verify — payment.status==='verified' (correct) but case.status appears to still be 'Pending Payment Verification'. Mitigation: in the payment-verify handler in server.py, ensure the $set update includes both payment.status='verified' AND status='Payment Verified'."
+}
