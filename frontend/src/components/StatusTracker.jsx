@@ -8,6 +8,8 @@ const STEPS = [
   "In Review",
   "Drafting Trust",
   "Ready for Payment",
+  "Pending Payment Verification",
+  "Payment Verified",
   "Completed",
 ];
 

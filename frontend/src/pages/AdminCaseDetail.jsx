@@ -11,7 +11,7 @@ import { displaySSN } from "@/pages/intake/_shared";
 import DocRequestsPanel from "@/components/DocRequestsPanel";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
-                  "Drafting Trust", "Ready for Payment", "Completed"];
+                  "Drafting Trust", "Ready for Payment", "Pending Payment Verification", "Payment Verified", "Completed"];
 
 function Section({ title, children }) {
   return (
@@ -184,6 +184,36 @@ export default function AdminCaseDetail() {
     try {
       await api.get(`/admin/trust-cases/${caseId}/invoice`);
       toast.success("Invoice status refreshed from Square");
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const setAmountOnly = async () => {
+    const dollars = window.prompt("Set payment amount (USD) — for Zelle / Cash App / manual workflows. Enter a number like 750 or 1250.50:");
+    if (dollars === null) return;
+    const n = parseFloat(dollars);
+    if (!(n > 0)) { toast.error("Enter a number greater than 0."); return; }
+    try {
+      await api.put(`/admin/trust-cases/${caseId}/payment-amount`, { amount_cents: Math.round(n * 100) });
+      toast.success(`Amount set: $${n.toFixed(2)}. Status: Ready for Payment.`);
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const verifyPayment = async () => {
+    const amtStr = window.prompt(
+      "Verify and approve client's claimed payment.\n\n" +
+      "Optionally enter the FINAL amount (USD) to lock it in (or leave blank to keep current). " +
+      "This will also email the client and advance their status to 'Payment Verified'.",
+      ""
+    );
+    if (amtStr === null) return;
+    const body = {};
+    const n = parseFloat(amtStr || "");
+    if (n > 0) body.amount_cents = Math.round(n * 100);
+    try {
+      await api.post(`/admin/trust-cases/${caseId}/payment-verify`, body);
+      toast.success("Payment verified. Client has been notified.");
       await load();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
@@ -426,13 +456,41 @@ export default function AdminCaseDetail() {
           )}
         </Section>
 
-        <Section title="Payment (Square)">
+        <Section title="Payment (Zelle / Cash App / Square)">
+          <p className="text-sm text-[#64748B] mb-3">
+            Set the case amount for any payment method. Square invoice is optional (only for card payments).
+          </p>
+          <div className="flex flex-wrap gap-2 mb-4">
+            <button onClick={setAmountOnly} className="btn-secondary text-sm" data-testid="set-amount-only-btn">
+              {c.payment?.amount_cents ? "Update amount" : "Set payment amount"}
+            </button>
+            {c.payment?.claimed && c.payment?.status === "pending_verification" && (
+              <button onClick={verifyPayment} className="btn-accent text-sm" data-testid="verify-payment-btn">
+                <Unlock className="h-4 w-4 inline mr-1" /> Verify &amp; Approve Payment
+              </button>
+            )}
+          </div>
+
+          {c.payment?.claimed && (
+            <div className="mb-4 p-3 bg-amber-50 border border-amber-300 rounded-md text-sm" data-testid="payment-claimed-banner">
+              <p className="font-semibold text-amber-900">
+                Client claims payment via <span className="uppercase">{c.payment.claimed_method}</span>
+              </p>
+              <p className="text-amber-900/90 text-xs mt-1">
+                Submitted {c.payment.claimed_at?.slice(0, 19).replace("T", " ")}
+                {c.payment.claimed_note && ` · Note: ${c.payment.claimed_note}`}
+              </p>
+              {c.payment.status !== "verified" && (
+                <p className="text-amber-900 text-xs mt-1 font-semibold">
+                  Action required: verify payment in your records, then click "Verify &amp; Approve Payment" above.
+                </p>
+              )}
+            </div>
+          )}
+
           {!c.payment?.invoice_id ? (
             <div>
-              <p className="text-sm text-[#64748B] mb-3">
-                Send the client a Square invoice. They'll receive an email with a secure payment link (card or ACH).
-                When payment clears, final trust can be unlocked.
-              </p>
+              <p className="text-xs uppercase text-[#64748B] font-semibold mb-2">Optional: Square invoice (debit/credit card)</p>
               {invoiceOpen ? (
                 <div className="space-y-3 border border-bronze/40 bg-bronze/5 rounded-lg p-4">
                   <div className="grid sm:grid-cols-3 gap-3">
@@ -462,23 +520,23 @@ export default function AdminCaseDetail() {
                   </div>
                   <div className="flex gap-2">
                     <button onClick={createInvoice} disabled={invoiceSending} className="btn-primary text-sm" data-testid="invoice-submit-btn">
-                      {invoiceSending ? "Sending…" : "Create & send invoice"}
+                      {invoiceSending ? "Sending…" : "Create & send Square invoice"}
                     </button>
                     <button onClick={() => setInvoiceOpen(false)} className="btn-secondary text-sm">Cancel</button>
                   </div>
                 </div>
               ) : (
-                <button onClick={() => setInvoiceOpen(true)} className="btn-accent text-sm" data-testid="create-invoice-btn">
+                <button onClick={() => setInvoiceOpen(true)} className="btn-secondary text-sm" data-testid="create-invoice-btn">
                   <DL className="h-4 w-4 inline mr-1" /> Create Square invoice
                 </button>
               )}
             </div>
           ) : (
             <div data-testid="payment-details">
-              <KV k="Status" v={c.payment.status} />
-              <KV k="Invoice ID" v={c.payment.invoice_id} />
-              <KV k="Square Status" v={c.payment.invoice_status || "—"} />
               <KV k="Amount" v={c.payment.amount_cents ? `$${(c.payment.amount_cents/100).toLocaleString(undefined, {minimumFractionDigits: 2})}` : "—"} />
+              <KV k="Status" v={c.payment.status} />
+              <KV k="Square Invoice ID" v={c.payment.invoice_id} />
+              <KV k="Square Status" v={c.payment.invoice_status || "—"} />
               <KV k="Due date" v={c.payment.due_date} />
               <KV k="Source" v={c.payment.source_type || "—"} />
               <KV k="Last webhook" v={c.payment.last_webhook_at?.slice(0, 19).replace("T", " ") || "—"} />
@@ -492,15 +550,24 @@ export default function AdminCaseDetail() {
                 <button onClick={refreshInvoice} className="btn-secondary text-sm" data-testid="invoice-refresh-btn">
                   <RefreshCw className="h-4 w-4 inline mr-1" /> Refresh status
                 </button>
-                {c.payment.status !== "paid" && c.payment.status !== "paid_manual" && (
+                {c.payment.status !== "paid" && c.payment.status !== "paid_manual" && c.payment.status !== "verified" && (
                   <button onClick={markPaymentReceived} className="btn-accent text-sm" data-testid="mark-paid-btn">
-                    Mark payment received (manual)
+                    Mark Square payment received (manual)
                   </button>
                 )}
               </div>
               {c.payment.status === "ach_pending" && (
-                <p className="text-xs text-amber-700 mt-3">ACH is pending — typically 3–5 business days to clear. Final trust stays locked until cleared or admin overrides.</p>
+                <p className="text-xs text-amber-700 mt-3">ACH is pending — typically 3–5 business days to clear.</p>
               )}
+            </div>
+          )}
+
+          {!c.payment?.invoice_id && c.payment?.amount_cents && (
+            <div className="mt-3 text-sm" data-testid="payment-summary">
+              <KV k="Amount on file" v={`$${(c.payment.amount_cents/100).toLocaleString(undefined, {minimumFractionDigits: 2})}`} />
+              <KV k="Status" v={c.payment.status} />
+              {c.payment.claimed_at && <KV k="Claimed at" v={c.payment.claimed_at?.slice(0, 19).replace("T", " ")} />}
+              {c.payment.verified_at && <KV k="Verified at" v={c.payment.verified_at?.slice(0, 19).replace("T", " ")} />}
             </div>
           )}
         </Section>

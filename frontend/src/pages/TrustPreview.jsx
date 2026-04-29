@@ -5,9 +5,10 @@ import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import {
   ChevronLeft, ChevronRight, Lock, Shield, CheckCircle2,
-  AlertTriangle, Stamp, ScrollText, PhoneCall, CreditCard, Loader2,
+  AlertTriangle, Stamp, ScrollText, PhoneCall, Loader2,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
+import PaymentMethodPicker from "@/components/PaymentMethodPicker";
 
 // Anti-copy / anti-print helpers
 function useNoCopyAndBlurOnLeave(containerRef, setDimmed) {
@@ -372,42 +373,28 @@ export default function TrustPreview() {
           </p>
         </div>
       ) : (
-        <div className="mt-10 rounded-xl bg-green-50 border border-green-300 p-6 sm:p-8 text-center" data-testid="post-review-section">
-          <CheckCircle2 className="h-10 w-10 text-green-700 mx-auto mb-2" />
-          <p className="font-serif text-2xl text-navy mb-1">Review complete</p>
-          <p className="text-sm text-[#334155] max-w-lg mx-auto">
-            Thank you — your agent has been notified. Please choose how you'd like to continue:
-          </p>
-
-          <div className="mt-6 grid gap-3 sm:grid-cols-2">
-            {hasInvoice && payUrl && payment.status !== "paid" && payment.status !== "paid_manual" ? (
-              <a
-                href={payUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="w-full py-5 rounded-xl text-white text-xl font-bold shadow-lg transition-all active:scale-[0.99] inline-flex items-center justify-center gap-2"
-                style={{ backgroundColor: "#28a745", minHeight: 64 }}
-                data-testid="pay-now-btn">
-                <CreditCard className="h-6 w-6" /> Pay Now
-              </a>
-            ) : payment.status === "paid" || payment.status === "paid_manual" ? (
-              <div className="w-full py-5 rounded-xl border-2 border-green-500 text-green-800 text-lg font-semibold inline-flex items-center justify-center gap-2 bg-white" data-testid="pay-now-paid">
-                <CheckCircle2 className="h-5 w-5" /> Payment received
-              </div>
-            ) : (
-              <div className="w-full py-5 rounded-xl border border-[#E2E0DA] text-[#64748B] text-sm inline-flex items-center justify-center px-4 text-center bg-white" data-testid="pay-now-waiting">
-                Your agent is preparing your invoice — the Pay Now button will appear here shortly.
-              </div>
-            )}
-
-            <button
-              onClick={() => { setCallOpen(true); setCallMessage(null); setCallNote(""); }}
-              className="w-full py-5 rounded-xl bg-navy hover:bg-navy/90 text-white text-xl font-bold shadow-lg transition-all active:scale-[0.99] inline-flex items-center justify-center gap-2"
-              style={{ minHeight: 64 }}
-              data-testid="schedule-call-btn">
-              <PhoneCall className="h-6 w-6" /> Schedule a Call
-            </button>
+        <div className="mt-10 space-y-6" data-testid="post-review-section">
+          <div className="rounded-xl bg-green-50 border border-green-300 p-6 text-center">
+            <CheckCircle2 className="h-10 w-10 text-green-700 mx-auto mb-2" />
+            <p className="font-serif text-2xl text-navy mb-1">Review complete</p>
+            <p className="text-sm text-[#334155] max-w-lg mx-auto">
+              Thank you — your agent has been notified.
+            </p>
           </div>
+
+          <PaymentMethodPicker
+            caseId={caseId}
+            payment={payment}
+            onClaimed={load}
+          />
+
+          <button
+            onClick={() => { setCallOpen(true); setCallMessage(null); setCallNote(""); }}
+            className="w-full py-4 rounded-xl bg-navy hover:bg-navy/90 text-white text-lg font-semibold shadow-md transition-all active:scale-[0.99] inline-flex items-center justify-center gap-2"
+            style={{ minHeight: 56 }}
+            data-testid="schedule-call-btn">
+            <PhoneCall className="h-5 w-5" /> Schedule a Call
+          </button>
         </div>
       )}
 

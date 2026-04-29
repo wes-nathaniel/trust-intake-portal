@@ -280,7 +280,9 @@ def _status_change_email_html(business, accent, primary, client_name, status, ca
         "Waiting on Documents": "We're waiting on a few documents from you to move forward. Please sign in to upload them.",
         "In Review": "Your intake is now under attorney review. No action is required from you at this time.",
         "Drafting Trust": "Our team is now drafting your trust documents. We'll reach out if we need anything.",
-        "Ready for Payment": "Your draft trust is ready. When payment is received, your final trust will be unlocked for printing and notarization.",
+        "Ready for Payment": "Your draft trust is ready. Choose your payment method in the portal to continue.",
+        "Pending Payment Verification": "Thank you, your payment has been received. Your application is now pending verification.",
+        "Payment Verified": "Your payment has been verified. Your final trust is being prepared and will be unlocked shortly.",
         "Completed": "Your trust is now complete. A PDF summary is attached in a separate email.",
     }.get(status, f"Your case status has been updated to: {status}.")
 
@@ -464,6 +466,8 @@ STATUSES = [
     "In Review",
     "Drafting Trust",
     "Ready for Payment",
+    "Pending Payment Verification",
+    "Payment Verified",
     "Completed",
 ]
 
@@ -2559,6 +2563,172 @@ async def client_payment_status(case_id: str, user: dict = Depends(get_current_u
         "due_date": p.get("due_date"),
         "trust_unlocked": bool(case.get("trust_unlocked")),
     }
+
+
+# ---------- Multi-method payment workflow (Zelle / CashApp / Square) ----------
+
+class PaymentAmountReq(BaseModel):
+    amount_cents: int = Field(gt=0, le=100_000_00)
+
+
+class PaymentClaimedReq(BaseModel):
+    method: Literal["zelle", "cashapp", "square", "other"] = "other"
+    note: Optional[str] = None
+
+
+@api_router.put("/admin/trust-cases/{case_id}/payment-amount")
+async def admin_set_payment_amount(case_id: str, body: PaymentAmountReq, admin: dict = Depends(require_admin)):
+    """Set just the payment amount on a case (for Zelle/CashApp clients).
+    Does NOT create a Square invoice. Updates case status to Ready for Payment."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    payment = dict(case.get("payment") or {})
+    payment["amount_cents"] = int(body.amount_cents)
+    if not payment.get("status") or payment.get("status") == "none":
+        payment["status"] = "amount_set"
+    payment["amount_set_at"] = now_iso()
+    payment["amount_set_by"] = admin["id"]
+    await update_case(case_id, {"payment": payment, "status": "Ready for Payment"})
+    return {"ok": True, "payment": payment}
+
+
+@api_router.post("/trust-cases/{case_id}/payment-claimed")
+async def client_claimed_payment(case_id: str, body: PaymentClaimedReq, user: dict = Depends(get_current_user)):
+    """Client clicks 'I Made My Payment' — flips status to Pending Payment Verification
+    and notifies admin. No screenshot/upload required; admin verifies manually."""
+    case = await get_case(case_id, user)
+    if user.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="Admins cannot claim a payment on behalf of a client.")
+
+    payment = dict(case.get("payment") or {})
+    if (payment.get("status") in {"paid", "paid_manual", "verified"}):
+        return {"ok": True, "already_paid": True, "status": payment.get("status")}
+
+    payment["claimed"] = True
+    payment["claimed_method"] = body.method
+    payment["claimed_at"] = now_iso()
+    payment["claimed_by"] = user["id"]
+    if body.note:
+        payment["claimed_note"] = body.note[:500]
+    payment["status"] = "pending_verification"
+
+    await update_case(case_id, {"payment": payment, "status": "Pending Payment Verification"})
+
+    # --- Email to client (subject + copy from spec) ---
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        method_label = {
+            "zelle": "Zelle",
+            "cashapp": "Cash App",
+            "square": "Square (debit/credit card)",
+            "other": "your selected method",
+        }.get(body.method, "your selected method")
+        inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Payment submitted — pending verification</p>
+<p>Thank you, your payment has been received. Your application is now pending verification. You will receive another email once your payment has been fully verified and your next steps are ready.</p>
+<p style="color:#64748B;font-size:13px;">Payment method: {method_label}</p>
+"""
+        html = _email_shell(biz, primary, accent, inner)
+        await send_email_notification(
+            case.get("client_email"),
+            "Payment Submitted – Pending Verification",
+            html,
+        )
+    except Exception as e:
+        logger.error(f"Payment-claimed client email failed: {e}")
+
+    # --- Email + SMS admin ---
+    try:
+        admin_rec = await db.users.find_one({"role": "admin"})
+        if admin_rec:
+            link = f"{FRONTEND_URL}/admin/cases/{case_id}"
+            inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Client claims payment was made</p>
+<p><b>{case.get('client_name') or case.get('client_email')}</b> reports they have completed payment via <b>{body.method.upper() if body.method else 'unspecified'}</b>.</p>
+<p>Case #{case_id[:8].upper()} · {case.get('trust_name') or ''}</p>
+<p style="color:#64748B;">Please verify the payment in your records and approve in the admin panel.</p>
+{_cta(link, "Open case to verify", branding.get('accent_color', '#C5A880'))}
+"""
+            html = _email_shell(biz, primary, accent, inner)
+            await send_email_notification(
+                admin_rec["email"],
+                f"Payment claimed — verify {case.get('client_name') or case.get('client_email')}",
+                html,
+            )
+    except Exception as e:
+        logger.error(f"Payment-claimed admin email failed: {e}")
+
+    try:
+        sms.send_admin_sms(
+            f"IGC: {case.get('client_name') or case.get('client_email')} claims payment via "
+            f"{body.method.upper()}. Case #{case_id[:8].upper()}. Please verify."
+        )
+    except Exception as e:
+        logger.error(f"Payment-claimed SMS failed: {e}")
+
+    return {"ok": True, "status": "pending_verification"}
+
+
+class PaymentVerifyReq(BaseModel):
+    amount_cents: Optional[int] = None  # final amount override
+    note: Optional[str] = None
+
+
+@api_router.post("/admin/trust-cases/{case_id}/payment-verify")
+async def admin_verify_payment(case_id: str, body: PaymentVerifyReq, admin: dict = Depends(require_admin)):
+    """Admin verifies a claimed payment. Sets status to Payment Verified and notifies client."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    payment = dict(case.get("payment") or {})
+    payment["status"] = "verified"
+    payment["verified_at"] = now_iso()
+    payment["verified_by"] = admin["id"]
+    if body.amount_cents:
+        payment["amount_cents"] = int(body.amount_cents)
+        payment["amount_finalized_at"] = now_iso()
+    if body.note:
+        payment["verified_note"] = body.note[:500]
+    await update_case(case_id, {"payment": payment, "status": "Payment Verified"})
+
+    # Notify client
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        link = f"{FRONTEND_URL}/portal"
+        amount_str = f"${(payment.get('amount_cents') or 0)/100:,.2f}"
+        inner = f"""
+<p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Your payment is verified.</p>
+<p>Thank you — we've verified your payment of <b>{amount_str}</b> for <b>{case.get('trust_name') or 'your trust'}</b>. Your final trust documents will be unlocked shortly.</p>
+{_cta(link, "Open your portal", accent)}
+"""
+        html = _email_shell(biz, primary, accent, inner)
+        await send_email_notification(
+            case.get("client_email"),
+            f"Payment verified — {biz}",
+            html,
+        )
+    except Exception as e:
+        logger.error(f"Verify-payment email failed: {e}")
+
+    try:
+        sms.send_admin_sms(
+            f"IGC: Payment VERIFIED for {case.get('client_name') or case.get('client_email')} (case #{case_id[:8].upper()})."
+        )
+    except Exception as e:
+        logger.error(f"Verify-payment SMS failed: {e}")
+
+    return {"ok": True, "payment": payment}
+
+
+
 
 
 # Square webhook — receives invoice.* and payment.* events
