@@ -277,7 +277,7 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
             {saving ? "Submitting…" : "✓  Complete Review"}
           </button>
           <p className="mt-3 text-center text-xs text-[#64748B]">
-            Pressing this button notifies your agent and moves your case to “Ready for Payment.”
+            Pressing this button notifies your agent. They will review and send your next steps shortly.
           </p>
         </div>
       ) : (

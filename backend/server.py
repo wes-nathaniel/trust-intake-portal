@@ -1012,12 +1012,11 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
         current[k] = bool(v)
     updates = {"acknowledgments": current}
 
-    # If client marks review completed, flip case to "Ready for Payment" + notify admin (email + SMS)
+    # If client marks review completed, notify admin (email + SMS).
+    # Per product spec: do NOT auto-advance the case status — only the admin
+    # manually moves it to "Ready for Payment" after reviewing.
     was_review_ack = bool((case.get("acknowledgments") or {}).get("review_completed_ack"))
     now_review_ack = bool(current.get("review_completed_ack"))
-
-    if now_review_ack and not was_review_ack and user.get("role") != "admin":
-        updates["status"] = "Ready for Payment"
 
     await update_case(case_id, updates)
 
@@ -1031,15 +1030,16 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
             if admin_rec:
                 link = f"{FRONTEND_URL}/admin/cases/{case_id}"
                 inner = f"""
-<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Client completed trust review — Ready for Payment</p>
-<p><b>{case.get('client_name') or case.get('client_email')}</b> has reviewed their trust. Case status is now <b>Ready for Payment</b>.</p>
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Client completed trust review — please advance the case</p>
+<p><b>{case.get('client_name') or case.get('client_email')}</b> has finished reviewing their trust draft and confirmed they are satisfied.</p>
 <p>Case #{case_id[:8].upper()} · {case.get('trust_name') or ''}</p>
-{_cta(link, "Create invoice", accent)}
+<p style="color:#64748B;">Open the case in admin and, when ready, manually move the status to <b>Ready for Payment</b> and set the amount.</p>
+{_cta(link, "Open case in admin", accent)}
 """
                 html = _email_shell(biz, primary, accent, inner)
                 await send_email_notification(
                     admin_rec["email"],
-                    f"Ready for Payment — {case.get('client_name') or case.get('client_email')}",
+                    f"Review completed — {case.get('client_name') or case.get('client_email')}",
                     html,
                 )
         except Exception as e:
@@ -1049,7 +1049,7 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
         try:
             sms.send_admin_sms(
                 f"IGC: {case.get('client_name') or case.get('client_email')} completed review. "
-                f"Case #{case_id[:8].upper()} is Ready for Payment."
+                f"Case #{case_id[:8].upper()}. Open admin to advance the case."
             )
         except Exception as e:
             logger.error(f"Review-completed SMS failed: {e}")
