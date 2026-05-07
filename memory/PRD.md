@@ -89,7 +89,7 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 3. Paste into `/app/backend/.env` as `SQUARE_WEBHOOK_SIGNATURE_KEY="<key>"` and restart backend
 4. (Optional) set `SQUARE_AUTO_UNLOCK_ON_PAID=true` for hands-free unlock after ACH clears
 
-## Implementation Status (2026-05-07, Session 9 — Forgot Password Frontend)
+## Implementation Status (2026-05-07, Session 9 — Forgot Password + Diagnostics)
 
 ### ✅ Shipped (this session)
 - **Forgot Password / Password Reset frontend pages** (backend was already in place):
@@ -97,7 +97,10 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
   - `/reset-password?token=XXX` — new password + confirm with strength rules (≥8 chars, letter, number, match)
   - "Forgot your password?" link added to `/login`
   - Branded reset email via existing `_email_shell`/`_cta` (subject: "Reset your {biz} password", 1-hour expiry, plain-link fallback)
-- E2E curl validation: register → forgot → reset → login-with-new-pw ✓ ; old pw 401 ✓ ; token reuse 400 ✓ ; non-existent email 200 (no leak) ✓
+- **Production diagnostics endpoint + panel**:
+  - `GET /api/admin/diagnostics` (admin-only, 401 for unauth) — returns `all_ready`, plus per-integration ready/error state for Square, Twilio, Resend, Emergent LLM, Auth. Never leaks secrets — only booleans + non-sensitive Square location id.
+  - `DiagnosticsPanel.jsx` mounted at top of Admin Dashboard. Collapsible, color-coded green/amber, with one-click "re-check" — instantly tells admin whether a redeploy picked up new env vars.
+- E2E curl validation: register → forgot → reset → login-with-new-pw ✓ ; old pw 401 ✓ ; token reuse 400 ✓ ; non-existent email 200 (no leak) ✓ ; diagnostics 200 (admin) / 401 (unauth) ✓
 
 ## Implementation Status (2026-04-29, Session 8 — Custom Payment Step)
 

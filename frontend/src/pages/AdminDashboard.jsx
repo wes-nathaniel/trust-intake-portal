@@ -5,6 +5,7 @@ import api, { formatApiError } from "@/lib/api";
 import { Search, Users, FileClock, ArrowRight, UserPlus, Trash2, Archive, X, CheckSquare, Square } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import InviteClientDialog from "@/components/InviteClientDialog";
+import DiagnosticsPanel from "@/components/DiagnosticsPanel";
 import { toast } from "sonner";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
@@ -149,6 +150,8 @@ export default function AdminDashboard() {
         </button>
       </div>
       <InviteClientDialog open={inviteOpen} onOpenChange={setInviteOpen} onInvited={() => load()} />
+
+      <DiagnosticsPanel />
 
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10" data-testid="admin-stats">

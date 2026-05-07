@@ -2437,6 +2437,81 @@ async def square_health(_: dict = Depends(require_admin)):
     }
 
 
+@api_router.get("/admin/diagnostics")
+async def admin_diagnostics(_: dict = Depends(require_admin)):
+    """One-shot production-readiness probe. Returns the live state of every
+    third-party integration so admin can verify after a redeploy without
+    reading server logs. Never exposes secret values — only booleans + the
+    non-sensitive resolved Square location id."""
+    # --- Square ---
+    square_enabled = False
+    square_location_resolved = None
+    square_location_typo = False
+    square_error = None
+    try:
+        square_enabled = square_service.is_enabled()
+        if square_enabled:
+            square_location_resolved = square_service._resolve_location_id()
+            configured = (os.environ.get("SQUARE_LOCATION_ID") or "").strip()
+            if configured and square_location_resolved and configured != square_location_resolved:
+                square_location_typo = True
+    except Exception as e:
+        square_error = str(e)[:200]
+
+    square_webhook_signed = bool(os.environ.get("SQUARE_WEBHOOK_SIGNATURE_KEY"))
+
+    # --- Twilio ---
+    twilio_ready = sms.is_enabled()
+    twilio_admin_phone_set = bool((os.environ.get("ADMIN_PHONE_NUMBER") or "").strip())
+
+    # --- Resend (transactional email) ---
+    resend_ready = bool(RESEND_API_KEY)
+
+    # --- Emergent LLM (AI assistant) ---
+    llm_ready = bool(EMERGENT_KEY)
+
+    # --- Auth / DB sanity ---
+    jwt_set = bool(os.environ.get("JWT_SECRET"))
+    try:
+        admin_count = await db.users.count_documents({"role": "admin"})
+    except Exception:
+        admin_count = -1
+
+    all_ready = (
+        square_enabled
+        and bool(square_location_resolved)
+        and not square_location_typo
+        and square_webhook_signed
+        and twilio_ready
+        and twilio_admin_phone_set
+        and resend_ready
+        and llm_ready
+        and jwt_set
+        and admin_count >= 1
+    )
+
+    return {
+        "all_ready": all_ready,
+        "square": {
+            "ready": square_enabled and bool(square_location_resolved),
+            "environment": os.environ.get("SQUARE_ENVIRONMENT", "production"),
+            "location_resolved": square_location_resolved,
+            "location_id_typo": square_location_typo,
+            "webhook_signed": square_webhook_signed,
+            "error": square_error,
+        },
+        "twilio": {
+            "ready": twilio_ready,
+            "admin_phone_set": twilio_admin_phone_set,
+            "from_number_set": bool((os.environ.get("TWILIO_FROM_NUMBER") or "").strip()),
+        },
+        "email": {"resend_ready": resend_ready},
+        "ai": {"emergent_llm_ready": llm_ready},
+        "auth": {"jwt_secret_set": jwt_set, "admin_count": admin_count},
+        "frontend_url": FRONTEND_URL,
+    }
+
+
 @api_router.post("/admin/trust-cases/{case_id}/invoice")
 async def admin_create_invoice(case_id: str, body: InvoiceCreateReq, admin: dict = Depends(require_admin)):
     if not square_service.is_enabled():
