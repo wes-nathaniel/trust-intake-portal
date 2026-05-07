@@ -77,6 +77,11 @@ export default function Login() {
           <button type="submit" disabled={loading} className="btn-primary w-full" data-testid="login-submit-btn">
             {loading ? "Signing in…" : "Sign in"}
           </button>
+          <p className="text-sm text-center">
+            <Link to="/forgot-password" className="text-navy font-medium hover:text-bronze" data-testid="login-forgot-password-link">
+              Forgot your password?
+            </Link>
+          </p>
           <p className="text-sm text-center text-[#64748B]">
             New here?{" "}
             <Link to="/register" className="text-navy font-medium hover:text-bronze" data-testid="login-register-link">Create an account</Link>

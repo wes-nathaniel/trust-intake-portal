@@ -89,6 +89,16 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 3. Paste into `/app/backend/.env` as `SQUARE_WEBHOOK_SIGNATURE_KEY="<key>"` and restart backend
 4. (Optional) set `SQUARE_AUTO_UNLOCK_ON_PAID=true` for hands-free unlock after ACH clears
 
+## Implementation Status (2026-05-07, Session 9 — Forgot Password Frontend)
+
+### ✅ Shipped (this session)
+- **Forgot Password / Password Reset frontend pages** (backend was already in place):
+  - `/forgot-password` — email entry form, generic success message (no enumeration leak)
+  - `/reset-password?token=XXX` — new password + confirm with strength rules (≥8 chars, letter, number, match)
+  - "Forgot your password?" link added to `/login`
+  - Branded reset email via existing `_email_shell`/`_cta` (subject: "Reset your {biz} password", 1-hour expiry, plain-link fallback)
+- E2E curl validation: register → forgot → reset → login-with-new-pw ✓ ; old pw 401 ✓ ; token reuse 400 ✓ ; non-existent email 200 (no leak) ✓
+
 ## Implementation Status (2026-04-29, Session 8 — Custom Payment Step)
 
 ### ✅ Shipped (this session)

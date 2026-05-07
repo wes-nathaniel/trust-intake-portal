@@ -598,10 +598,29 @@ async def forgot_password(body: ForgotReq):
         })
         reset_link = f"{FRONTEND_URL}/reset-password?token={token}"
         logger.info(f"Password reset link for {body.email}: {reset_link}")
-        await send_email_notification(
-            body.email, "Reset your Trust Portal password",
-            f"<p>Click the link below to reset your password (valid for 1 hour):</p><p><a href='{reset_link}'>Reset Password</a></p>"
-        )
+        try:
+            branding = await _branding_doc()
+            biz = branding.get("business_name", "Trust Portal")
+            accent = branding.get("accent_color", "#C5A880")
+            primary = branding.get("primary_color", "#1C252E")
+            display_name = user.get("name") or user["email"]
+            inner = f"""
+<p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Reset your password</p>
+<p>Hi {display_name},</p>
+<p>We received a request to reset the password for your {biz} account. If this was you, click the button below to choose a new password. The link is valid for <b>one hour</b>.</p>
+{_cta(reset_link, "Reset password", accent)}
+<p style="color:#64748B;font-size:13px;">If the button doesn't work, copy and paste this URL into your browser:<br/><span style="word-break:break-all;">{reset_link}</span></p>
+<p style="color:#64748B;font-size:13px;">If you did not request a password reset, you can safely ignore this email — your password will remain unchanged.</p>
+"""
+            html = _email_shell(biz, primary, accent, inner)
+            await send_email_notification(body.email, f"Reset your {biz} password", html)
+        except Exception as e:
+            logger.error(f"Forgot-password email failed: {e}")
+            # Fallback plain link so the user is never stranded
+            await send_email_notification(
+                body.email, "Reset your Trust Portal password",
+                f"<p>Click the link below to reset your password (valid for 1 hour):</p><p><a href='{reset_link}'>Reset Password</a></p>"
+            )
     return {"ok": True}
 
 @api_router.post("/auth/reset-password")
