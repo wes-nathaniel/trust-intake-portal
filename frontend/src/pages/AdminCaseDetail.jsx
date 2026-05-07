@@ -11,7 +11,7 @@ import { displaySSN } from "@/pages/intake/_shared";
 import DocRequestsPanel from "@/components/DocRequestsPanel";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
-                  "Drafting Trust", "Ready for Payment", "Pending Payment Verification", "Payment Verified", "Completed"];
+                  "Drafting Trust", "Ready for Client Review", "Ready for Payment", "Pending Payment Verification", "Payment Verified", "Completed"];
 
 function Section({ title, children }) {
   return (

@@ -89,7 +89,7 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 3. Paste into `/app/backend/.env` as `SQUARE_WEBHOOK_SIGNATURE_KEY="<key>"` and restart backend
 4. (Optional) set `SQUARE_AUTO_UNLOCK_ON_PAID=true` for hands-free unlock after ACH clears
 
-## Implementation Status (2026-05-07, Session 9 — Forgot Password + Diagnostics)
+## Implementation Status (2026-05-07, Session 9 — Forgot Password + Diagnostics + Workflow Refinement)
 
 ### ✅ Shipped (this session)
 - **Forgot Password / Password Reset frontend pages** (backend was already in place):
@@ -99,8 +99,21 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
   - Branded reset email via existing `_email_shell`/`_cta` (subject: "Reset your {biz} password", 1-hour expiry, plain-link fallback)
 - **Production diagnostics endpoint + panel**:
   - `GET /api/admin/diagnostics` (admin-only, 401 for unauth) — returns `all_ready`, plus per-integration ready/error state for Square, Twilio, Resend, Emergent LLM, Auth. Never leaks secrets — only booleans + non-sensitive Square location id.
-  - `DiagnosticsPanel.jsx` mounted at top of Admin Dashboard. Collapsible, color-coded green/amber, with one-click "re-check" — instantly tells admin whether a redeploy picked up new env vars.
-- E2E curl validation: register → forgot → reset → login-with-new-pw ✓ ; old pw 401 ✓ ; token reuse 400 ✓ ; non-existent email 200 (no leak) ✓ ; diagnostics 200 (admin) / 401 (unauth) ✓
+  - `DiagnosticsPanel.jsx` mounted at top of Admin Dashboard. Collapsible, color-coded green/amber, with one-click "re-check".
+- **Workflow refinement (per user spec)**:
+  - New status added: **"Ready for Client Review"** (between "Drafting Trust" and "Ready for Payment"). Wired into `STATUSES`, `StatusTracker`, both admin status dropdowns, and status-change email copy.
+  - Client clicks **Complete Review** in **intake step 8** → status flips to **"Drafting Trust"** (NOT auto-advancing further), admin notified
+  - Admin uploads trust draft → status flips to **"Ready for Client Review"** (was previously "Drafting Trust")
+  - Client clicks **Complete Review** on the **drafted-trust preview** → status STAYS at "Ready for Client Review", admin notified to manually advance to "Ready for Payment"
+  - Admin can manually push status backwards anytime via the existing dropdown
+  - **New "Need to speak with an agent?" pre-review CTA** on `TrustPreview.jsx`. Opens a modal with name + callback phone + optional note. POSTs to new `POST /api/trust-cases/{id}/callback-request` endpoint → emails + SMSs admin with client's name, callback number, and note. **No phone number is publicly displayed.**
+- **E2E curl validation** (preview pod, all green):
+  - register → forgot → reset → login-with-new-pw ✓ ; old pw 401 ✓ ; token reuse 400 ✓ ; non-existent email 200 (no leak) ✓
+  - diagnostics 200 (admin) / 401 (unauth) ✓ ; all integrations green ✓
+  - intake review-complete: status `Intake Started` → `Drafting Trust` ✓
+  - trust-draft review-complete: status stays `Ready for Client Review` ✓
+  - admin upload draft: status → `Ready for Client Review` ✓
+  - callback-request: stored on case, admin email + SMS triggered ✓
 
 ## Implementation Status (2026-04-29, Session 8 — Custom Payment Step)
 

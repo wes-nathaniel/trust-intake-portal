@@ -280,6 +280,7 @@ def _status_change_email_html(business, accent, primary, client_name, status, ca
         "Waiting on Documents": "We're waiting on a few documents from you to move forward. Please sign in to upload them.",
         "In Review": "Your intake is now under attorney review. No action is required from you at this time.",
         "Drafting Trust": "Our team is now drafting your trust documents. We'll reach out if we need anything.",
+        "Ready for Client Review": "Your draft trust is ready. Please review it in the secure portal.",
         "Ready for Payment": "Your draft trust is ready. Choose your payment method in the portal to continue.",
         "Pending Payment Verification": "Thank you, your payment has been received. Your application is now pending verification.",
         "Payment Verified": "Your payment has been verified. Your final trust is being prepared and will be unlocked shortly.",
@@ -465,6 +466,7 @@ STATUSES = [
     "Waiting on Documents",
     "In Review",
     "Drafting Trust",
+    "Ready for Client Review",
     "Ready for Payment",
     "Pending Payment Verification",
     "Payment Verified",
@@ -1012,15 +1014,28 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
         current[k] = bool(v)
     updates = {"acknowledgments": current}
 
-    # If client marks review completed, notify admin (email + SMS).
-    # Per product spec: do NOT auto-advance the case status — only the admin
-    # manually moves it to "Ready for Payment" after reviewing.
+    # If client marks review completed:
+    #   - From intake wizard step 8 (status is intake-y) → flip status to "Drafting Trust"
+    #   - From drafted-trust preview (status="Ready for Client Review") → leave status alone;
+    #     admin manually advances to "Ready for Payment".
+    # Always notify admin (email + SMS) on the transition.
+    INTAKE_STATUSES = {"Intake Started", "Intake In Progress", "Waiting on Documents", "In Review"}
     was_review_ack = bool((case.get("acknowledgments") or {}).get("review_completed_ack"))
     now_review_ack = bool(current.get("review_completed_ack"))
+    is_client_completing = now_review_ack and not was_review_ack and user.get("role") != "admin"
+    cur_status = case.get("status") or ""
+
+    if is_client_completing and cur_status in INTAKE_STATUSES:
+        updates["status"] = "Drafting Trust"
+        review_kind = "intake"
+    elif is_client_completing and cur_status == "Ready for Client Review":
+        review_kind = "trust_draft"
+    else:
+        review_kind = None
 
     await update_case(case_id, updates)
 
-    if now_review_ack and not was_review_ack and user.get("role") != "admin":
+    if is_client_completing:
         try:
             branding = await _branding_doc()
             biz = branding.get("business_name", "Trust Portal")
@@ -1029,17 +1044,36 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
             admin_rec = await db.users.find_one({"role": "admin"})
             if admin_rec:
                 link = f"{FRONTEND_URL}/admin/cases/{case_id}"
+                if review_kind == "intake":
+                    headline = "Client completed intake — Drafting Trust"
+                    body_p = (
+                        f"<b>{case.get('client_name') or case.get('client_email')}</b> has completed the intake wizard. "
+                        f"Case status has moved to <b>Drafting Trust</b>."
+                    )
+                    cta_label = "Open case in admin"
+                elif review_kind == "trust_draft":
+                    headline = "Client approved drafted trust — please advance"
+                    body_p = (
+                        f"<b>{case.get('client_name') or case.get('client_email')}</b> has reviewed the drafted trust and is satisfied. "
+                        f"When ready, manually move the status to <b>Ready for Payment</b> and set the amount."
+                    )
+                    cta_label = "Open case to advance"
+                else:
+                    headline = "Client completed review"
+                    body_p = (
+                        f"<b>{case.get('client_name') or case.get('client_email')}</b> marked review complete."
+                    )
+                    cta_label = "Open case in admin"
                 inner = f"""
-<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Client completed trust review — please advance the case</p>
-<p><b>{case.get('client_name') or case.get('client_email')}</b> has finished reviewing their trust draft and confirmed they are satisfied.</p>
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">{headline}</p>
+<p>{body_p}</p>
 <p>Case #{case_id[:8].upper()} · {case.get('trust_name') or ''}</p>
-<p style="color:#64748B;">Open the case in admin and, when ready, manually move the status to <b>Ready for Payment</b> and set the amount.</p>
-{_cta(link, "Open case in admin", accent)}
+{_cta(link, cta_label, accent)}
 """
                 html = _email_shell(biz, primary, accent, inner)
                 await send_email_notification(
                     admin_rec["email"],
-                    f"Review completed — {case.get('client_name') or case.get('client_email')}",
+                    f"{headline} — {case.get('client_name') or case.get('client_email')}",
                     html,
                 )
         except Exception as e:
@@ -1047,10 +1081,22 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
 
         # --- SMS to admin ---
         try:
-            sms.send_admin_sms(
-                f"IGC: {case.get('client_name') or case.get('client_email')} completed review. "
-                f"Case #{case_id[:8].upper()}. Open admin to advance the case."
-            )
+            if review_kind == "intake":
+                sms_body = (
+                    f"IGC: {case.get('client_name') or case.get('client_email')} completed intake. "
+                    f"Case #{case_id[:8].upper()} → Drafting Trust."
+                )
+            elif review_kind == "trust_draft":
+                sms_body = (
+                    f"IGC: {case.get('client_name') or case.get('client_email')} approved drafted trust. "
+                    f"Case #{case_id[:8].upper()}. Open admin to advance to Ready for Payment."
+                )
+            else:
+                sms_body = (
+                    f"IGC: {case.get('client_name') or case.get('client_email')} completed review. "
+                    f"Case #{case_id[:8].upper()}."
+                )
+            sms.send_admin_sms(sms_body)
         except Exception as e:
             logger.error(f"Review-completed SMS failed: {e}")
 
@@ -1099,6 +1145,71 @@ async def client_schedule_call(case_id: str, body: ScheduleCallReq, user: dict =
         logger.error(f"Schedule-call email failed: {e}")
 
     return {"ok": True, "message": "Thank you. A team member will call you from a 954 number within 10 minutes."}
+
+
+class CallbackRequestReq(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    callback_phone: str = Field(min_length=7, max_length=30)
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+@api_router.post("/trust-cases/{case_id}/callback-request")
+async def client_callback_request(case_id: str, body: CallbackRequestReq, user: dict = Depends(get_current_user)):
+    """Client-initiated callback request from the 'Need to speak with an agent?' button on the trust preview.
+    Stores the request on the case and emails + SMSs the admin. Phone number is never displayed publicly."""
+    case = await get_case(case_id, user)
+    if user.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="Admins cannot submit a callback request on behalf of a client.")
+
+    stamp = now_iso()
+    record = {
+        "name": body.name.strip()[:120],
+        "callback_phone": body.callback_phone.strip()[:30],
+        "note": (body.note or "").strip()[:500],
+        "requested_at": stamp,
+        "requested_by": user["id"],
+    }
+    history = list(case.get("callback_requests") or [])
+    history.append(record)
+    await update_case(case_id, {"callback_requests": history, "last_callback_request_at": stamp})
+
+    # --- Email admin ---
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        admin_rec = await db.users.find_one({"role": "admin"})
+        if admin_rec:
+            link = f"{FRONTEND_URL}/admin/cases/{case_id}"
+            note_html = f"<p style='color:#64748B;'>Note: {record['note']}</p>" if record["note"] else ""
+            inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Client requested a callback</p>
+<p><b>{record['name']}</b> requested a callback regarding their trust draft.</p>
+<p>Callback number: <b style="font-family:monospace;">{record['callback_phone']}</b></p>
+{note_html}
+<p style="color:#64748B;">Case #{case_id[:8].upper()} · {case.get('trust_name') or ''} · Account: {case.get('client_email')}</p>
+{_cta(link, "Open case in admin", accent)}
+"""
+            html = _email_shell(biz, primary, accent, inner)
+            await send_email_notification(
+                admin_rec["email"],
+                f"Callback requested — {record['name']} ({record['callback_phone']})",
+                html,
+            )
+    except Exception as e:
+        logger.error(f"Callback-request email failed: {e}")
+
+    # --- SMS admin ---
+    try:
+        sms.send_admin_sms(
+            f"IGC: {record['name']} requested a callback at {record['callback_phone']} re trust draft. "
+            f"Case #{case_id[:8].upper()}."
+        )
+    except Exception as e:
+        logger.error(f"Callback-request SMS failed: {e}")
+
+    return {"ok": True, "message": "Thank you — your agent will call you back shortly."}
 
 # --- Documents ---
 REQUIRED_DOC_TYPES = {"government_id", "proof_of_address"}
@@ -1841,7 +1952,7 @@ async def admin_upload_trust_draft(case_id: str,
         "uploaded_at": now_iso(),
         "version": int((case.get("trust_draft") or {}).get("version", 0)) + 1,
     }
-    updates = {"trust_draft": draft, "status": "Drafting Trust"}
+    updates = {"trust_draft": draft, "status": "Ready for Client Review"}
     await update_case(case_id, updates)
     # Bust any cached pages from a previous draft version
     try:

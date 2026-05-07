@@ -75,6 +75,14 @@ export default function TrustPreview() {
   const [callNote, setCallNote] = useState("");
   const [callSending, setCallSending] = useState(false);
 
+  // "Need to speak with an agent?" pre-review callback request modal
+  const [agentCbOpen, setAgentCbOpen] = useState(false);
+  const [agentCbName, setAgentCbName] = useState("");
+  const [agentCbPhone, setAgentCbPhone] = useState("");
+  const [agentCbNote, setAgentCbNote] = useState("");
+  const [agentCbSending, setAgentCbSending] = useState(false);
+  const [agentCbDone, setAgentCbDone] = useState(false);
+
   const load = useCallback(async () => {
     try {
       const [{ data: m }, { data: c }] = await Promise.all([
@@ -199,6 +207,33 @@ export default function TrustPreview() {
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail));
     } finally { setCallSending(false); }
+  };
+
+  const submitAgentCallback = async () => {
+    const name = agentCbName.trim();
+    const phone = agentCbPhone.trim();
+    if (name.length < 1 || phone.length < 7) {
+      toast.error("Please enter your name and a callback number.");
+      return;
+    }
+    setAgentCbSending(true);
+    try {
+      await api.post(`/trust-cases/${caseId}/callback-request`, {
+        name, callback_phone: phone, note: agentCbNote.trim() || undefined,
+      });
+      setAgentCbDone(true);
+      toast.success("Thanks — your agent will call you back shortly.");
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally { setAgentCbSending(false); }
+  };
+
+  const closeAgentCb = () => {
+    setAgentCbOpen(false);
+    setAgentCbDone(false);
+    setAgentCbName("");
+    setAgentCbPhone("");
+    setAgentCbNote("");
   };
 
   if (!meta) return <Layout><p className="text-[#64748B]">Loading secure preview…</p></Layout>;
@@ -357,7 +392,7 @@ export default function TrustPreview() {
 
       {/* ===================== Complete Review (or post-review Pay / Call) ===================== */}
       {!reviewCompleted ? (
-        <div className="mt-10" data-testid="complete-review-section">
+        <div className="mt-10 space-y-4" data-testid="complete-review-section">
           <button
             onClick={submitReview}
             disabled={saving || !disclosureAck || !stateLawsAck || !notarizationAck}
@@ -366,10 +401,27 @@ export default function TrustPreview() {
             data-testid="complete-review-btn">
             {saving ? "Submitting…" : "✓  Complete Review"}
           </button>
-          <p className="mt-3 text-center text-xs text-[#64748B]">
+          <p className="mt-1 text-center text-xs text-[#64748B]">
             {(!disclosureAck || !stateLawsAck || !notarizationAck)
               ? "Check all three disclosures above to enable this button."
               : "Pressing this button notifies your agent. They will review and send your next steps shortly."}
+          </p>
+
+          <div className="relative my-2 flex items-center gap-3" aria-hidden>
+            <div className="flex-1 h-px bg-[#E2E0DA]" />
+            <span className="text-[10px] uppercase tracking-[0.2em] text-[#94A3B8]">or</span>
+            <div className="flex-1 h-px bg-[#E2E0DA]" />
+          </div>
+
+          <button
+            onClick={() => setAgentCbOpen(true)}
+            className="w-full py-4 rounded-xl border-2 border-navy/30 hover:border-navy bg-white text-navy text-lg font-semibold transition-all active:scale-[0.99] inline-flex items-center justify-center gap-2"
+            style={{ minHeight: 56 }}
+            data-testid="need-agent-btn">
+            <PhoneCall className="h-5 w-5" /> Need to speak with an agent?
+          </button>
+          <p className="mt-1 text-center text-xs text-[#64748B]">
+            Have questions before you complete your review? Leave your callback number and we'll reach out.
           </p>
         </div>
       ) : (
@@ -440,6 +492,80 @@ export default function TrustPreview() {
                   <button onClick={() => setCallOpen(false)} className="btn-secondary flex-1" disabled={callSending} data-testid="call-cancel-btn">Cancel</button>
                   <button onClick={scheduleCall} className="btn-primary flex-1" disabled={callSending} data-testid="call-confirm-btn">
                     {callSending ? "Requesting…" : "Request callback"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* "Need to speak with an agent?" pre-review callback modal */}
+      {agentCbOpen && (
+        <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4" onClick={() => !agentCbSending && closeAgentCb()} data-testid="agent-callback-modal">
+          <div className="bg-white rounded-xl p-6 sm:p-8 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            {agentCbDone ? (
+              <div className="text-center">
+                <div className="mx-auto mb-3 h-12 w-12 rounded-full bg-green-100 flex items-center justify-center">
+                  <CheckCircle2 className="h-6 w-6 text-green-700" />
+                </div>
+                <p className="font-serif text-2xl text-navy mb-2">Callback requested</p>
+                <p className="text-sm text-[#334155] mb-5" data-testid="agent-callback-confirmation">
+                  Thanks, <b>{agentCbName}</b>. Your agent will call you back at <b>{agentCbPhone}</b> shortly.
+                </p>
+                <button onClick={closeAgentCb} className="btn-primary w-full" data-testid="agent-callback-close-btn">Close</button>
+              </div>
+            ) : (
+              <>
+                <p className="font-serif text-2xl text-navy mb-1">Speak with an agent</p>
+                <p className="text-sm text-[#64748B] mb-4">
+                  Enter your name and a callback number. Your agent will call you back to answer questions about your trust draft.
+                </p>
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Your name</label>
+                    <input
+                      type="text"
+                      value={agentCbName}
+                      onChange={(e) => setAgentCbName(e.target.value)}
+                      autoComplete="name"
+                      placeholder="Jane Smith"
+                      className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
+                      data-testid="agent-callback-name-input"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Best callback number</label>
+                    <input
+                      type="tel"
+                      value={agentCbPhone}
+                      onChange={(e) => setAgentCbPhone(e.target.value)}
+                      autoComplete="tel"
+                      placeholder="(555) 123-4567"
+                      className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
+                      data-testid="agent-callback-phone-input"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">What would you like to discuss? (optional)</label>
+                    <textarea
+                      value={agentCbNote}
+                      onChange={(e) => setAgentCbNote(e.target.value)}
+                      rows={3}
+                      placeholder="Questions about your trust, best time to reach you, etc."
+                      className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
+                      data-testid="agent-callback-note-input"
+                    />
+                  </div>
+                </div>
+                <div className="mt-4 flex gap-2">
+                  <button onClick={closeAgentCb} className="btn-secondary flex-1" disabled={agentCbSending} data-testid="agent-callback-cancel-btn">Cancel</button>
+                  <button
+                    onClick={submitAgentCallback}
+                    className="btn-primary flex-1"
+                    disabled={agentCbSending || !agentCbName.trim() || agentCbPhone.trim().length < 7}
+                    data-testid="agent-callback-submit-btn">
+                    {agentCbSending ? "Requesting…" : "Request callback"}
                   </button>
                 </div>
               </>

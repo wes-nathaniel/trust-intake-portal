@@ -9,7 +9,7 @@ import DiagnosticsPanel from "@/components/DiagnosticsPanel";
 import { toast } from "sonner";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
-                  "Drafting Trust", "Ready for Payment", "Pending Payment Verification", "Payment Verified", "Completed"];
+                  "Drafting Trust", "Ready for Client Review", "Ready for Payment", "Pending Payment Verification", "Payment Verified", "Completed"];
 
 export default function AdminDashboard() {
   const [cases, setCases] = useState([]);
