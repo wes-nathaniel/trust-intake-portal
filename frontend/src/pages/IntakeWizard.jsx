@@ -123,9 +123,9 @@ export default function IntakeWizard() {
       </div>
 
       {(trustCase.pending_items || []).length > 0 && stepKey !== "documents" && (
-        <div className="mb-6 bg-amber-50 border border-amber-300 rounded-xl p-4 flex items-start gap-3" data-testid="wizard-pending-banner">
+        <div className="mb-6 bg-amber-50 border border-amber-300 rounded-xl p-4 flex flex-col sm:flex-row items-start gap-3" data-testid="wizard-pending-banner">
           <AlertTriangle className="h-5 w-5 text-amber-800 shrink-0 mt-0.5" />
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <p className="font-semibold text-amber-900">Action required — {(trustCase.pending_items || []).length} document(s) still needed</p>
             <ul className="text-sm text-amber-900/90 mt-1 space-y-0.5">
               {(trustCase.pending_items || []).map((p, i) => (
@@ -134,50 +134,72 @@ export default function IntakeWizard() {
             </ul>
           </div>
           <button onClick={() => gotoStep(STEP_DEFS.findIndex((s) => s.key === "documents"))}
-            className="btn-primary text-sm shrink-0" data-testid="wizard-jump-to-documents">
+            className="btn-primary text-sm shrink-0 w-full sm:w-auto" data-testid="wizard-jump-to-documents">
             Go to Documents
           </button>
         </div>
       )}
 
-      <div className="grid lg:grid-cols-[280px_1fr] gap-8">
-        {/* Left nav */}
-        <aside className="space-y-1" data-testid="intake-step-nav">
-          {STEP_DEFS.map((s, i) => {
-            const done = s.key === "review" ? false : isStepComplete(s.key, trustCase);
-            const locked = i > 0 && STEP_DEFS.slice(0, i).some((p) => p.key !== "review" && !isStepComplete(p.key, trustCase));
-            const active = i === stepIdx;
-            return (
-              <button key={s.key} onClick={() => gotoStep(i)} disabled={locked}
-                className={`w-full text-left px-4 py-3 rounded-md flex items-center gap-3 transition-colors ${
-                  active ? "bg-navy text-white" : locked ? "text-[#CBD5E1] cursor-not-allowed" : "hover:bg-sand-200 text-navy"
-                }`}
-                data-testid={`step-nav-${s.key}`}>
-                {locked ? <Lock className="h-4 w-4" /> : done ? <CheckCircle2 className="h-4 w-4 text-bronze" /> : <Circle className="h-4 w-4" />}
-                <span className="text-sm font-medium">{s.label}</span>
-              </button>
-            );
-          })}
+      <div className="grid lg:grid-cols-[280px_1fr] gap-4 lg:gap-8">
+        {/* Step nav — vertical on lg+, horizontal scrollable strip on mobile */}
+        <aside className="lg:space-y-1 lg:block" data-testid="intake-step-nav">
+          <div className="lg:hidden -mx-3 px-3 mb-2 overflow-x-auto no-scrollbar">
+            <div className="flex gap-2 min-w-max pb-2">
+              {STEP_DEFS.map((s, i) => {
+                const done = s.key === "review" ? false : isStepComplete(s.key, trustCase);
+                const locked = i > 0 && STEP_DEFS.slice(0, i).some((p) => p.key !== "review" && !isStepComplete(p.key, trustCase));
+                const active = i === stepIdx;
+                return (
+                  <button key={s.key} onClick={() => gotoStep(i)} disabled={locked}
+                    className={`shrink-0 px-3 py-2 rounded-md flex items-center gap-2 text-sm transition-colors min-h-[44px] ${
+                      active ? "bg-navy text-white" : locked ? "text-[#CBD5E1] cursor-not-allowed bg-white border border-[#E2E0DA]" : "bg-white border border-[#E2E0DA] text-navy"
+                    }`}
+                    data-testid={`step-nav-mobile-${s.key}`}>
+                    {locked ? <Lock className="h-4 w-4" /> : done ? <CheckCircle2 className="h-4 w-4 text-bronze" /> : <Circle className="h-4 w-4" />}
+                    <span className="font-medium whitespace-nowrap">{i + 1}. {s.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="hidden lg:block lg:space-y-1">
+            {STEP_DEFS.map((s, i) => {
+              const done = s.key === "review" ? false : isStepComplete(s.key, trustCase);
+              const locked = i > 0 && STEP_DEFS.slice(0, i).some((p) => p.key !== "review" && !isStepComplete(p.key, trustCase));
+              const active = i === stepIdx;
+              return (
+                <button key={s.key} onClick={() => gotoStep(i)} disabled={locked}
+                  className={`w-full text-left px-4 py-3 rounded-md flex items-center gap-3 transition-colors ${
+                    active ? "bg-navy text-white" : locked ? "text-[#CBD5E1] cursor-not-allowed" : "hover:bg-sand-200 text-navy"
+                  }`}
+                  data-testid={`step-nav-${s.key}`}>
+                  {locked ? <Lock className="h-4 w-4" /> : done ? <CheckCircle2 className="h-4 w-4 text-bronze" /> : <Circle className="h-4 w-4" />}
+                  <span className="text-sm font-medium">{s.label}</span>
+                </button>
+              );
+            })}
+          </div>
         </aside>
 
         {/* Right content */}
-        <div className="min-w-0 space-y-8">
-          <div className="bg-white border border-[#E2E0DA] rounded-xl p-6 sm:p-10">
+        <div className="min-w-0 space-y-6 sm:space-y-8">
+          <div className="bg-white border border-[#E2E0DA] rounded-xl p-4 sm:p-6 lg:p-10">
             <StepComp trustCase={trustCase} caseId={caseId} reload={reload} />
           </div>
 
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <button onClick={() => gotoStep(stepIdx - 1)} disabled={stepIdx === 0}
-              className="btn-secondary" data-testid="wizard-prev-btn">
+              className="btn-secondary flex-1 sm:flex-none" data-testid="wizard-prev-btn">
               <ArrowLeft className="h-4 w-4 inline mr-1" /> Previous
             </button>
             {stepIdx < STEP_DEFS.length - 1 ? (
               <button onClick={() => gotoStep(stepIdx + 1)} disabled={!currentDone}
-                className="btn-primary" data-testid="wizard-next-btn">
+                className="btn-primary flex-1 sm:flex-none" data-testid="wizard-next-btn">
                 Next <ArrowRight className="h-4 w-4 inline ml-1" />
               </button>
             ) : (
-              <button onClick={() => navigate("/portal")} className="btn-primary" data-testid="wizard-done-btn">
+              <button onClick={() => navigate("/portal")} className="btn-primary flex-1 sm:flex-none" data-testid="wizard-done-btn">
                 Back to Portal
               </button>
             )}

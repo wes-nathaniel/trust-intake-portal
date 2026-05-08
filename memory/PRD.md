@@ -89,6 +89,21 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 3. Paste into `/app/backend/.env` as `SQUARE_WEBHOOK_SIGNATURE_KEY="<key>"` and restart backend
 4. (Optional) set `SQUARE_AUTO_UNLOCK_ON_PAID=true` for hands-free unlock after ACH clears
 
+## Implementation Status (2026-05-08, Session 9 — Mobile Responsiveness)
+
+### ✅ Shipped (this session)
+- **Mobile responsive overhaul** for the entire client intake flow (verified at 360×740 and 390×844):
+  - **Layout header**: smaller logo + brand name, hidden subtitle on <sm, icon-only sign-out, no horizontal overflow
+  - **StatusTracker**: switched to a compact mobile mode (current step + progress bar + percentage); preserved full step row at sm+
+  - **IntakeWizard**: converted vertical step sidebar to a horizontal scrollable strip on mobile (numbered, with check/lock icons), full-width Prev/Next nav buttons, reduced card padding
+  - **ClientPortal**: action buttons stacked full-width on mobile, status-meta line wraps gracefully, case header column on mobile, row on lg+
+  - **Pending banner**: stacks vertically on mobile with full-width "Go to Documents" button
+  - **Global CSS**: all `.btn-*` get `min-height: 44px` (Apple/Google touch target), all inputs/textareas/selects forced to `font-size: 16px` (prevents iOS Safari zoom-on-focus), hidden horizontal page scroll, no-scrollbar utility for step strips
+- **Verified via Playwright at 360×740 and 390×844** that:
+  - Header, status tracker, intake wizard, grantor form, trust preview viewer, and pre-review section all render cleanly with no horizontal overflow
+  - Tap targets meet WCAG / iOS guidelines (≥44px)
+  - Form fields don't trigger Safari zoom
+
 ## Implementation Status (2026-05-07, Session 9 — Forgot Password + Diagnostics + Workflow Refinement)
 
 ### ✅ Shipped (this session)

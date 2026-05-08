@@ -17,20 +17,20 @@ export default function Layout({ children }) {
   return (
     <div className="min-h-screen bg-sand">
       <header className="sticky top-0 z-40 bg-white/90 backdrop-blur-xl border-b border-[#E2E0DA]" data-testid="app-header">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-16">
-          <Link to={user && user.role === "admin" ? "/admin" : "/portal"} className="flex items-center gap-3" data-testid="brand-link">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 flex items-center justify-between h-14 sm:h-16 gap-2">
+          <Link to={user && user.role === "admin" ? "/admin" : "/portal"} className="flex items-center gap-2 sm:gap-3 min-w-0" data-testid="brand-link">
             {branding.logo_url ? (
-              <img src={branding.logo_url} alt="logo" className="h-9 w-9 rounded-sm object-cover" />
+              <img src={branding.logo_url} alt="logo" className="h-8 w-8 sm:h-9 sm:w-9 rounded-sm object-cover shrink-0" />
             ) : (
-              <div className="h-9 w-9 rounded-sm bg-navy flex items-center justify-center">
-                <span className="font-serif text-bronze text-xl font-semibold">T</span>
+              <div className="h-8 w-8 sm:h-9 sm:w-9 rounded-sm bg-navy flex items-center justify-center shrink-0">
+                <span className="font-serif text-bronze text-lg sm:text-xl font-semibold">T</span>
               </div>
             )}
-            <div className="flex flex-col leading-none">
-              <span className="font-serif text-xl tracking-tight text-navy" data-testid="brand-business-name">
+            <div className="flex flex-col leading-none min-w-0">
+              <span className="font-serif text-base sm:text-xl tracking-tight text-navy truncate" data-testid="brand-business-name">
                 {branding.business_name}
               </span>
-              <span className="text-[10px] uppercase tracking-[0.2em] text-[#64748B]">Trust & Estate Portal</span>
+              <span className="hidden sm:inline text-[10px] uppercase tracking-[0.2em] text-[#64748B]">Trust & Estate Portal</span>
             </div>
           </Link>
 
@@ -50,13 +50,13 @@ export default function Layout({ children }) {
             </nav>
           )}
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1 sm:gap-3 shrink-0">
             {user && user !== false ? (
               <>
                 {user.role === "admin" && <AdminNotifications />}
-                <span className="hidden sm:inline text-sm text-[#64748B]" data-testid="user-email">{user.email}</span>
-                <Button variant="ghost" size="sm" onClick={handleLogout} data-testid="logout-btn">
-                  <LogOut className="h-4 w-4 mr-1" /> Sign out
+                <span className="hidden md:inline text-sm text-[#64748B] truncate max-w-[180px]" data-testid="user-email">{user.email}</span>
+                <Button variant="ghost" size="sm" onClick={handleLogout} data-testid="logout-btn" className="px-2 sm:px-3">
+                  <LogOut className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">Sign out</span>
                 </Button>
               </>
             ) : user === false ? (
@@ -69,7 +69,7 @@ export default function Layout({ children }) {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12 fade-in-up">
+      <main className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-6 sm:py-12 fade-in-up">
         {children}
       </main>
 

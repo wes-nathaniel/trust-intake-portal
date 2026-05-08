@@ -101,32 +101,32 @@ export default function ClientPortal() {
                 </div>
               )}
               <StatusTracker status={c.status} />
-              <div className="bg-white border border-[#E2E0DA] rounded-xl p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                <div>
+              <div className="bg-white border border-[#E2E0DA] rounded-xl p-4 sm:p-6 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
+                <div className="min-w-0">
                   <div className="flex items-center gap-2 mb-1">
-                    <ShieldCheck className="h-4 w-4 text-bronze" />
-                    <span className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">
+                    <ShieldCheck className="h-4 w-4 text-bronze shrink-0" />
+                    <span className="text-xs uppercase tracking-wide text-[#64748B] font-semibold truncate">
                       {c.trust_type === "joint" ? "Joint Trust" : "Single Trust"} · Started {new Date(c.created_at).toLocaleDateString()}
                     </span>
                   </div>
-                  <h3 className="font-serif text-xl text-navy">{c.trust_name || `Trust Case #${c.id.slice(0, 8).toUpperCase()}`}</h3>
+                  <h3 className="font-serif text-xl text-navy break-words">{c.trust_name || `Trust Case #${c.id.slice(0, 8).toUpperCase()}`}</h3>
                   {c.trust_name && <p className="text-xs text-[#94A3B8] mt-0.5">Case #{c.id.slice(0, 8).toUpperCase()}</p>}
-                  <div className="flex gap-4 mt-2 text-sm text-[#64748B]">
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-sm text-[#64748B]">
                     <span>{c.grantors?.length || 0} grantor(s)</span>
-                    <span>·</span>
+                    <span className="hidden sm:inline">·</span>
                     <span>{c.beneficiaries?.length || 0} beneficiary(ies)</span>
-                    <span>·</span>
+                    <span className="hidden sm:inline">·</span>
                     <span>{c.assets?.length || 0} asset(s)</span>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 flex-wrap">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:items-center gap-2 lg:flex-nowrap">
                   {c.trust_draft && !c.trust_unlocked && (
-                    <Link to={`/portal/trust-preview/${c.id}`} className="btn-primary text-sm" data-testid={`open-trust-preview-${c.id}`}>
+                    <Link to={`/portal/trust-preview/${c.id}`} className="btn-primary text-sm w-full lg:w-auto" data-testid={`open-trust-preview-${c.id}`}>
                       <FilePen className="h-4 w-4 inline mr-1" /> Review Draft Trust
                     </Link>
                   )}
                   {c.trust_unlocked && (
-                    <Link to={`/portal/trust-final/${c.id}`} className="btn-accent text-sm" data-testid={`open-trust-final-${c.id}`}>
+                    <Link to={`/portal/trust-final/${c.id}`} className="btn-accent text-sm w-full lg:w-auto" data-testid={`open-trust-final-${c.id}`}>
                       <FilePen className="h-4 w-4 inline mr-1" /> Final Trust
                     </Link>
                   )}
@@ -140,11 +140,11 @@ export default function ClientPortal() {
                         URL.revokeObjectURL(url);
                       } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
                     }}
-                    className="btn-secondary text-sm"
+                    className="btn-secondary text-sm w-full lg:w-auto"
                     data-testid={`download-pdf-${c.id}`}>
                     <Download className="h-4 w-4 inline mr-1" /> PDF
                   </button>
-                  <Link to={`/intake/${c.id}`} className="btn-accent" data-testid={`continue-case-${c.id}`}>
+                  <Link to={`/intake/${c.id}`} className="btn-accent text-sm w-full lg:w-auto sm:col-span-2 lg:col-span-1" data-testid={`continue-case-${c.id}`}>
                     {c.status === "Completed" ? "View" : "Continue Intake"}
                   </Link>
                 </div>

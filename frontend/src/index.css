@@ -23,7 +23,10 @@ body {
   -moz-osx-font-smoothing: grayscale;
   background-color: var(--sand);
   color: var(--navy);
+  overflow-x: hidden;
 }
+
+html, body, #root { max-width: 100%; }
 
 .font-serif {
   font-family: 'Cormorant Garamond', 'Times New Roman', serif;
@@ -113,6 +116,11 @@ body {
   font-weight: 500;
   transition: all 0.2s;
   cursor: pointer;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
 }
 .btn-primary:hover:not(:disabled) {
   background-color: var(--navy-700);
@@ -130,6 +138,11 @@ body {
   font-weight: 500;
   transition: all 0.2s;
   cursor: pointer;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
 }
 .btn-accent:hover:not(:disabled) {
   background-color: var(--bronze-dark);
@@ -144,6 +157,11 @@ body {
   font-weight: 500;
   transition: all 0.2s;
   cursor: pointer;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
 }
 .btn-secondary:hover:not(:disabled) {
   background-color: var(--sand-200);
@@ -153,6 +171,15 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   outline: 2px solid var(--bronze);
   outline-offset: 1px;
 }
+
+/* iOS Safari zooms on focus when font-size < 16px. Keep all form fields at 16px. */
+input, textarea, select {
+  font-size: 16px;
+}
+
+/* Hide horizontal scrollbar on mobile step strips while keeping scroll */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
 /* Smooth scroll */
 html { scroll-behavior: smooth; }
