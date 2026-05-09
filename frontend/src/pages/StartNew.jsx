@@ -76,22 +76,23 @@ export default function StartNew() {
           </button>
         </div>
 
-        {/* Path-specific note */}
+        {/* Path-specific note (no pricing — pricing is set by admin at payment time) */}
         {hasExistingTrust === true && (
           <div className="mt-4 mb-2 rounded-lg border-2 border-bronze/40 bg-bronze/5 p-4" data-testid="review-path-note">
-            <p className="font-serif text-lg text-navy mb-1">Existing Trust Review — $297</p>
+            <p className="font-serif text-lg text-navy mb-1">Existing Trust Review</p>
             <p className="text-sm text-[#334155] leading-relaxed">
-              Your existing trust will be reviewed by our legal team at no additional charge. Your <b>$297</b> covers
-              enrollment in our free credit repair program, your 90-day cash settlement process, and your trust review.
+              Your existing trust will be reviewed by our legal team at no additional charge. Your enrollment also
+              covers our free credit repair program and your 90-day cash settlement process. Upload your trust on
+              the next step and we'll take it from there.
             </p>
           </div>
         )}
         {hasExistingTrust === false && (
           <div className="mt-4 mb-2 rounded-lg border border-[#E2E0DA] bg-sand-200/40 p-4" data-testid="new-path-note">
-            <p className="font-serif text-lg text-navy mb-1">New Trust Drafting — $997</p>
+            <p className="font-serif text-lg text-navy mb-1">New Trust Drafting</p>
             <p className="text-sm text-[#334155] leading-relaxed">
-              We'll guide you through an 8-step intake to draft your new trust. Final price <b>$997</b>, payable after
-              you've reviewed and approved the draft.
+              We'll guide you through an 8-step intake so our team can draft your new trust. You'll review the draft
+              before any payment is collected.
             </p>
           </div>
         )}

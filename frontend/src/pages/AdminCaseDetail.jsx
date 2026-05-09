@@ -290,11 +290,18 @@ export default function AdminCaseDetail() {
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Case #{c.id.slice(0, 8).toUpperCase()}
             {c.archived && <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px]" data-testid="archived-badge">ARCHIVED</span>}
-            {(c.intake_path || "new") === "review" ? (
-              <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-bronze/15 text-bronze text-[10px] font-semibold" data-testid="intake-path-badge">EXISTING TRUST REVIEW · $297</span>
-            ) : (
-              <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-navy/10 text-navy text-[10px] font-semibold" data-testid="intake-path-badge">NEW TRUST · $997</span>
-            )}
+            {(() => {
+              const isReview = (c.intake_path || "new") === "review";
+              const setCents = c.payment?.amount_cents;
+              const setLabel = setCents ? `$${(setCents / 100).toLocaleString(undefined, { minimumFractionDigits: setCents % 100 === 0 ? 0 : 2 })}` : null;
+              const cls = isReview ? "bg-bronze/15 text-bronze" : "bg-navy/10 text-navy";
+              const label = isReview ? "EXISTING TRUST REVIEW" : "NEW TRUST";
+              return (
+                <span className={`ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${cls} text-[10px] font-semibold`} data-testid="intake-path-badge">
+                  {label}{setLabel ? ` · ${setLabel}` : ""}
+                </span>
+              );
+            })()}
           </p>
           <h1 className="font-serif text-4xl text-navy">{c.client_name || c.client_email}</h1>
           {c.trust_name && <p className="text-navy/80 font-serif text-lg mt-0.5" data-testid="admin-trust-name">{c.trust_name}</p>}

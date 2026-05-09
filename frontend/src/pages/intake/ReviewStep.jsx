@@ -97,17 +97,17 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
           ? "Confirm the trust name, acknowledge the legal disclosures below, then complete your review."
           : "Review all the information you've provided, then acknowledge the legal disclosures and complete your review."} />
 
-      {/* ===== Existing Trust Review path: $297 callout ===== */}
+      {/* ===== Existing Trust Review path: program note (no price — admin sets at payment time) ===== */}
       {isReviewPath && (
         <div className="rounded-xl border-2 border-bronze/40 bg-bronze/5 p-5 sm:p-6 mb-8" data-testid="review-path-amount-note">
           <div className="flex items-start gap-3">
             <ShieldCheck className="h-5 w-5 text-bronze shrink-0 mt-0.5" />
             <div>
-              <p className="font-serif text-xl sm:text-2xl text-navy mb-1">Existing Trust Review — $297</p>
+              <p className="font-serif text-xl sm:text-2xl text-navy mb-1">Existing Trust Review</p>
               <p className="text-sm sm:text-base text-[#334155] leading-relaxed">
-                Your existing trust will be reviewed by our legal team at no additional charge.
-                Your <b>$297</b> covers enrollment in our free credit repair program, your 90-day cash settlement
-                process, and your trust review.
+                Your existing trust will be reviewed by our legal team at no additional charge. Your enrollment also
+                covers our free credit repair program and your 90-day cash settlement process. We'll be in touch with
+                next steps after your trust is reviewed.
               </p>
             </div>
           </div>
