@@ -189,7 +189,15 @@ export default function AdminCaseDetail() {
   };
 
   const setAmountOnly = async () => {
-    const dollars = window.prompt("Set payment amount (USD) — for Zelle / Cash App / manual workflows. Enter a number like 750 or 1250.50:");
+    const suggested = c.payment?.suggested_amount_cents
+      || ((c.intake_path || "new") === "review" ? 29700 : 99700);
+    const suggestedDollars = (suggested / 100).toFixed(2);
+    const pathLabel = (c.intake_path || "new") === "review" ? "Existing Trust Review" : "New Trust Drafting";
+    const dollars = window.prompt(
+      `Set payment amount (USD) — ${pathLabel}.\n\n` +
+      "Enter a number like 297 or 997.50. The suggested amount for this path is pre-filled; you can override it.",
+      suggestedDollars
+    );
     if (dollars === null) return;
     const n = parseFloat(dollars);
     if (!(n > 0)) { toast.error("Enter a number greater than 0."); return; }
@@ -282,10 +290,15 @@ export default function AdminCaseDetail() {
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Case #{c.id.slice(0, 8).toUpperCase()}
             {c.archived && <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px]" data-testid="archived-badge">ARCHIVED</span>}
+            {(c.intake_path || "new") === "review" ? (
+              <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-bronze/15 text-bronze text-[10px] font-semibold" data-testid="intake-path-badge">EXISTING TRUST REVIEW · $297</span>
+            ) : (
+              <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-navy/10 text-navy text-[10px] font-semibold" data-testid="intake-path-badge">NEW TRUST · $997</span>
+            )}
           </p>
           <h1 className="font-serif text-4xl text-navy">{c.client_name || c.client_email}</h1>
           {c.trust_name && <p className="text-navy/80 font-serif text-lg mt-0.5" data-testid="admin-trust-name">{c.trust_name}</p>}
-          <p className="text-[#64748B] mt-1">{c.client_email} · {c.trust_type === "joint" ? "Joint Trust" : "Single Trust"}</p>
+          <p className="text-[#64748B] mt-1">{c.client_email} · {(c.intake_path || "new") === "review" ? "Existing Trust Review" : (c.trust_type === "joint" ? "Joint Trust" : "Single Trust")}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button

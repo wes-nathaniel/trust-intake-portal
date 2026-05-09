@@ -295,7 +295,13 @@ export default function AdminDashboard() {
                     <p className="text-xs text-[#64748B]">{c.client_email}</p>
                     {c.trust_name && <p className="text-xs text-[#94A3B8] truncate max-w-xs italic">{c.trust_name}</p>}
                   </td>
-                  <td className="px-5 py-3 capitalize">{c.trust_type}</td>
+                  <td className="px-5 py-3 capitalize">
+                    {(c.intake_path || "new") === "review" ? (
+                      <span className="inline-block text-[10px] bg-bronze/15 text-bronze px-2 py-1 rounded-full font-semibold whitespace-nowrap" data-testid={`path-badge-${c.id}`} title="Existing trust review · $297">Review · $297</span>
+                    ) : (
+                      <span className="inline-block text-[10px] bg-navy/10 text-navy px-2 py-1 rounded-full font-semibold whitespace-nowrap" data-testid={`path-badge-${c.id}`} title="New trust drafting · $997">{c.trust_type} · $997</span>
+                    )}
+                  </td>
                   <td className="px-5 py-3">
                     <span className="inline-block text-xs bg-bronze/15 text-bronze px-2 py-1 rounded-full font-semibold">{c.status}</span>
                   </td>

@@ -107,19 +107,23 @@ export default function DocumentsStep({ caseId, trustCase, reload }) {
   const pending = trustCase.pending_items || [];
   const requestedTypes = new Set(pending.filter((p) => p.kind === "requested_doc").map((p) => p.doc_type));
   const [optionalOpen, setOptionalOpen] = useState(false);
+  const isReviewPath = (trustCase.intake_path || "new") === "review";
 
   const hasId = byType("government_id").length > 0;
   const hasPoa = byType("proof_of_address").length > 0;
+  const hasExistingTrust = byType("existing_trust").length > 0;
 
   // EIN letter is admin-uploaded; show it only if requested
   const adminRequested = pending.filter((p) => p.kind === "requested_doc");
-  // Ensure ein_letter (admin-facing) also shows if requested
   const hasEinRequest = [...requestedTypes].includes("ein_letter");
 
   return (
     <div>
-      <SectionHeader num={7} total={8} title="Document Uploads"
-        subtitle="We only need two required documents. Everything else is optional — upload anything you think will help us draft your trust accurately." />
+      <SectionHeader num={isReviewPath ? 1 : 7} total={isReviewPath ? 2 : 8}
+        title={isReviewPath ? "Upload Your Existing Trust Documents" : "Document Uploads"}
+        subtitle={isReviewPath
+          ? "Upload your existing trust documents along with your government ID and proof of address. Our legal team will review your trust and reach out with next steps."
+          : "We only need two required documents. Everything else is optional — upload anything you think will help us draft your trust accurately."} />
 
       {adminRequested.length > 0 && (
         <div className="mb-5 bg-amber-50 border border-amber-300 rounded-lg p-4" data-testid="doc-requested-banner">
@@ -134,9 +138,21 @@ export default function DocumentsStep({ caseId, trustCase, reload }) {
         </div>
       )}
 
+      {/* ===== Existing Trust Documents (review path only — promoted to top) ===== */}
+      {isReviewPath && (
+        <div className="mb-8">
+          <h3 className="font-serif text-xl text-navy mb-3">Your existing trust</h3>
+          <DocGroup caseId={caseId} docType="existing_trust"
+            label="Existing Trust Documents"
+            hint="Upload every page of your existing trust. PDFs preferred. You can add more than one file."
+            required
+            docs={byType("existing_trust")} reload={reload} highlight={!hasExistingTrust} />
+        </div>
+      )}
+
       {/* Required section */}
       <div className="mb-8">
-        <h3 className="font-serif text-xl text-navy mb-3">Required</h3>
+        <h3 className="font-serif text-xl text-navy mb-3">{isReviewPath ? "Identity verification" : "Required"}</h3>
         <div className="space-y-3">
           {REQUIRED_DOC_TYPES.map((t) => (
             <DocGroup key={t.v} caseId={caseId} docType={t.v} label={t.l} hint={t.hint} required
@@ -151,28 +167,33 @@ export default function DocumentsStep({ caseId, trustCase, reload }) {
         </div>
       </div>
 
-      {/* Optional section (collapsed by default unless highlighted) */}
-      <div className="mb-4">
-        <button onClick={() => setOptionalOpen(!optionalOpen)}
-          className="w-full text-left flex items-center justify-between py-3 border-t border-[#E2E0DA]"
-          data-testid="doc-optional-toggle">
-          <span className="font-serif text-xl text-navy">Optional uploads <span className="text-sm text-[#64748B] font-sans">({OPTIONAL_DOC_TYPES.length} categories)</span></span>
-          {optionalOpen ? <ChevronUp className="h-5 w-5 text-[#64748B]" /> : <ChevronDown className="h-5 w-5 text-[#64748B]" />}
-        </button>
-        {optionalOpen && (
-          <div className="space-y-3 mt-2">
-            {OPTIONAL_DOC_TYPES.map((t) => (
-              <DocGroup key={t.v} caseId={caseId} docType={t.v} label={t.l} hint={t.hint}
-                requested={requestedTypes.has(t.v)} highlight={requestedTypes.has(t.v)}
-                docs={byType(t.v)} reload={reload} />
-            ))}
-          </div>
-        )}
-      </div>
+      {/* Optional section — hidden on review path (review clients shouldn't be encouraged to upload assets) */}
+      {!isReviewPath && (
+        <div className="mb-4">
+          <button onClick={() => setOptionalOpen(!optionalOpen)}
+            className="w-full text-left flex items-center justify-between py-3 border-t border-[#E2E0DA]"
+            data-testid="doc-optional-toggle">
+            <span className="font-serif text-xl text-navy">Optional uploads <span className="text-sm text-[#64748B] font-sans">({OPTIONAL_DOC_TYPES.length} categories)</span></span>
+            {optionalOpen ? <ChevronUp className="h-5 w-5 text-[#64748B]" /> : <ChevronDown className="h-5 w-5 text-[#64748B]" />}
+          </button>
+          {optionalOpen && (
+            <div className="space-y-3 mt-2">
+              {OPTIONAL_DOC_TYPES.map((t) => (
+                <DocGroup key={t.v} caseId={caseId} docType={t.v} label={t.l} hint={t.hint}
+                  requested={requestedTypes.has(t.v)} highlight={requestedTypes.has(t.v)}
+                  docs={byType(t.v)} reload={reload} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
-      {(!hasId || !hasPoa) && (
+      {(!hasId || !hasPoa || (isReviewPath && !hasExistingTrust)) && (
         <div className="mt-6 p-4 bg-amber-50 border border-amber-200 rounded-md text-sm text-amber-900" data-testid="doc-warning">
-          <strong>Required:</strong> Please upload both a Government-issued ID and Proof of Address to continue.
+          <strong>Required:</strong>{" "}
+          {isReviewPath
+            ? "Please upload your existing trust documents, government ID, and proof of address to continue."
+            : "Please upload both a Government-issued ID and Proof of Address to continue."}
         </div>
       )}
 

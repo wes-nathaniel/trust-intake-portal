@@ -26,6 +26,15 @@ const STEP_DEFS = [
   { key: "review", label: "Review", Component: ReviewStep },
 ];
 
+// "review" intake path = client already has a trust → minimal flow
+const REVIEW_PATH_STEP_KEYS = new Set(["documents", "review"]);
+
+function stepsForCase(trustCase) {
+  const path = trustCase?.intake_path || "new";
+  if (path === "review") return STEP_DEFS.filter((s) => REVIEW_PATH_STEP_KEYS.has(s.key));
+  return STEP_DEFS;
+}
+
 function isStepComplete(key, trustCase) {
   if (!trustCase) return false;
   const maxGrantors = trustCase.trust_type === "joint" ? 2 : 1;
@@ -45,7 +54,12 @@ function isStepComplete(key, trustCase) {
     case "documents":{
       const docs = trustCase.documents || [];
       const types = new Set(docs.filter(d => !d.is_deleted).map(d => d.doc_type));
-      return types.has("government_id") && types.has("proof_of_address");
+      const baseDone = types.has("government_id") && types.has("proof_of_address");
+      // Review path also requires the existing trust upload
+      if ((trustCase.intake_path || "new") === "review") {
+        return baseDone && types.has("existing_trust");
+      }
+      return baseDone;
     }
     default: return false;
   }
@@ -75,9 +89,10 @@ export default function IntakeWizard() {
     if (!trustCase) return;
     const qsStep = searchParams.get("step");
     if (!qsStep) return;
-    const idx = STEP_DEFS.findIndex((s) => s.key === qsStep);
+    const steps = stepsForCase(trustCase);
+    const idx = steps.findIndex((s) => s.key === qsStep);
     if (idx >= 0 && idx !== stepIdx) {
-      const locked = idx > 0 && STEP_DEFS.slice(0, idx).some(
+      const locked = idx > 0 && steps.slice(0, idx).some(
         (p) => p.key !== "review" && !isStepComplete(p.key, trustCase)
       );
       if (!locked) setStepIdx(idx);
@@ -89,16 +104,18 @@ export default function IntakeWizard() {
     <Layout><p className="text-[#64748B]">Loading…</p></Layout>
   );
 
-  const StepComp = STEP_DEFS[stepIdx].Component;
-  const stepKey = STEP_DEFS[stepIdx].key;
+  const steps = stepsForCase(trustCase);
+  const safeStepIdx = Math.min(stepIdx, steps.length - 1);
+  const StepComp = steps[safeStepIdx].Component;
+  const stepKey = steps[safeStepIdx].key;
   const currentDone = stepKey === "review" ? true : isStepComplete(stepKey, trustCase);
 
   const gotoStep = (i) => {
     // Hard stop: cannot go to step beyond first incomplete one
     for (let k = 0; k < i; k++) {
-      if (STEP_DEFS[k].key === "review") continue;
-      if (!isStepComplete(STEP_DEFS[k].key, trustCase)) {
-        toast.error(`Complete "${STEP_DEFS[k].label}" before proceeding.`);
+      if (steps[k].key === "review") continue;
+      if (!isStepComplete(steps[k].key, trustCase)) {
+        toast.error(`Complete "${steps[k].label}" before proceeding.`);
         return;
       }
     }
@@ -133,7 +150,7 @@ export default function IntakeWizard() {
               ))}
             </ul>
           </div>
-          <button onClick={() => gotoStep(STEP_DEFS.findIndex((s) => s.key === "documents"))}
+          <button onClick={() => gotoStep(steps.findIndex((s) => s.key === "documents"))}
             className="btn-primary text-sm shrink-0 w-full sm:w-auto" data-testid="wizard-jump-to-documents">
             Go to Documents
           </button>
@@ -145,10 +162,10 @@ export default function IntakeWizard() {
         <aside className="lg:space-y-1 lg:block" data-testid="intake-step-nav">
           <div className="lg:hidden -mx-3 px-3 mb-2 overflow-x-auto no-scrollbar">
             <div className="flex gap-2 min-w-max pb-2">
-              {STEP_DEFS.map((s, i) => {
+              {steps.map((s, i) => {
                 const done = s.key === "review" ? false : isStepComplete(s.key, trustCase);
-                const locked = i > 0 && STEP_DEFS.slice(0, i).some((p) => p.key !== "review" && !isStepComplete(p.key, trustCase));
-                const active = i === stepIdx;
+                const locked = i > 0 && steps.slice(0, i).some((p) => p.key !== "review" && !isStepComplete(p.key, trustCase));
+                const active = i === safeStepIdx;
                 return (
                   <button key={s.key} onClick={() => gotoStep(i)} disabled={locked}
                     className={`shrink-0 px-3 py-2 rounded-md flex items-center gap-2 text-sm transition-colors min-h-[44px] ${
@@ -164,10 +181,10 @@ export default function IntakeWizard() {
           </div>
 
           <div className="hidden lg:block lg:space-y-1">
-            {STEP_DEFS.map((s, i) => {
+            {steps.map((s, i) => {
               const done = s.key === "review" ? false : isStepComplete(s.key, trustCase);
-              const locked = i > 0 && STEP_DEFS.slice(0, i).some((p) => p.key !== "review" && !isStepComplete(p.key, trustCase));
-              const active = i === stepIdx;
+              const locked = i > 0 && steps.slice(0, i).some((p) => p.key !== "review" && !isStepComplete(p.key, trustCase));
+              const active = i === safeStepIdx;
               return (
                 <button key={s.key} onClick={() => gotoStep(i)} disabled={locked}
                   className={`w-full text-left px-4 py-3 rounded-md flex items-center gap-3 transition-colors ${
@@ -189,12 +206,12 @@ export default function IntakeWizard() {
           </div>
 
           <div className="flex items-center justify-between gap-3">
-            <button onClick={() => gotoStep(stepIdx - 1)} disabled={stepIdx === 0}
+            <button onClick={() => gotoStep(safeStepIdx - 1)} disabled={safeStepIdx === 0}
               className="btn-secondary flex-1 sm:flex-none" data-testid="wizard-prev-btn">
               <ArrowLeft className="h-4 w-4 inline mr-1" /> Previous
             </button>
-            {stepIdx < STEP_DEFS.length - 1 ? (
-              <button onClick={() => gotoStep(stepIdx + 1)} disabled={!currentDone}
+            {safeStepIdx < steps.length - 1 ? (
+              <button onClick={() => gotoStep(safeStepIdx + 1)} disabled={!currentDone}
                 className="btn-primary flex-1 sm:flex-none" data-testid="wizard-next-btn">
                 Next <ArrowRight className="h-4 w-4 inline ml-1" />
               </button>

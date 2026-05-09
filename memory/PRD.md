@@ -89,6 +89,34 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 3. Paste into `/app/backend/.env` as `SQUARE_WEBHOOK_SIGNATURE_KEY="<key>"` and restart backend
 4. (Optional) set `SQUARE_AUTO_UNLOCK_ON_PAID=true` for hands-free unlock after ACH clears
 
+## Implementation Status (2026-05-09, Session 9 — Existing-Trust Review Path)
+
+### ✅ Shipped (this session)
+- **Two-path intake**: client now answers *"Do you currently have a living trust set up?"* at the top of `StartNew`:
+  - **NO** → existing 8-step wizard, `intake_path: "new"`, suggested $997
+  - **YES** → simplified 2-step wizard (Documents + Review), `intake_path: "review"`, suggested $297
+- **Backend**:
+  - Added `IntakePath` literal + `INTAKE_PATH_PRICE_CENTS = {"new": 99700, "review": 29700}`
+  - `TrustCaseCreate` now accepts `intake_path` (default `"new"`)
+  - Case stores `intake_path` and `payment.suggested_amount_cents` on creation
+  - Welcome email subject/label adapts to "Existing Trust Review" for review-path cases
+  - Backwards-compatible: existing API consumers without `intake_path` still default to `"new"`
+- **Frontend**:
+  - `StartNew.jsx` rebuilt with Yes/No at top; conditional path-specific notes; trust-type selector hidden on YES path
+  - `IntakeWizard.jsx` filters steps by `intake_path` (review path = `documents + review` only); deep-link `?step=` and step-completion logic respect the filtered list
+  - `DocumentsStep.jsx` adapts on review path — promoted "Upload Your Existing Trust Documents" section at top with `existing_trust` required, optional uploads section hidden, header rebranded
+  - `ReviewStep.jsx` adapts — hides Grantors/Trustees/Successors/Beneficiaries/Assets summary blocks; shows a prominent **$297 callout with the exact spec wording** ("Your existing trust will be reviewed by our legal team at no additional charge. Your $297 covers enrollment in our free credit repair program, your 90-day cash settlement process, and your trust review.") at the top
+  - `isStepComplete("documents")` requires `existing_trust` upload on review path
+  - Admin: `setAmountOnly` `window.prompt` is **pre-filled with $297 / $997** based on path; admin can override
+  - Path badge ("EXISTING TRUST REVIEW · $297" / "NEW TRUST · $997") visible on Admin Case Detail header and as a column on the Admin Dashboard list
+- **E2E verified on preview**:
+  - POST /api/trust-cases with `intake_path=review` → suggested 29700 ✓
+  - POST /api/trust-cases with `intake_path=new` (joint) → suggested 99700 ✓
+  - POST /api/trust-cases with no path → defaults to `new`, 99700 ✓ (backwards compat)
+  - StartNew Yes → wizard shows ONLY "Documents" + "Review" steps ✓
+  - DocumentsStep header reads "Upload Your Existing Trust Documents" ✓
+  - Required warning correctly demands existing trust + ID + proof of address ✓
+
 ## Implementation Status (2026-05-08, Session 9 — Mobile Responsiveness)
 
 ### ✅ Shipped (this session)

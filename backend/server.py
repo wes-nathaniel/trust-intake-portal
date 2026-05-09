@@ -378,10 +378,18 @@ class QuestionReply(BaseModel):
     reply: str = Field(min_length=1, max_length=4000)
 
 TrustType = Literal["single", "joint"]
+IntakePath = Literal["new", "review"]
+
+# Suggested invoice amount (in cents) per intake path. Admin can override.
+INTAKE_PATH_PRICE_CENTS = {
+    "new": 99700,    # $997.00 — full new-trust drafting
+    "review": 29700, # $297.00 — existing trust review + credit repair + 90-day cash settlement
+}
 
 class TrustCaseCreate(BaseModel):
-    trust_type: TrustType
+    trust_type: TrustType = "single"
     trust_name: Optional[str] = ""
+    intake_path: IntakePath = "new"
 
 class TrustNameUpdate(BaseModel):
     trust_name: str = Field(min_length=3, max_length=200)
@@ -767,6 +775,8 @@ async def update_case(case_id: str, updates: dict):
 
 @api_router.post("/trust-cases")
 async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_current_user)):
+    intake_path = body.intake_path or "new"
+    suggested_amount = INTAKE_PATH_PRICE_CENTS.get(intake_path, INTAKE_PATH_PRICE_CENTS["new"])
     case = {
         "id": new_id(),
         "client_id": user["id"],
@@ -774,6 +784,7 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
         "client_name": user.get("name", ""),
         "trust_type": body.trust_type,
         "trust_name": (body.trust_name or "").strip(),
+        "intake_path": intake_path,
         "status": "Intake Started",
         "grantors": [],
         "trustees": [],
@@ -793,7 +804,7 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
             "business_sos_ack": False,
             "disclosure_ack": False,
         },
-        "payment": {"status": "none"},
+        "payment": {"status": "none", "suggested_amount_cents": suggested_amount},
         "trust_unlocked": False,
         "created_at": now_iso(),
         "updated_at": now_iso(),
@@ -803,7 +814,10 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
     # Branded welcome email
     branding = await _branding_doc()
     biz = branding.get("business_name", "our firm")
-    trust_label = "Joint Trust" if body.trust_type == "joint" else "Single Trust"
+    if intake_path == "review":
+        trust_label = "Existing Trust Review"
+    else:
+        trust_label = "Joint Trust" if body.trust_type == "joint" else "Single Trust"
     welcome_html = _welcome_email_html(
         business=biz,
         accent=branding.get("accent_color", "#C5A880"),

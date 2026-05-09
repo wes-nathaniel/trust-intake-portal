@@ -87,18 +87,39 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
   };
 
   const reviewCompleted = !!acks.review_completed_ack;
+  const isReviewPath = (trustCase.intake_path || "new") === "review";
 
   return (
     <div>
-      <SectionHeader num={8} total={8} title="Review & Submit"
-        subtitle="Review all the information you've provided, then acknowledge the legal disclosures and complete your review." />
+      <SectionHeader num={isReviewPath ? 2 : 8} total={isReviewPath ? 2 : 8}
+        title="Review & Submit"
+        subtitle={isReviewPath
+          ? "Confirm the trust name, acknowledge the legal disclosures below, then complete your review."
+          : "Review all the information you've provided, then acknowledge the legal disclosures and complete your review."} />
+
+      {/* ===== Existing Trust Review path: $297 callout ===== */}
+      {isReviewPath && (
+        <div className="rounded-xl border-2 border-bronze/40 bg-bronze/5 p-5 sm:p-6 mb-8" data-testid="review-path-amount-note">
+          <div className="flex items-start gap-3">
+            <ShieldCheck className="h-5 w-5 text-bronze shrink-0 mt-0.5" />
+            <div>
+              <p className="font-serif text-xl sm:text-2xl text-navy mb-1">Existing Trust Review — $297</p>
+              <p className="text-sm sm:text-base text-[#334155] leading-relaxed">
+                Your existing trust will be reviewed by our legal team at no additional charge.
+                Your <b>$297</b> covers enrollment in our free credit repair program, your 90-day cash settlement
+                process, and your trust review.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="bg-bronze/10 border border-bronze/30 rounded-lg p-4 mb-8 flex flex-col sm:flex-row items-start sm:items-center gap-3 justify-between" data-testid="review-complete-banner">
         <div className="flex items-center gap-3">
           <ShieldCheck className="h-5 w-5 text-bronze" />
           <div>
-            <p className="font-semibold text-navy">All required intake sections are complete.</p>
-            <p className="text-sm text-[#64748B]">Please review the summary below and acknowledge the legal disclosures.</p>
+            <p className="font-semibold text-navy">{isReviewPath ? "Your existing trust is uploaded." : "All required intake sections are complete."}</p>
+            <p className="text-sm text-[#64748B]">{isReviewPath ? "Acknowledge the legal disclosures below to complete your review." : "Please review the summary below and acknowledge the legal disclosures."}</p>
           </div>
         </div>
         <div className="flex gap-2 shrink-0">
@@ -138,6 +159,8 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
       </section>
 
       <div className="space-y-6" data-testid="review-summary">
+        {!isReviewPath && (
+          <>
         <section>
           <h3 className="font-serif text-2xl text-navy mb-3">Grantors ({g.length})</h3>
           {g.map((x, i) => (
@@ -198,6 +221,8 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
             </div>
           ))}
         </section>
+          </>
+        )}
 
         <section>
           <h3 className="font-serif text-2xl text-navy mb-3">Documents ({docs.length})</h3>
