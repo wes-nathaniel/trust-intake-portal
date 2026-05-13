@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
-import { ArrowRight, ShieldCheck, Download, FilePen, AlertTriangle, Plus } from "lucide-react";
+import { ArrowRight, ShieldCheck, Download, FilePen, AlertTriangle, Plus, Sparkles } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import StatusTracker from "@/components/StatusTracker";
 import { toast } from "sonner";
@@ -101,6 +101,33 @@ export default function ClientPortal() {
                 </div>
               )}
               <StatusTracker status={c.status} />
+
+              {/* Free Credit Review — visible only after admin manually releases */}
+              {c.credit_repair_released && (
+                <div className="rounded-xl border-2 border-bronze/40 bg-bronze/5 p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center gap-4" data-testid={`credit-repair-block-${c.id}`}>
+                  <div className="h-12 w-12 rounded-full bg-bronze/15 flex items-center justify-center shrink-0">
+                    <Sparkles className="h-6 w-6 text-bronze" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-serif text-xl text-navy mb-1">Your complimentary credit review is ready</p>
+                    <p className="text-sm text-[#334155]">
+                      Click the button to launch your free credit review. The link is yours alone — it lives behind your secure portal login and was never sent by email or text.
+                    </p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const { data } = await api.get(`/trust-cases/${c.id}/credit-repair-link`);
+                        window.open(data.url, "_blank", "noopener,noreferrer");
+                      } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+                    }}
+                    className="btn-primary text-sm w-full sm:w-auto shrink-0"
+                    data-testid={`start-credit-review-btn-${c.id}`}>
+                    Start Your Free Credit Review <ArrowRight className="h-4 w-4 inline ml-1" />
+                  </button>
+                </div>
+              )}
+
               <div className="bg-white border border-[#E2E0DA] rounded-xl p-4 sm:p-6 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 mb-1">

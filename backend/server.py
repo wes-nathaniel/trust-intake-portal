@@ -69,6 +69,7 @@ APP_NAME = os.environ.get("APP_NAME", "trust-portal")
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "support@igcfirm.com").strip().lower()
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 
@@ -390,6 +391,7 @@ class TrustCaseCreate(BaseModel):
     trust_type: TrustType = "single"
     trust_name: Optional[str] = ""
     intake_path: IntakePath = "new"
+    client_phone: Optional[str] = Field(default="", max_length=30)
 
 class TrustNameUpdate(BaseModel):
     trust_name: str = Field(min_length=3, max_length=200)
@@ -480,6 +482,134 @@ STATUSES = [
     "Payment Verified",
     "Completed",
 ]
+
+# Ordered phase mapping for auto-advance logic during intake.
+_INTAKE_PHASE_ORDER = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review"]
+
+
+def _has_any_intake_data(case: dict) -> bool:
+    return bool(
+        (case.get("grantors") or []) or (case.get("trustees") or []) or
+        (case.get("successor_trustees") or []) or (case.get("beneficiaries") or []) or
+        (case.get("assets") or []) or (case.get("ein") or {}).get("authorized")
+    )
+
+
+def _has_required_intake_docs(case: dict) -> bool:
+    docs = (case.get("documents") or [])
+    types = {d.get("doc_type") for d in docs if not d.get("is_deleted")}
+    base = "government_id" in types and "proof_of_address" in types
+    if (case.get("intake_path") or "new") == "review":
+        return base and "existing_trust" in types
+    return base
+
+
+def _auto_intake_status(case: dict) -> Optional[str]:
+    """Return a forward-only intake-phase status for the given case state,
+    or None if the case is past the intake phase. The admin pipeline
+    (In Review → Drafting Trust → ... → Completed) is never auto-touched."""
+    cur = case.get("status") or "Intake Started"
+    if cur not in _INTAKE_PHASE_ORDER:
+        return None  # Case is past intake; admin owns the status.
+
+    if (case.get("acknowledgments") or {}).get("review_completed_ack"):
+        target = "In Review"
+    elif _has_required_intake_docs(case):
+        target = "In Review" if (case.get("intake_path") or "new") == "review" else "Waiting on Documents"
+        # For "new" path, after all required docs are uploaded but before they click Complete Review,
+        # we keep them at Waiting on Documents (they have docs but still owe acknowledgments / final review).
+        # If they have ALL data, they probably will click Complete Review themselves.
+    elif _has_any_intake_data(case) or (case.get("documents") or []):
+        target = "Waiting on Documents" if (case.get("intake_path") or "new") == "review" else "Intake In Progress"
+    else:
+        target = "Intake Started"
+
+    # Forward-only — never roll back during intake.
+    try:
+        cur_idx = _INTAKE_PHASE_ORDER.index(cur)
+        tgt_idx = _INTAKE_PHASE_ORDER.index(target)
+    except ValueError:
+        return None
+    return target if tgt_idx > cur_idx else None
+
+
+async def maybe_auto_advance_intake(case_id: str) -> Optional[str]:
+    """Refresh case state and, if appropriate, advance the intake-phase status.
+    Returns the new status (or None). Also fires the admin status-change email."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        return None
+    new_status = _auto_intake_status(case)
+    if not new_status or new_status == case.get("status"):
+        return None
+    prev = case.get("status")
+    await update_case(case_id, {"status": new_status})
+    case["status"] = new_status
+    # Fire status-change notifications (admin email + optional client email)
+    try:
+        await _notify_status_change(case, prev_status=prev, new_status=new_status, source="auto")
+    except Exception as e:
+        logger.error(f"auto-advance notify failed: {e}")
+    return new_status
+
+
+async def _notify_status_change(case: dict, prev_status: str, new_status: str, source: str = "admin"):
+    """Centralized status-change notifications. Fires:
+       - Admin email to ADMIN_NOTIFY_EMAIL for every change
+       - Client email for client-visible changes (skipped for Pending/Verified — those have their own emails)
+    """
+    if new_status == prev_status:
+        return
+    branding = await _branding_doc()
+    biz = branding.get("business_name", "Trust Portal")
+    accent = branding.get("accent_color", "#C5A880")
+    primary = branding.get("primary_color", "#1C252E")
+    case_id = case.get("id")
+
+    # --- ADMIN email (every change) ---
+    try:
+        admin_link = f"{FRONTEND_URL}/admin/cases/{case_id}"
+        admin_inner = f"""
+<p style="font-size:18px;margin:0 0 12px 0;font-family:Georgia,serif;">Case status changed: <b>{new_status}</b></p>
+<p>Client: <b>{case.get('client_name') or case.get('client_email')}</b> · {case.get('client_email')}{(' · ' + case.get('client_phone')) if case.get('client_phone') else ''}</p>
+<p>Previous status: <span style="color:#64748B;">{prev_status or '—'}</span></p>
+<p>Case #{case_id[:8].upper()} · {case.get('trust_name') or ''}{' · ' + ('Existing Trust Review' if (case.get('intake_path') or 'new') == 'review' else 'New Trust') }</p>
+{_cta(admin_link, "Open case", accent)}
+<p style="color:#94A3B8;font-size:12px;">Triggered by: {source}</p>
+"""
+        admin_html = _email_shell(biz, primary, accent, admin_inner)
+        await send_email_notification(
+            ADMIN_NOTIFY_EMAIL,
+            f"[{biz}] {new_status} — {case.get('client_name') or case.get('client_email')}",
+            admin_html,
+        )
+    except Exception as e:
+        logger.error(f"admin status-change email failed: {e}")
+
+    # --- CLIENT email (subset of statuses; others have dedicated emails elsewhere) ---
+    CLIENT_AUTO_EMAIL_STATUSES = {
+        "Intake In Progress", "Waiting on Documents", "In Review",
+        "Drafting Trust", "Ready for Client Review", "Ready for Payment",
+    }
+    if new_status in CLIENT_AUTO_EMAIL_STATUSES:
+        try:
+            pending = _compute_pending(case) if new_status == "Waiting on Documents" else None
+            portal_link = f"{FRONTEND_URL}/intake/{case_id}?step=documents" if pending else f"{FRONTEND_URL}/portal"
+            html = _status_change_email_html(
+                business=biz, accent=accent, primary=primary,
+                client_name=case.get("client_name") or case.get("client_email"),
+                status=new_status,
+                case_id=case_id[:8].upper(),
+                link=portal_link,
+                pending_items=pending,
+            )
+            await send_email_notification(
+                case.get("client_email"),
+                f"Status update: {new_status} — {biz}",
+                html,
+            )
+        except Exception as e:
+            logger.error(f"client status-change email failed: {e}")
 
 class StatusUpdate(BaseModel):
     status: str
@@ -772,6 +902,16 @@ async def get_case(case_id: str, user: dict) -> dict:
 async def update_case(case_id: str, updates: dict):
     updates["updated_at"] = now_iso()
     await db.trust_cases.update_one({"id": case_id}, {"$set": updates})
+    # Intake-phase auto-advance. Safe to call unconditionally: helper is a no-op
+    # for cases past the intake phase, and refuses to roll status backward.
+    # When the caller is *itself* setting `status`, auto-advance won't override it
+    # because the helper compares forward indices and is keyed off the freshly
+    # written value.
+    try:
+        if "status" not in updates:
+            await maybe_auto_advance_intake(case_id)
+    except Exception as e:
+        logger.error(f"update_case auto-advance failed: {e}")
 
 @api_router.post("/trust-cases")
 async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_current_user)):
@@ -782,6 +922,7 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
         "client_id": user["id"],
         "client_email": user["email"],
         "client_name": user.get("name", ""),
+        "client_phone": (body.client_phone or "").strip()[:30],
         "trust_type": body.trust_type,
         "trust_name": (body.trust_name or "").strip(),
         "intake_path": intake_path,
@@ -1029,7 +1170,8 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
     updates = {"acknowledgments": current}
 
     # If client marks review completed:
-    #   - From intake wizard step 8 (status is intake-y) → flip status to "Drafting Trust"
+    #   - From intake wizard step 8 (status is intake-y) → flip status to "In Review"
+    #     (admin then manually advances to Drafting Trust, etc.)
     #   - From drafted-trust preview (status="Ready for Client Review") → leave status alone;
     #     admin manually advances to "Ready for Payment".
     # Always notify admin (email + SMS) on the transition.
@@ -1040,7 +1182,7 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
     cur_status = case.get("status") or ""
 
     if is_client_completing and cur_status in INTAKE_STATUSES:
-        updates["status"] = "Drafting Trust"
+        updates["status"] = "In Review"
         review_kind = "intake"
     elif is_client_completing and cur_status == "Ready for Client Review":
         review_kind = "trust_draft"
@@ -1059,10 +1201,10 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
             if admin_rec:
                 link = f"{FRONTEND_URL}/admin/cases/{case_id}"
                 if review_kind == "intake":
-                    headline = "Client completed intake — Drafting Trust"
+                    headline = "Client completed intake — In Review"
                     body_p = (
                         f"<b>{case.get('client_name') or case.get('client_email')}</b> has completed the intake wizard. "
-                        f"Case status has moved to <b>Drafting Trust</b>."
+                        f"Case status has moved to <b>In Review</b>."
                     )
                     cta_label = "Open case in admin"
                 elif review_kind == "trust_draft":
@@ -1098,7 +1240,7 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
             if review_kind == "intake":
                 sms_body = (
                     f"IGC: {case.get('client_name') or case.get('client_email')} completed intake. "
-                    f"Case #{case_id[:8].upper()} → Drafting Trust."
+                    f"Case #{case_id[:8].upper()} → In Review."
                 )
             elif review_kind == "trust_draft":
                 sms_body = (
@@ -1863,57 +2005,45 @@ async def admin_update_status(case_id: str, body: StatusUpdate, admin: dict = De
     if body.status == prev_status:
         return {"ok": True, "status": body.status}
 
+    case["status"] = body.status
+
     branding = await _branding_doc()
     biz = branding.get("business_name", "Trust Portal")
     accent = branding.get("accent_color", "#C5A880")
     primary = branding.get("primary_color", "#1C252E")
 
-    # Progress-status email on every status change (incl. Completed below which adds attachment)
-    if body.status != "Completed":
+    # Centralized admin + client status-change notification (handles every status)
+    try:
+        await _notify_status_change(case, prev_status=prev_status, new_status=body.status, source="admin")
+    except Exception as e:
+        logger.error(f"admin update_status notify failed: {e}")
+
+    # Special "Completed" client message (replaces the generic email)
+    if body.status == "Completed" and prev_status != "Completed":
         try:
-            pending = _compute_pending(case) if body.status == "Waiting on Documents" else None
-            portal_link = f"{FRONTEND_URL}/intake/{case_id}?step=documents" if pending else f"{FRONTEND_URL}/portal"
-            html = _status_change_email_html(
-                business=biz, accent=accent, primary=primary,
-                client_name=case.get("client_name") or case.get("client_email"),
-                status=body.status,
-                case_id=case_id[:8].upper(),
-                link=portal_link,
-                pending_items=pending,
-            )
+            portal_link = f"{FRONTEND_URL}/portal"
+            inner = f"""
+<p style="font-size:22px;margin:0 0 14px 0;font-family:Georgia,serif;">Congratulations — your trust is complete.</p>
+<p>A member of our team will call you within 10 minutes. Please log back into your portal to access your complimentary credit review.</p>
+{_cta(portal_link, "Open your portal", accent)}
+"""
+            html = _email_shell(biz, primary, accent, inner)
             await send_email_notification(
                 case.get("client_email"),
-                f"Status update: {body.status} — {biz}",
+                f"Your trust is complete — {biz}",
                 html,
             )
         except Exception as e:
-            logger.error(f"Status change email failed: {e}")
-
-    # Completion email with PDF + referral block
-    if body.status == "Completed" and prev_status != "Completed":
+            logger.error(f"Completion email failed: {e}")
+        # SMS admin so they can make the promised "within 10 minutes" call
         try:
-            case["status"] = "Completed"
-            pdf_bytes = build_intake_pdf(case, branding)
-            referral_link = f"{FRONTEND_URL}/register?ref={case_id[:8]}"
-            referral_html = _referral_block(biz, accent, referral_link)
-            inner = f"""
-<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Your trust intake is complete.</p>
-<p>Thank you for trusting {biz}. A PDF summary of your intake is attached for your records.</p>
-<p>You can download it again anytime from your portal.</p>
-{_cta(f'{FRONTEND_URL}/portal', 'Open your portal', accent)}
-{referral_html}
-"""
-            html = _email_shell(biz, primary, accent, inner)
-            await send_email_notification_with_attachment(
-                to_email=case.get("client_email"),
-                subject=f"Your trust intake is complete — {biz}",
-                html_body=html,
-                attachment_name=f"trust-intake-{case_id[:8]}.pdf",
-                attachment_bytes=pdf_bytes,
-                content_type="application/pdf",
+            sms.send_admin_sms(
+                f"IGC: Case #{case_id[:8].upper()} marked Completed for "
+                f"{case.get('client_name') or case.get('client_email')}. "
+                f"Promised call within 10 minutes."
             )
         except Exception as e:
-            logger.error(f"Completion email failed: {e}")
+            logger.error(f"completion SMS failed: {e}")
     return {"ok": True, "status": body.status}
 
 
@@ -1929,6 +2059,75 @@ async def export_pdf(case_id: str, user: dict = Depends(get_current_user)):
             "Content-Disposition": f'attachment; filename="trust-intake-{case_id[:8]}.pdf"'
         },
     )
+
+
+# ---------- CREDIT REPAIR RELEASE (admin-gated, portal-only) ----------
+
+CREDIT_REPAIR_URL = (
+    "https://forms.zohopublic.com/WBCGROUP/form/"
+    "ConsumerLawAttorneyReferralNetworkIGCFIRM/formperma/"
+    "qS39YSrNGsYAh6hDKZS1mu1Ys1SF2SP0C-Vea2l2ah8"
+)
+
+
+def _split_client_name(case: dict) -> tuple[str, str]:
+    """Best-effort first/last from client_name or grantors[0].full_legal_name."""
+    name = (case.get("client_name") or "").strip()
+    if not name:
+        g0 = (case.get("grantors") or [{}])[0] or {}
+        name = (g0.get("full_legal_name") or "").strip()
+    if not name:
+        return ("", "")
+    parts = name.split()
+    if len(parts) == 1:
+        return (parts[0], "")
+    return (parts[0], " ".join(parts[1:]))
+
+
+@api_router.post("/admin/trust-cases/{case_id}/release-credit-repair")
+async def admin_release_credit_repair(case_id: str, admin: dict = Depends(require_admin)):
+    """Admin-gated unlock. After admin has manually called the client and confirmed
+    everything, this flips a boolean that surfaces the 'Start Your Free Credit Review'
+    button inside the client's portal. The Zoho URL is never emailed; it is only
+    returned via /credit-repair-link, behind the client's session."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Not found")
+    if case.get("credit_repair_released"):
+        return {"ok": True, "already_released": True}
+    stamp = now_iso()
+    await update_case(case_id, {
+        "credit_repair_released": True,
+        "credit_repair_released_at": stamp,
+        "credit_repair_released_by": admin["id"],
+    })
+    return {"ok": True, "released_at": stamp}
+
+
+@api_router.post("/admin/trust-cases/{case_id}/revoke-credit-repair")
+async def admin_revoke_credit_repair(case_id: str, admin: dict = Depends(require_admin)):
+    """Reverses release_credit_repair in case it was clicked by mistake."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Not found")
+    await update_case(case_id, {"credit_repair_released": False})
+    return {"ok": True}
+
+
+@api_router.get("/trust-cases/{case_id}/credit-repair-link")
+async def client_credit_repair_link(case_id: str, user: dict = Depends(get_current_user)):
+    """Returns the Zoho referral URL with ONLY first/last name pre-populated.
+    Gated on: case ownership AND admin having released access. Never exposed
+    by email or SMS — only behind the client's portal session."""
+    case = await get_case(case_id, user)
+    if not case.get("credit_repair_released"):
+        raise HTTPException(status_code=403, detail="Credit repair has not been released for this case yet.")
+    first, last = _split_client_name(case)
+    # Zoho form prefill uses ?FirstName=&LastName= encoded params.
+    from urllib.parse import urlencode
+    qs = urlencode({"FirstName": first, "LastName": last})
+    return {"url": f"{CREDIT_REPAIR_URL}?{qs}"}
+
 
 
 # ---------- TRUST DRAFT PREVIEW (locked, page-by-page, watermarked) ----------

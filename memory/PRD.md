@@ -89,6 +89,33 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 3. Paste into `/app/backend/.env` as `SQUARE_WEBHOOK_SIGNATURE_KEY="<key>"` and restart backend
 4. (Optional) set `SQUARE_AUTO_UNLOCK_ON_PAID=true` for hands-free unlock after ACH clears
 
+## Implementation Status (2026-05-13, Session 10 — Admin workflow polish + Credit Repair gate)
+
+### ✅ Shipped (this session)
+- **Phone captured at intake start + visible to admin**:
+  - StartNew: new **required phone field** ("Best phone number to reach you") collected before case creation; persisted as `case.client_phone`
+  - Admin Dashboard list: phone shows under email (clickable `tel:` link)
+  - Admin Case Detail header: phone shows alongside email (clickable `tel:` link)
+- **Status auto-advance during intake** (forward-only; admin-managed statuses never auto-touched):
+  - Intake Started → Intake In Progress on first data write (grantor/trustee/etc.)
+  - → Waiting on Documents once required uploads land (gov ID + proof of address; review path also requires existing trust)
+  - → In Review when client clicks **Complete Review** on the intake wizard (was previously "Drafting Trust" — now follows the user's flow: admin manually moves to Drafting Trust after review)
+- **Centralized status-change notifications** (`_notify_status_change`):
+  - Admin email to `ADMIN_NOTIFY_EMAIL` (defaults to `support@igcfirm.com`) for **every** status change — including auto-advances
+  - Client email for client-visible statuses (preserves existing dedicated emails for Pending/Verified/Payment-claimed)
+  - Subject format: `[Trust Portal] {status} — {client name}`; includes client phone in body for fast call-back
+- **Completed → automated message + admin SMS** (exact spec wording): "Congratulations — your trust is complete. A member of our team will call you within 10 minutes. Please log back into your portal to access your complimentary credit review." Admin SMS sent in parallel so the 10-min promise can be honored.
+- **Payment-claimed admin alert** (already in place — verified):
+  - Admin email to `ADMIN_NOTIFY_EMAIL` with case link
+  - Admin SMS to `ADMIN_PHONE_NUMBER` (954-598-3681)
+- **Secure credit-repair release** (admin-gated, portal-only):
+  - `POST /api/admin/trust-cases/{id}/release-credit-repair` (and `/revoke-credit-repair`) — admin-only
+  - `GET /api/trust-cases/{id}/credit-repair-link` — returns the Zoho URL with `?FirstName=...&LastName=...` prefilled, ONLY if `credit_repair_released=true` AND caller owns the case (403 otherwise)
+  - Admin Case Detail: "Release Credit Repair" button appears once case is Payment Verified / Completed
+  - Client Portal: "Start Your Free Credit Review" button appears ONLY after admin release; opens the Zoho URL in a new tab on click. The link is **never sent by email or SMS**
+- **Backwards-compatible**: All new fields default sanely; existing cases without `client_phone` simply omit the phone row.
+- **E2E preview verification**: all backend paths green (register → create-with-phone → grantor → auto-advance to "Intake In Progress" → docs upload → auto-advance to "Waiting on Documents" → review-complete → auto-advance to "In Review"; credit-repair 403 before release → 200 after; URL prefilled with split first/last name).
+
 ## Implementation Status (2026-05-09, Session 9 — Existing-Trust Review Path)
 
 ### ✅ Shipped (this session)

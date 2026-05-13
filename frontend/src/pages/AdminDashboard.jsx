@@ -292,7 +292,12 @@ export default function AdminDashboard() {
                       {c.client_name || c.client_email}
                       {c.archived && <span className="ml-2 inline-block text-[9px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 uppercase tracking-wide" data-testid={`archived-badge-${c.id}`}>Archived</span>}
                     </p>
-                    <p className="text-xs text-[#64748B]">{c.client_email}</p>
+                    <p className="text-xs text-[#64748B]" data-testid={`client-email-${c.id}`}>{c.client_email}</p>
+                    {c.client_phone && (
+                      <p className="text-xs text-navy font-medium" data-testid={`client-phone-${c.id}`}>
+                        <a href={`tel:${c.client_phone}`} className="hover:text-bronze">{c.client_phone}</a>
+                      </p>
+                    )}
                     {c.trust_name && <p className="text-xs text-[#94A3B8] truncate max-w-xs italic">{c.trust_name}</p>}
                   </td>
                   <td className="px-5 py-3 capitalize">

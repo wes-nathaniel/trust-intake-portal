@@ -11,6 +11,7 @@ export default function StartNew() {
   const [hasExistingTrust, setHasExistingTrust] = useState(null); // null | true | false
   const [trustType, setTrustType] = useState("single");
   const [trustName, setTrustName] = useState("");
+  const [clientPhone, setClientPhone] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const create = async () => {
@@ -23,10 +24,15 @@ export default function StartNew() {
       toast.error("Please enter the trust name.");
       return;
     }
+    const phone = (clientPhone || "").replace(/\D/g, "");
+    if (phone.length < 7) {
+      toast.error("Please enter a phone number we can reach you at.");
+      return;
+    }
     setSubmitting(true);
     try {
       const intake_path = hasExistingTrust ? "review" : "new";
-      const payload = { intake_path, trust_name: name };
+      const payload = { intake_path, trust_name: name, client_phone: clientPhone.trim() };
       // trust_type only meaningful for new path; default "single" for review
       payload.trust_type = hasExistingTrust ? "single" : trustType;
       const { data } = await api.post("/trust-cases", payload);
@@ -132,11 +138,11 @@ export default function StartNew() {
           </div>
         )}
 
-        {/* ========== Step 3: Name your trust ========== */}
+        {/* ========== Step: Name your trust + phone ========== */}
         {hasExistingTrust !== null && (
           <div className="mt-6">
             <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold mb-3">
-              {hasExistingTrust ? "2." : "3."} Name your trust
+              {hasExistingTrust ? "2." : "3."} Your details
             </p>
             <Field id="trust-name" label="Trust name" required
               hint={
@@ -146,6 +152,22 @@ export default function StartNew() {
               }>
               <Txt id="trust-name" value={trustName} onChange={setTrustName} placeholder="The Smith Family Revocable Trust" testId="trust-name-input" />
             </Field>
+
+            <div className="mt-4">
+              <Field id="client-phone" label="Best phone number to reach you" required
+                hint="We'll call from a 954 number. Standard rates may apply for SMS updates.">
+                <input
+                  id="client-phone"
+                  type="tel"
+                  value={clientPhone}
+                  onChange={(e) => setClientPhone(e.target.value)}
+                  autoComplete="tel"
+                  placeholder="(555) 123-4567"
+                  className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
+                  data-testid="client-phone-input"
+                />
+              </Field>
+            </div>
           </div>
         )}
 
