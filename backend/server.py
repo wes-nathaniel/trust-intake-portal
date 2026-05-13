@@ -3457,6 +3457,34 @@ async def update_branding(body: BrandingUpdate, _: dict = Depends(require_admin)
     return {**DEFAULT_BRANDING, **rec}
 
 # ---------- HEALTH ----------
+@api_router.post("/admin/monthly-summary/send")
+async def admin_send_monthly_summary(
+    year: Optional[int] = Query(None),
+    month: Optional[int] = Query(None),
+    force: bool = Query(False, description="Re-send even if already sent for this period"),
+    admin: dict = Depends(require_admin),
+):
+    """Manually trigger a monthly summary email. Defaults to the previous calendar month.
+    Pass ?force=true to override the idempotency guard."""
+    now = datetime.now(timezone.utc)
+    if year is None or month is None:
+        py, pm = _previous_month(now)
+        year = year or py
+        month = month or pm
+    if not (1 <= month <= 12):
+        raise HTTPException(status_code=400, detail="Invalid month")
+    if force:
+        await db.monthly_summaries.delete_one({"period": f"{year:04d}-{month:02d}"})
+    return await _build_and_send_monthly_summary(year, month)
+
+
+@api_router.get("/admin/monthly-summary/history")
+async def admin_monthly_summary_history(_: dict = Depends(require_admin)):
+    """List of past monthly summaries that have been sent."""
+    docs = await db.monthly_summaries.find({}, {"_id": 0}).sort("period", -1).to_list(36)
+    return docs
+
+
 @api_router.get("/")
 async def root():
     return {"status": "ok", "service": "trust-portal"}
@@ -3490,6 +3518,7 @@ async def startup():
     await db.invites.create_index("expires_at", expireAfterSeconds=0)
     await db.questions.create_index([("case_id", 1), ("created_at", 1)])
     await db.questions.create_index("status")
+    await db.monthly_summaries.create_index("period", unique=True)
 
     # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
@@ -3512,6 +3541,169 @@ async def startup():
 
     # Init storage
     init_storage()
+
+    # Kick off the monthly-summary scheduler as a background task
+    asyncio.create_task(_monthly_summary_scheduler())
+
+
+# ---------- MONTHLY SUMMARY EMAIL (fires on the 1st of every month) ----------
+
+def _previous_month(now: datetime) -> tuple[int, int]:
+    """Returns (year, month) for the calendar month before `now` (UTC)."""
+    if now.month == 1:
+        return (now.year - 1, 12)
+    return (now.year, now.month - 1)
+
+
+def _month_bounds_iso(year: int, month: int) -> tuple[str, str]:
+    """ISO date strings (YYYY-MM-DD) for the first and last day of the given month."""
+    first = datetime(year, month, 1, tzinfo=timezone.utc)
+    if month == 12:
+        last = datetime(year, 12, 31, tzinfo=timezone.utc)
+    else:
+        last = datetime(year, month + 1, 1, tzinfo=timezone.utc) - timedelta(days=1)
+    return (first.date().isoformat(), last.date().isoformat())
+
+
+async def _build_and_send_monthly_summary(year: int, month: int) -> dict:
+    """Build CSV + stats for the given month and email it to ADMIN_NOTIFY_EMAIL.
+    Idempotent: writes a `monthly_summaries` doc keyed on YYYY-MM so re-runs no-op.
+    Returns a dict with the headline stats."""
+    import csv as _csv
+    period = f"{year:04d}-{month:02d}"
+    existing = await db.monthly_summaries.find_one({"period": period}, {"_id": 0})
+    if existing and existing.get("sent_at"):
+        return {"period": period, "already_sent": True, **existing}
+
+    since, until = _month_bounds_iso(year, month)
+    # Inclusive range on updated_at (ISO strings).
+    flt = {
+        "updated_at": {"$gte": since, "$lte": f"{until}T23:59:59.999999+00:00"},
+        "archived": {"$ne": True},
+    }
+    cases = await db.trust_cases.find(flt, {"_id": 0}).sort("updated_at", -1).to_list(5000)
+
+    # Headline stats
+    total = len(cases)
+    completed = sum(1 for c in cases if c.get("status") == "Completed")
+    paid = sum(1 for c in cases if (c.get("payment") or {}).get("status") in ("paid", "verified"))
+    collected_cents = sum(
+        ((c.get("payment") or {}).get("amount_cents") or 0)
+        for c in cases
+        if (c.get("payment") or {}).get("status") in ("paid", "verified")
+    )
+    by_status: dict = {}
+    by_path = {"new": 0, "review": 0}
+    for c in cases:
+        s = c.get("status") or "Unknown"
+        by_status[s] = by_status.get(s, 0) + 1
+        by_path[(c.get("intake_path") or "new")] = by_path.get(c.get("intake_path") or "new", 0) + 1
+
+    # Build CSV bytes
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow([
+        "case_id", "client_name", "client_email", "client_phone",
+        "trust_name", "intake_path", "trust_type", "status",
+        "amount_usd", "payment_status", "credit_repair_released",
+        "credit_repair_released_at", "created_at", "updated_at",
+    ])
+    for c in cases:
+        p = c.get("payment") or {}
+        amt_cents = p.get("amount_cents")
+        amt_usd = f"{amt_cents/100:.2f}" if amt_cents else ""
+        w.writerow([
+            c.get("id", ""), c.get("client_name", ""), c.get("client_email", ""),
+            c.get("client_phone", ""), c.get("trust_name", ""),
+            c.get("intake_path", "new"), c.get("trust_type", ""), c.get("status", ""),
+            amt_usd, p.get("status", ""),
+            "yes" if c.get("credit_repair_released") else "no",
+            c.get("credit_repair_released_at", ""),
+            c.get("created_at", ""), c.get("updated_at", ""),
+        ])
+    csv_bytes = buf.getvalue().encode("utf-8")
+
+    # Compose email
+    branding = await _branding_doc()
+    biz = branding.get("business_name", "Trust Portal")
+    accent = branding.get("accent_color", "#C5A880")
+    primary = branding.get("primary_color", "#1C252E")
+    month_label = datetime(year, month, 1).strftime("%B %Y")
+    collected_usd = f"${collected_cents/100:,.2f}"
+    by_status_rows = "".join(
+        f'<tr><td style="padding:4px 12px 4px 0;color:#64748B;">{s}</td><td style="padding:4px 0;font-weight:600;">{n}</td></tr>'
+        for s, n in sorted(by_status.items(), key=lambda x: -x[1])
+    )
+    inner = f"""
+<p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Monthly summary — {month_label}</p>
+<p style="font-size:15px;color:#334155;margin:0 0 18px 0;">
+    <b>{total}</b> cases · <b>{completed}</b> completed · <b>{paid}</b> paid · <b>{collected_usd}</b> collected
+</p>
+<p style="font-size:13px;color:#64748B;margin:0 0 6px 0;">Paths: <b>{by_path.get('new',0)}</b> new trust · <b>{by_path.get('review',0)}</b> existing review</p>
+<table style="border-collapse:collapse;margin:8px 0 18px 0;font-size:13px;">{by_status_rows}</table>
+<p style="font-size:13px;color:#64748B;">The full case list for {month_label} is attached as a CSV.</p>
+"""
+    html = _email_shell(biz, primary, accent, inner)
+    subject = f"[{biz}] Monthly summary — {month_label} ({total} cases, {collected_usd})"
+    fname = f"trust-cases-{period}.csv"
+
+    if not ADMIN_NOTIFY_EMAIL:
+        logger.warning("Monthly summary: ADMIN_NOTIFY_EMAIL not set — skipping send")
+        return {"period": period, "skipped": "no_admin_email", "total": total}
+
+    sent = False
+    try:
+        await send_email_notification_with_attachment(
+            to_email=ADMIN_NOTIFY_EMAIL,
+            subject=subject,
+            html_body=html,
+            attachment_name=fname,
+            attachment_bytes=csv_bytes,
+            content_type="text/csv",
+        )
+        sent = True
+    except Exception as e:
+        logger.error(f"Monthly summary email failed: {e}")
+
+    record = {
+        "period": period,
+        "sent_at": now_iso() if sent else None,
+        "total": total,
+        "completed": completed,
+        "paid": paid,
+        "collected_cents": collected_cents,
+        "by_status": by_status,
+        "by_path": by_path,
+    }
+    await db.monthly_summaries.update_one(
+        {"period": period},
+        {"$set": record},
+        upsert=True,
+    )
+    return record
+
+
+async def _monthly_summary_scheduler():
+    """Background task: every 6 hours, check if today is on/after the 1st and
+    we haven't yet sent the previous month's summary. If so, send it.
+    Idempotent via the unique `period` index."""
+    # Small startup delay so we don't compete with index creation.
+    await asyncio.sleep(60)
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            prev_year, prev_month = _previous_month(now)
+            period = f"{prev_year:04d}-{prev_month:02d}"
+            existing = await db.monthly_summaries.find_one({"period": period}, {"_id": 0, "sent_at": 1})
+            if not existing or not existing.get("sent_at"):
+                # Only attempt on the 1st-5th of the month (window of forgiveness for downtime)
+                if now.day <= 5:
+                    logger.info(f"Monthly summary: dispatching {period}")
+                    await _build_and_send_monthly_summary(prev_year, prev_month)
+        except Exception as e:
+            logger.error(f"Monthly summary scheduler tick failed: {e}")
+        await asyncio.sleep(6 * 3600)  # every 6 hours
+
 
 @app.on_event("shutdown")
 async def shutdown():
