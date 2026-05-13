@@ -1772,11 +1772,35 @@ async def admin_list_cases(
 @api_router.get("/admin/trust-cases.csv")
 async def admin_export_cases_csv(
     include_archived: bool = Query(False),
+    since: Optional[str] = Query(None, description="Inclusive lower bound on updated_at — YYYY-MM-DD"),
+    until: Optional[str] = Query(None, description="Inclusive upper bound on updated_at — YYYY-MM-DD"),
     _: dict = Depends(require_admin),
 ):
-    """One-click CSV export for monthly reports / outbound call lists."""
+    """One-click CSV export for monthly reports / outbound call lists.
+    Optional ?since=YYYY-MM-DD&until=YYYY-MM-DD filters by updated_at."""
     import csv as _csv
-    flt = {} if include_archived else {"archived": {"$ne": True}}
+    from datetime import datetime as _dt
+    flt: dict = {} if include_archived else {"archived": {"$ne": True}}
+
+    # Parse date range (inclusive). Storage is ISO-8601 strings, so a lexical
+    # string range works for YYYY-MM-DD prefixes and full timestamps alike.
+    if since or until:
+        rng = {}
+        if since:
+            try:
+                _dt.strptime(since, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid 'since' date — use YYYY-MM-DD")
+            rng["$gte"] = since
+        if until:
+            try:
+                _dt.strptime(until, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid 'until' date — use YYYY-MM-DD")
+            # Make the upper bound inclusive of the whole day.
+            rng["$lte"] = f"{until}T23:59:59.999999+00:00"
+        flt["updated_at"] = rng
+
     cases = await db.trust_cases.find(flt, {"_id": 0}).sort("updated_at", -1).to_list(2000)
     buf = io.StringIO()
     w = _csv.writer(buf)
@@ -1806,7 +1830,10 @@ async def admin_export_cases_csv(
             c.get("created_at", ""),
             c.get("updated_at", ""),
         ])
-    fname = f"trust-cases-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    suffix = ""
+    if since or until:
+        suffix = f"_{since or 'start'}_to_{until or 'now'}"
+    fname = f"trust-cases-{datetime.now(timezone.utc).strftime('%Y%m%d')}{suffix}.csv"
     return StreamingResponse(
         io.BytesIO(buf.getvalue().encode("utf-8")),
         media_type="text/csv; charset=utf-8",

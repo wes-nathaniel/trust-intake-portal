@@ -2,10 +2,11 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
-import { Search, Users, FileClock, ArrowRight, UserPlus, Trash2, Archive, X, CheckSquare, Square, Download } from "lucide-react";
+import { Search, Users, FileClock, ArrowRight, UserPlus, Trash2, Archive, X, CheckSquare, Square } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import InviteClientDialog from "@/components/InviteClientDialog";
 import DiagnosticsPanel from "@/components/DiagnosticsPanel";
+import ExportCsvControl from "@/components/ExportCsvControl";
 import { toast } from "sonner";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
@@ -146,21 +147,7 @@ export default function AdminDashboard() {
           <p className="text-[#64748B] mt-2">Manage all trust intake cases, clients, documents and messages.</p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <button
-            onClick={async () => {
-              try {
-                const res = await api.get("/admin/trust-cases.csv", { responseType: "blob" });
-                const url = URL.createObjectURL(res.data);
-                const a = document.createElement("a");
-                const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-                a.href = url; a.download = `trust-cases-${today}.csv`; a.click();
-                URL.revokeObjectURL(url);
-              } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-            }}
-            className="btn-secondary"
-            data-testid="admin-export-csv-btn">
-            <Download className="h-4 w-4 inline mr-1" /> Export CSV
-          </button>
+          <ExportCsvControl />
           <button onClick={() => setInviteOpen(true)} className="btn-accent" data-testid="invite-client-btn">
             <UserPlus className="h-4 w-4 inline mr-1" /> Invite client
           </button>
