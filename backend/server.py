@@ -2089,17 +2089,28 @@ async def admin_release_credit_repair(case_id: str, admin: dict = Depends(requir
     """Admin-gated unlock. After admin has manually called the client and confirmed
     everything, this flips a boolean that surfaces the 'Start Your Free Credit Review'
     button inside the client's portal. The Zoho URL is never emailed; it is only
-    returned via /credit-repair-link, behind the client's session."""
+    returned via /credit-repair-link, behind the client's session.
+
+    Maintains an append-only `credit_repair_log` of every release/revoke action."""
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Not found")
     if case.get("credit_repair_released"):
         return {"ok": True, "already_released": True}
     stamp = now_iso()
+    log = list(case.get("credit_repair_log") or [])
+    log.append({
+        "action": "released",
+        "at": stamp,
+        "admin_id": admin["id"],
+        "admin_email": admin.get("email"),
+        "admin_name": admin.get("name") or admin.get("email"),
+    })
     await update_case(case_id, {
         "credit_repair_released": True,
         "credit_repair_released_at": stamp,
         "credit_repair_released_by": admin["id"],
+        "credit_repair_log": log,
     })
     return {"ok": True, "released_at": stamp}
 
@@ -2110,8 +2121,20 @@ async def admin_revoke_credit_repair(case_id: str, admin: dict = Depends(require
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Not found")
-    await update_case(case_id, {"credit_repair_released": False})
-    return {"ok": True}
+    stamp = now_iso()
+    log = list(case.get("credit_repair_log") or [])
+    log.append({
+        "action": "revoked",
+        "at": stamp,
+        "admin_id": admin["id"],
+        "admin_email": admin.get("email"),
+        "admin_name": admin.get("name") or admin.get("email"),
+    })
+    await update_case(case_id, {
+        "credit_repair_released": False,
+        "credit_repair_log": log,
+    })
+    return {"ok": True, "revoked_at": stamp}
 
 
 @api_router.get("/trust-cases/{case_id}/credit-repair-link")

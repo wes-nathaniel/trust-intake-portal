@@ -436,6 +436,31 @@ export default function AdminCaseDetail() {
                 </button>
               )}
             </div>
+
+            {/* Audit Log — append-only history of release/revoke actions */}
+            {(c.credit_repair_log || []).length > 0 && (
+              <div className="mt-4 pt-4 border-t border-bronze/20" data-testid="credit-repair-audit-log">
+                <p className="text-[10px] uppercase tracking-wide text-[#64748B] font-semibold mb-2">Audit log</p>
+                <ul className="space-y-1.5">
+                  {[...c.credit_repair_log].reverse().map((entry, i) => {
+                    const isRelease = entry.action === "released";
+                    return (
+                      <li key={i} className="flex items-center gap-2 text-xs" data-testid={`credit-repair-audit-entry-${i}`}>
+                        <span className={`inline-block w-2 h-2 rounded-full ${isRelease ? "bg-green-600" : "bg-red-500"}`} />
+                        <span className={`font-semibold ${isRelease ? "text-green-700" : "text-red-700"} uppercase tracking-wide`}>
+                          {entry.action}
+                        </span>
+                        <span className="text-[#64748B]">
+                          by <b className="text-navy">{entry.admin_name || entry.admin_email || "admin"}</b>
+                        </span>
+                        <span className="text-[#94A3B8]">·</span>
+                        <span className="text-[#94A3B8]">{new Date(entry.at).toLocaleString()}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
           </div>
         )}
         {c.acknowledgments?.review_completed_ack && (
