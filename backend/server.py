@@ -1769,6 +1769,51 @@ async def admin_list_cases(
     return cases
 
 
+@api_router.get("/admin/trust-cases.csv")
+async def admin_export_cases_csv(
+    include_archived: bool = Query(False),
+    _: dict = Depends(require_admin),
+):
+    """One-click CSV export for monthly reports / outbound call lists."""
+    import csv as _csv
+    flt = {} if include_archived else {"archived": {"$ne": True}}
+    cases = await db.trust_cases.find(flt, {"_id": 0}).sort("updated_at", -1).to_list(2000)
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow([
+        "case_id", "client_name", "client_email", "client_phone",
+        "trust_name", "intake_path", "trust_type", "status",
+        "amount_usd", "payment_status", "credit_repair_released",
+        "credit_repair_released_at", "created_at", "updated_at",
+    ])
+    for c in cases:
+        p = c.get("payment") or {}
+        amt_cents = p.get("amount_cents")
+        amt_usd = f"{amt_cents/100:.2f}" if amt_cents else ""
+        w.writerow([
+            c.get("id", ""),
+            c.get("client_name", ""),
+            c.get("client_email", ""),
+            c.get("client_phone", ""),
+            c.get("trust_name", ""),
+            c.get("intake_path", "new"),
+            c.get("trust_type", ""),
+            c.get("status", ""),
+            amt_usd,
+            p.get("status", ""),
+            "yes" if c.get("credit_repair_released") else "no",
+            c.get("credit_repair_released_at", ""),
+            c.get("created_at", ""),
+            c.get("updated_at", ""),
+        ])
+    fname = f"trust-cases-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue().encode("utf-8")),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 @api_router.post("/admin/trust-cases/{case_id}/archive")
 async def admin_archive_case(case_id: str, admin: dict = Depends(require_admin)):
     """Soft-archive a case: hides it from the default admin list and the client's portal.
