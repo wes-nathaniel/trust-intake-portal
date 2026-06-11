@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { Plus, Trash2, GripVertical, BookOpen, ChevronDown, ChevronUp, Save, Eye, EyeOff } from "lucide-react";
+import { Plus, Trash2, Copy, GripVertical, BookOpen, ChevronDown, ChevronUp, Save, Eye, EyeOff } from "lucide-react";
 import RichTextEditor from "@/components/RichTextEditor";
 
 /** Lightweight single-article preview pair (mirrors the two-panel viewer styling, no scroll-sync) */
@@ -43,6 +43,7 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
   const [dirty, setDirty] = useState(false);
   const [previewOpen, setPreviewOpen] = useState({}); // { [idx]: bool }
 
+  // Intentional: when parent loads a new case, hydrate the editor state.
   useEffect(() => {
     setSections(initialSections.length > 0 ? initialSections : []);
     setDirty(false);
@@ -65,6 +66,21 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
   const removeSection = (i) => {
     if (!window.confirm("Remove this article? This cannot be undone (until you click Save).")) return;
     setSections((arr) => arr.filter((_, idx) => idx !== i));
+    setDirty(true);
+  };
+
+  const duplicateSection = (i) => {
+    setSections((arr) => {
+      const src = arr[i];
+      const copy = {
+        title: src.title ? `${src.title} (copy)` : "",
+        trust_html: src.trust_html || "",
+        explainer_html: src.explainer_html || "",
+      };
+      const next = arr.slice();
+      next.splice(i + 1, 0, copy);
+      return next;
+    });
     setDirty(true);
   };
 
@@ -159,6 +175,9 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
                     </button>
                     <button onClick={() => move(i, 1)} disabled={i === sections.length - 1} className="p-1 text-[#64748B] hover:text-navy disabled:opacity-30" title="Move down" data-testid={`trust-section-down-${i}`}>
                       <ChevronDown className="h-4 w-4" />
+                    </button>
+                    <button onClick={() => duplicateSection(i)} className="p-1 text-[#64748B] hover:text-navy" title="Duplicate article" data-testid={`trust-section-duplicate-${i}`}>
+                      <Copy className="h-4 w-4" />
                     </button>
                     <button onClick={() => removeSection(i)} className="p-1 text-red-600 hover:text-red-700" title="Remove article" data-testid={`trust-section-remove-${i}`}>
                       <Trash2 className="h-4 w-4" />
