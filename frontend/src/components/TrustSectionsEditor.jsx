@@ -1,7 +1,35 @@
 import React, { useEffect, useState } from "react";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { Plus, Trash2, GripVertical, BookOpen, ChevronDown, ChevronUp, Save, Eye } from "lucide-react";
+import { Plus, Trash2, GripVertical, BookOpen, ChevronDown, ChevronUp, Save, Eye, EyeOff } from "lucide-react";
+import RichTextEditor from "@/components/RichTextEditor";
+
+/** Lightweight single-article preview pair (mirrors the two-panel viewer styling, no scroll-sync) */
+function InlineArticlePreview({ title, trust_html, explainer_html }) {
+  return (
+    <div className="mt-3 rounded-lg border border-bronze/30 overflow-hidden" data-testid="trust-section-inline-preview">
+      <div className="bg-[#1C252E] px-3 py-1.5 text-[10px] uppercase tracking-wide text-[#D8BC92] font-semibold">
+        Live preview — exactly what the client sees for this article
+      </div>
+      <div className="grid md:grid-cols-2 gap-0">
+        <div className="p-4 bg-[#f3f3f5] border-r border-bronze/30 relative overflow-hidden">
+          <div className="absolute inset-0 opacity-[0.18] pointer-events-none" style={{
+            backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='160'%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' transform='rotate(-30 160 80)' font-family='Arial' font-size='16' font-weight='bold' fill='%23C5A880' letter-spacing='3'%3EDRAFT%3C/text%3E%3C/svg%3E\")",
+            backgroundRepeat: "repeat",
+          }} />
+          <div className="relative">
+            {title && <p className="text-[11px] uppercase tracking-wide font-bold text-bronze mb-2">{title}</p>}
+            <div className="text-[12px] leading-relaxed text-[#2a2a2a]" dangerouslySetInnerHTML={{ __html: trust_html || "<em style='color:#94A3B8'>Trust text empty…</em>" }} />
+          </div>
+        </div>
+        <div className="p-4 bg-[#FDF8EE]">
+          {title && <p className="text-[10px] uppercase tracking-wider font-bold text-bronze mb-2">{title} — Plain English</p>}
+          <div className="text-[13px] leading-relaxed text-[#333]" dangerouslySetInnerHTML={{ __html: explainer_html || "<em style='color:#94A3B8'>Explainer empty…</em>" }} />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Admin UI for the structured two-panel Trust Viewer content.
@@ -13,6 +41,7 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(initialSections.length === 0); // collapsed when already populated
   const [dirty, setDirty] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState({}); // { [idx]: bool }
 
   useEffect(() => {
     setSections(initialSections.length > 0 ? initialSections : []);
@@ -118,6 +147,13 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
                     />
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => setPreviewOpen((p) => ({ ...p, [i]: !p[i] }))}
+                      className={`p-1 ${previewOpen[i] ? "text-bronze" : "text-[#64748B] hover:text-navy"}`}
+                      title={previewOpen[i] ? "Hide inline preview" : "Show inline preview"}
+                      data-testid={`trust-section-preview-toggle-${i}`}>
+                      {previewOpen[i] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
                     <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1 text-[#64748B] hover:text-navy disabled:opacity-30" title="Move up" data-testid={`trust-section-up-${i}`}>
                       <ChevronUp className="h-4 w-4" />
                     </button>
@@ -133,27 +169,33 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
                 <div className="grid md:grid-cols-2 gap-3">
                   <div>
                     <label className="text-[10px] uppercase tracking-wide text-[#64748B] font-semibold">Trust text (left panel)</label>
-                    <textarea
+                    <RichTextEditor
                       value={s.trust_html || ""}
-                      onChange={(e) => update(i, { trust_html: e.target.value })}
+                      onChange={(html) => update(i, { trust_html: html })}
+                      placeholder="The Grantor, John A. Smith, hereby establishes…"
                       rows={8}
-                      placeholder="<p>The Grantor, John A. Smith, hereby establishes...</p>"
-                      className="mt-1 w-full bg-white border border-input rounded-md px-3 py-2 text-sm font-mono"
-                      data-testid={`trust-section-trust-${i}`}
+                      testId={`trust-section-trust-${i}`}
                     />
                   </div>
                   <div>
                     <label className="text-[10px] uppercase tracking-wide text-[#64748B] font-semibold">Plain-English explainer (right panel)</label>
-                    <textarea
+                    <RichTextEditor
                       value={s.explainer_html || ""}
-                      onChange={(e) => update(i, { explainer_html: e.target.value })}
+                      onChange={(html) => update(i, { explainer_html: html })}
+                      placeholder="This says you are setting up the trust…"
                       rows={8}
-                      placeholder="<p>This says you are setting up the trust...</p>"
-                      className="mt-1 w-full bg-white border border-input rounded-md px-3 py-2 text-sm font-mono"
-                      data-testid={`trust-section-explainer-${i}`}
+                      testId={`trust-section-explainer-${i}`}
                     />
                   </div>
                 </div>
+
+                {previewOpen[i] && (
+                  <InlineArticlePreview
+                    title={s.title}
+                    trust_html={s.trust_html}
+                    explainer_html={s.explainer_html}
+                  />
+                )}
               </div>
             ))}
           </div>
@@ -183,7 +225,7 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
           </div>
 
           <p className="text-[11px] text-[#94A3B8] mt-3">
-            Saving with at least one article auto-advances the case to <b>Ready for Client Review</b> and notifies the client. HTML is allowed (basic tags like &lt;p&gt;, &lt;strong&gt;, &lt;ul&gt;, &lt;table&gt;).
+            Saving with at least one article auto-advances the case to <b>Ready for Client Review</b> and notifies the client. Use the toolbar to format text; click <Eye className="h-3 w-3 inline-block align-text-bottom" /> next to any article for an inline preview, or <b>Preview as Client</b> below for the full viewer.
           </p>
         </div>
       )}
