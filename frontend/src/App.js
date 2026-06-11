@@ -15,6 +15,7 @@ import TrustPreview from "@/pages/TrustPreview";
 import TrustFinal from "@/pages/TrustFinal";
 import AdminDashboard from "@/pages/AdminDashboard";
 import AdminCaseDetail from "@/pages/AdminCaseDetail";
+import AdminTrustViewerPreview from "@/pages/AdminTrustViewerPreview";
 import BrandingPage from "@/pages/BrandingPage";
 import AcceptInvite from "@/pages/AcceptInvite";
 import AdminQuestions from "@/pages/AdminQuestions";
@@ -58,6 +59,7 @@ function App() {
             <Route path="/admin" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
             <Route path="/admin/questions" element={<ProtectedRoute adminOnly><AdminQuestions /></ProtectedRoute>} />
             <Route path="/admin/cases/:caseId" element={<ProtectedRoute adminOnly><AdminCaseDetail /></ProtectedRoute>} />
+            <Route path="/admin/cases/:caseId/trust-viewer-preview" element={<ProtectedRoute adminOnly><AdminTrustViewerPreview /></ProtectedRoute>} />
             <Route path="/admin/branding" element={<ProtectedRoute adminOnly><BrandingPage /></ProtectedRoute>} />
 
             <Route path="*" element={<Navigate to="/" replace />} />

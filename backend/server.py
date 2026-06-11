@@ -2229,6 +2229,41 @@ async def client_credit_repair_link(case_id: str, user: dict = Depends(get_curre
 # Admin uploads the draft trust PDF. Clients can view page-by-page via image
 # endpoints (low-res, watermarked). Raw PDF is NOT served to clients.
 
+class TrustSection(BaseModel):
+    """A single article: trust text on the left + matching explainer on the right."""
+    title: Optional[str] = Field(default="", max_length=160)
+    trust_html: str = Field(default="", max_length=50_000)
+    explainer_html: str = Field(default="", max_length=20_000)
+
+
+class TrustSectionsBody(BaseModel):
+    sections: list[TrustSection] = Field(default_factory=list, max_length=60)
+
+
+@api_router.put("/admin/trust-cases/{case_id}/trust-sections")
+async def admin_set_trust_sections(case_id: str, body: TrustSectionsBody, admin: dict = Depends(require_admin)):
+    """Save the structured two-panel trust viewer content. Article order is
+    preserved. Empty array clears the viewer and reverts the client to the
+    legacy PDF viewer (if a draft PDF is still on the case)."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    payload = [s.model_dump() for s in body.sections]
+    updates: dict = {
+        "trust_sections": payload,
+        "trust_sections_updated_at": now_iso(),
+        "trust_sections_updated_by": admin["id"],
+    }
+    # If admin has populated at least one article AND status is intake-y, flip
+    # to "Ready for Client Review" — same UX as uploading a PDF draft.
+    has_any = any((s.get("trust_html") or "").strip() for s in payload)
+    INTAKE_STATUSES = {"Intake Started", "Intake In Progress", "Waiting on Documents", "In Review", "Drafting Trust"}
+    if has_any and case.get("status") in INTAKE_STATUSES:
+        updates["status"] = "Ready for Client Review"
+    await update_case(case_id, updates)
+    return {"ok": True, "count": len(payload), "status": updates.get("status", case.get("status"))}
+
+
 @api_router.post("/admin/trust-cases/{case_id}/trust-draft")
 async def admin_upload_trust_draft(case_id: str,
                                    file: UploadFile = File(...),

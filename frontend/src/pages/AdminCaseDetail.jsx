@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
 import StatusTracker from "@/components/StatusTracker";
+import TrustSectionsEditor from "@/components/TrustSectionsEditor";
 import MessageThread from "@/components/MessageThread";
 import { toast } from "sonner";
 import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, RefreshCw, MailPlus, Clock, Lock, Unlock, BellRing, ExternalLink, Trash2, ShieldCheck } from "lucide-react";
@@ -684,11 +685,17 @@ export default function AdminCaseDetail() {
         </Section>
 
         <Section title="Trust Draft — Secure Preview">
+          <TrustSectionsEditor
+            caseId={caseId}
+            initialSections={c.trust_sections || []}
+            onSaved={() => load()}
+          />
           {!c.trust_draft ? (
             <div>
               <p className="text-sm text-[#64748B] mb-3">
-                Upload the drafted trust PDF to share a watermarked, page-by-page preview with the client.
-                Printing and downloading are disabled for the client until payment is received.
+                <b>Optional fallback:</b> upload a PDF draft instead of (or in addition to) the structured viewer above.
+                The structured viewer above takes precedence when populated. Printing and downloading are disabled for
+                the client until payment is received.
               </p>
               <label className="btn-accent text-sm cursor-pointer inline-flex items-center" data-testid="trust-draft-upload-label">
                 <Upload className="h-4 w-4 inline mr-1" /> {uploadingTrust ? "Uploading…" : "Upload Trust Draft PDF"}

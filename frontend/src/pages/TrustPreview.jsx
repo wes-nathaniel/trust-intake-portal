@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import PaymentMethodPicker from "@/components/PaymentMethodPicker";
+import TrustViewerTwoPanel from "@/components/TrustViewerTwoPanel";
 
 // Anti-copy / anti-print helpers
 function useNoCopyAndBlurOnLeave(containerRef, setDimmed) {
@@ -85,16 +86,26 @@ export default function TrustPreview() {
 
   const load = useCallback(async () => {
     try {
-      const [{ data: m }, { data: c }] = await Promise.all([
-        api.get(`/trust-cases/${caseId}/trust-preview/meta`),
-        api.get(`/trust-cases/${caseId}`),
-      ]);
-      setMeta(m);
+      // Always load the case. Trust-preview metadata only matters for the
+      // legacy PDF viewer; if it 404s (no PDF uploaded), fall through —
+      // the structured two-panel viewer doesn't need it.
+      const { data: c } = await api.get(`/trust-cases/${caseId}`);
       setTrustCase(c);
       const a = c.acknowledgments || {};
       setDisclosureAck(!!a.disclosure_ack);
       setStateLawsAck(!!a.state_laws_ack);
       setNotarizationAck(!!a.notarization_ack);
+
+      const hasSections = (c.trust_sections || []).length > 0;
+      if (!hasSections) {
+        try {
+          const { data: m } = await api.get(`/trust-cases/${caseId}/trust-preview/meta`);
+          setMeta(m);
+        } catch (mErr) {
+          // No PDF — that's fine if structured sections exist; otherwise show error.
+          toast.error("Your trust review content is being prepared. Please check back soon.");
+        }
+      }
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail) || "Could not load trust preview.");
       navigate("/portal");
@@ -236,9 +247,11 @@ export default function TrustPreview() {
     setAgentCbNote("");
   };
 
-  if (!meta) return <Layout><p className="text-[#64748B]">Loading secure preview…</p></Layout>;
+  const hasSections = (trustCase?.trust_sections || []).length > 0;
+  if (!trustCase) return <Layout><p className="text-[#64748B]">Loading secure preview…</p></Layout>;
+  if (!hasSections && !meta) return <Layout><p className="text-[#64748B]">Loading secure preview…</p></Layout>;
 
-  const totalPages = meta.pages || 0;
+  const totalPages = (meta && meta.pages) || 0;
 
   return (
     <Layout>
@@ -248,8 +261,11 @@ export default function TrustPreview() {
 
       <div className="mb-6">
         <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Secure Draft Preview</p>
-        <h1 className="font-serif text-3xl sm:text-4xl text-navy">{meta.trust_name || "Trust Draft"}</h1>
-        <p className="text-[#64748B] text-sm mt-1">Case #{caseId.slice(0, 8).toUpperCase()} · {totalPages} page(s) · Version {meta.version}</p>
+        <h1 className="font-serif text-3xl sm:text-4xl text-navy">{(meta && meta.trust_name) || trustCase?.trust_name || "Trust Draft"}</h1>
+        <p className="text-[#64748B] text-sm mt-1">
+          Case #{caseId.slice(0, 8).toUpperCase()}
+          {meta ? ` · ${totalPages} page(s) · Version ${meta.version}` : (hasSections ? ` · ${trustCase.trust_sections.length} article(s)` : "")}
+        </p>
       </div>
 
       <div className="mb-4 bg-navy/5 border border-navy/20 rounded-xl p-4 text-sm text-navy flex items-start gap-3" data-testid="preview-security-notice">
@@ -269,7 +285,15 @@ export default function TrustPreview() {
         </div>
       )}
 
-      {/* Viewer */}
+      {/* Viewer: structured two-panel (preferred) OR legacy PDF page-image viewer */}
+      {(trustCase?.trust_sections && trustCase.trust_sections.length > 0) ? (
+        <TrustViewerTwoPanel
+          sections={trustCase.trust_sections}
+          caseShortId={(trustCase.id || "").slice(0, 8).toUpperCase()}
+          clientName={trustCase.client_name || trustCase.client_email}
+          trustName={trustCase.trust_name}
+        />
+      ) : (
       <div
         ref={containerRef}
         className={`relative bg-navy rounded-xl overflow-hidden select-none transition-opacity duration-200 ${dimmed ? "opacity-10 blur-md" : "opacity-100"}`}
@@ -354,6 +378,7 @@ export default function TrustPreview() {
           </button>
         </div>
       </div>
+      )}
 
       {/* Legal disclosures */}
       <div className="mt-10">
