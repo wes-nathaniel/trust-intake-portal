@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Bold, Italic, List, ListOrdered, Heading2, Link2, Pilcrow, Quote, Undo, Redo } from "lucide-react";
+import { Bold, Italic, Underline, List, ListOrdered, Heading2, Link2, Pilcrow, Quote, Undo, Redo } from "lucide-react";
 
 /**
  * Lightweight HTML-output WYSIWYG editor.
@@ -86,6 +86,7 @@ export default function RichTextEditor({ value = "", onChange, placeholder = "St
       <div className="flex flex-wrap items-center gap-0.5 px-2 py-1 border-b border-[#E2E0DA] bg-sand-200/40 rounded-t-md">
         <Btn onClick={() => exec("bold")} label="Bold" testId={testId ? `${testId}-bold` : undefined}><Bold className="h-3.5 w-3.5" /></Btn>
         <Btn onClick={() => exec("italic")} label="Italic" testId={testId ? `${testId}-italic` : undefined}><Italic className="h-3.5 w-3.5" /></Btn>
+        <Btn onClick={() => exec("underline")} label="Underline" testId={testId ? `${testId}-underline` : undefined}><Underline className="h-3.5 w-3.5" /></Btn>
         <div className="w-px h-4 bg-[#E2E0DA] mx-1" />
         <Btn onClick={() => wrapBlock("p")} label="Paragraph"><Pilcrow className="h-3.5 w-3.5" /></Btn>
         <Btn onClick={() => wrapBlock("h3")} label="Subheading"><Heading2 className="h-3.5 w-3.5" /></Btn>
@@ -125,6 +126,7 @@ export default function RichTextEditor({ value = "", onChange, placeholder = "St
         .rte-editor a { color: #1C252E; text-decoration: underline; }
         .rte-editor strong { font-weight: 600; }
         .rte-editor em { font-style: italic; }
+        .rte-editor u { text-decoration: underline; }
       `}</style>
     </div>
   );

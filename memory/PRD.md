@@ -13,6 +13,16 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **Client**: 50+, completes intake, reviews watermarked trust draft, pays via Square, downloads/prints notarizable final trust.
 - **Admin** (Iron Gate staff): invites clients, reviews cases, uploads EIN letter (IRS CP-575), uploads trust draft PDF, creates Square invoices, confirms payment, unlocks final trust.
 
+
+## Changelog — 2026-02-11
+- ✅ Two-Panel Trust Viewer (TrustViewerTwoPanel.jsx) replaces PDF preview — legal text left, plain-English explainer right, with watermark + anti-screenshot/right-click block.
+- ✅ Admin TrustSectionsEditor (WYSIWYG) — RichTextEditor with Bold/Italic/**Underline**/Subheading/Quote/Bulleted list/Numbered list/Link/Undo/Redo.
+- ✅ Inline per-article Preview toggle + Duplicate article + Remove article buttons (verified by testing_agent_v3_fork — 13/14 PASS).
+- ✅ "Preview as Client" admin button → AdminTrustViewerPreview reuses TrustViewerTwoPanel.
+- ✅ Fixed compile-blocking invalid eslint-disable comment in TrustSectionsEditor.jsx.
+- ✅ Added Underline toolbar button to RichTextEditor.jsx.
+- ✅ Fixed nested-button warning in DiagnosticsPanel.jsx (outer toggle now div[role=button]).
+
 ## Core Requirements — ✅ Done
 - 8-step intake wizard with HARD STOP validation
 - Trust Name required field on case creation

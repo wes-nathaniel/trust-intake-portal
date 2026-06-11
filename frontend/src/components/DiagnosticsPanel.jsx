@@ -59,10 +59,12 @@ export default function DiagnosticsPanel() {
         allReady ? "bg-green-50 border-green-300" : "bg-amber-50 border-amber-300"
       }`}
       data-testid="diagnostics-panel">
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left"
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((v) => !v); } }}
+        className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left cursor-pointer select-none"
         data-testid="diagnostics-toggle-btn">
         <div className="flex items-center gap-2 min-w-0">
           {allReady
@@ -83,7 +85,7 @@ export default function DiagnosticsPanel() {
           </button>
           <ChevronDown className={`h-4 w-4 text-navy transition-transform ${open ? "rotate-180" : ""}`} />
         </div>
-      </button>
+      </div>
 
       {open && (
         <div className="px-5 pb-5">
