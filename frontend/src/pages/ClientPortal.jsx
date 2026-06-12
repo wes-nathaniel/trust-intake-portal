@@ -27,11 +27,25 @@ export default function ClientPortal() {
   return (
     <Layout>
       <div className="mb-10">
-        <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-2">Welcome{user?.name ? `, ${user.name.split(" ")[0]}` : ""}</p>
-        <h1 className="font-serif text-4xl sm:text-5xl text-navy tracking-tight">Your Trust Portal</h1>
-        <p className="text-[#64748B] mt-2 text-lg max-w-2xl">
-          Complete your trust intake in a guided, section-by-section flow. All fields marked required must be finished to continue.
-        </p>
+        {user?.is_first_login ? (
+          <>
+            <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-2" data-testid="welcome-first-login">Welcome to Iron Gate Trust Services.</p>
+            <h1 className="font-serif text-4xl sm:text-5xl text-navy tracking-tight">Your Trust Portal</h1>
+            <p className="text-[#64748B] mt-2 text-lg max-w-2xl">
+              We&rsquo;re glad you&rsquo;re here. Complete your trust intake in a guided, section-by-section flow. All fields marked required must be finished to continue.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-2" data-testid="welcome-returning">
+              Welcome Back{user?.first_name ? `, ${user.first_name}` : (user?.name ? `, ${user.name.split(" ")[0]}` : "")}
+            </p>
+            <h1 className="font-serif text-4xl sm:text-5xl text-navy tracking-tight">Your Trust Portal</h1>
+            <p className="text-[#64748B] mt-2 text-lg max-w-2xl">
+              Complete your trust intake in a guided, section-by-section flow. All fields marked required must be finished to continue.
+            </p>
+          </>
+        )}
       </div>
 
       {loading ? (

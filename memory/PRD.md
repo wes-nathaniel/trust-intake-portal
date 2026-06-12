@@ -14,6 +14,11 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **Admin** (Iron Gate staff): invites clients, reviews cases, uploads EIN letter (IRS CP-575), uploads trust draft PDF, creates Square invoices, confirms payment, unlocks final trust.
 
 
+
+## Changelog — 2026-02-11 (cont'd)
+- ✅ **Templates library** in WYSIWYG editor — 6 boilerplate clauses (Revocation, Successor Trustee, Spendthrift, No Contest, Powers of Trustee, Distribution to Beneficiaries) defined in `/app/frontend/src/lib/trustTemplates.js`. Each has both a legal `trust_html` and plain-English `explain_html`. Dropdown in `RichTextEditor` inserts at cursor position via saved Range + `execCommand('insertHTML')`. Verified 12/12 PASS by testing_agent.
+- ✅ **Welcome greeting** — new `has_logged_in_before` flag on user records. `public_user()` now returns `first_name` and `is_first_login`. `/auth/register`, `/auth/login`, `/auth/accept-invite` all build the response BEFORE flipping the flag, so the very first login shows `is_first_login: true`. ClientPortal shows `Welcome to Iron Gate Trust Services.` on first login, then `Welcome Back, {first_name}` on every subsequent login. Verified end-to-end via Playwright.
+
 ## Changelog — 2026-02-11
 - ✅ Two-Panel Trust Viewer (TrustViewerTwoPanel.jsx) replaces PDF preview — legal text left, plain-English explainer right, with watermark + anti-screenshot/right-click block.
 - ✅ Admin TrustSectionsEditor (WYSIWYG) — RichTextEditor with Bold/Italic/**Underline**/Subheading/Quote/Bulleted list/Numbered list/Link/Undo/Redo.

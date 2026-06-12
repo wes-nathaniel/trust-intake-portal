@@ -651,8 +651,19 @@ async def clear_failures(identifier: str):
     await db.login_attempts.delete_one({"identifier": identifier})
 
 # ---------- AUTH ENDPOINTS ----------
+def _first_name(full_name: str) -> str:
+    return (full_name or "").strip().split(" ")[0] if (full_name or "").strip() else ""
+
 def public_user(u: dict) -> dict:
-    return {"id": u["id"], "email": u["email"], "name": u.get("name", ""), "role": u.get("role", "client")}
+    name = u.get("name", "")
+    return {
+        "id": u["id"],
+        "email": u["email"],
+        "name": name,
+        "first_name": _first_name(name),
+        "role": u.get("role", "client"),
+        "is_first_login": not bool(u.get("has_logged_in_before")),
+    }
 
 @api_router.post("/auth/register")
 async def register(body: RegisterReq, response: Response):
@@ -672,7 +683,12 @@ async def register(body: RegisterReq, response: Response):
     access = create_access_token(user["id"], email, "client")
     refresh = create_refresh_token(user["id"])
     set_auth_cookies(response, access, refresh)
-    return public_user(user)
+    body_resp = public_user(user)
+    # Mark this user as having logged in at least once so subsequent
+    # sessions show "Welcome Back, {first name}" instead of the generic
+    # first-time welcome.
+    await db.users.update_one({"id": user["id"]}, {"$set": {"has_logged_in_before": True, "first_login_at": now_iso()}})
+    return body_resp
 
 @api_router.post("/auth/login")
 async def login(body: LoginReq, request: Request, response: Response):
@@ -694,7 +710,12 @@ async def login(body: LoginReq, request: Request, response: Response):
     access = create_access_token(user["id"], email, user.get("role", "client"))
     refresh = create_refresh_token(user["id"])
     set_auth_cookies(response, access, refresh)
-    return public_user(user)
+    # Build response BEFORE flipping the flag so the client sees
+    # is_first_login=true on the very first login of their account.
+    body_resp = public_user(user)
+    if not user.get("has_logged_in_before"):
+        await db.users.update_one({"id": user["id"]}, {"$set": {"has_logged_in_before": True, "first_login_at": now_iso()}})
+    return body_resp
 
 @api_router.post("/auth/logout")
 async def logout(response: Response, _: dict = Depends(get_current_user)):
@@ -888,7 +909,13 @@ async def accept_invite(body: AcceptInviteReq, response: Response):
     access = create_access_token(user["id"], user["email"], user.get("role", "client"))
     refresh = create_refresh_token(user["id"])
     set_auth_cookies(response, access, refresh)
-    return {**public_user(user), "case_id": rec["case_id"]}
+    # Accept-invite counts as "creating their password" — the welcome screen
+    # should show the generic Iron Gate intro the first time. Build response
+    # before flipping the flag.
+    body_resp = {**public_user(user), "case_id": rec["case_id"]}
+    if not user.get("has_logged_in_before"):
+        await db.users.update_one({"id": user["id"]}, {"$set": {"has_logged_in_before": True, "first_login_at": now_iso()}})
+    return body_resp
 
 # ---------- TRUST CASES ----------
 async def get_case(case_id: str, user: dict) -> dict:
