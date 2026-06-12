@@ -5,10 +5,11 @@ import api, { formatApiError } from "@/lib/api";
 import { ArrowRight, ShieldCheck, Download, FilePen, AlertTriangle, Plus, Sparkles } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import StatusTracker from "@/components/StatusTracker";
+import TourCard from "@/components/TourCard";
 import { toast } from "sonner";
 
 export default function ClientPortal() {
-  const { user } = useAuth();
+  const { user, markTourSeen } = useAuth();
   const navigate = useNavigate();
   const [cases, setCases] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -26,6 +27,9 @@ export default function ClientPortal() {
 
   return (
     <Layout>
+      {user && user.has_seen_tour === false && (
+        <TourCard onDismissed={markTourSeen} />
+      )}
       <div className="mb-10">
         {user?.is_first_login ? (
           <>

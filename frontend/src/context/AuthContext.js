@@ -59,8 +59,12 @@ export function AuthProvider({ children }) {
     setUser(false);
   };
 
+  const markTourSeen = () => {
+    setUser((u) => (u && typeof u === "object" ? { ...u, has_seen_tour: true } : u));
+  };
+
   return (
-    <AuthContext.Provider value={{ user, branding, login, register, logout, refresh, setBranding, loadBranding }}>
+    <AuthContext.Provider value={{ user, branding, login, register, logout, refresh, setBranding, loadBranding, markTourSeen }}>
       {children}
     </AuthContext.Provider>
   );

@@ -663,6 +663,7 @@ def public_user(u: dict) -> dict:
         "first_name": _first_name(name),
         "role": u.get("role", "client"),
         "is_first_login": not bool(u.get("has_logged_in_before")),
+        "has_seen_tour": bool(u.get("has_seen_tour")),
     }
 
 @api_router.post("/auth/register")
@@ -725,6 +726,15 @@ async def logout(response: Response, _: dict = Depends(get_current_user)):
 @api_router.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     return public_user(user)
+
+@api_router.post("/auth/dismiss-tour")
+async def dismiss_tour(user: dict = Depends(get_current_user)):
+    if not user.get("has_seen_tour"):
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"has_seen_tour": True, "tour_dismissed_at": now_iso()}},
+        )
+    return {"ok": True, "has_seen_tour": True}
 
 @api_router.post("/auth/refresh")
 async def refresh(request: Request, response: Response):
