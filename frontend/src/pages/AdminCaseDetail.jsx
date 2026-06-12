@@ -48,6 +48,22 @@ export default function AdminCaseDetail() {
   const [invoiceDue, setInvoiceDue] = useState(14);
   const [invoiceSending, setInvoiceSending] = useState(false);
 
+  const [loginsOpen, setLoginsOpen] = useState(false);
+  const [loginRows, setLoginRows] = useState(null);
+  const toggleLogins = async () => {
+    const next = !loginsOpen;
+    setLoginsOpen(next);
+    if (next && loginRows === null) {
+      try {
+        const { data } = await api.get(`/admin/trust-cases/${caseId}/login-activity?limit=5`);
+        setLoginRows(data.rows || []);
+      } catch (e) {
+        toast.error(formatApiError(e.response?.data?.detail));
+        setLoginRows([]);
+      }
+    }
+  };
+
   const load = async () => {
     try {
       const { data } = await api.get(`/admin/trust-cases/${caseId}`);
@@ -341,18 +357,56 @@ export default function AdminCaseDetail() {
             {" · "}{(c.intake_path || "new") === "review" ? "Existing Trust Review" : (c.trust_type === "joint" ? "Joint Trust" : "Single Trust")}
           </p>
           <p className="text-[#64748B] mt-1 text-sm" data-testid="admin-client-last-login">
-            Last login:{" "}
-            {c.client_last_login_at ? (
-              <span className="text-navy font-medium" title={c.client_last_login_at}>
-                {new Date(c.client_last_login_at).toLocaleString()}
-              </span>
-            ) : (
-              <span className="text-[#94A3B8] italic">never</span>
-            )}
-            {c.client_last_logout_at && (
-              <span className="text-[#94A3B8]"> · last logout {new Date(c.client_last_logout_at).toLocaleString()}</span>
-            )}
+            <button
+              type="button"
+              onClick={toggleLogins}
+              className="text-left text-[#64748B] hover:text-navy"
+              data-testid="admin-client-logins-toggle"
+              aria-expanded={loginsOpen}>
+              <span className="underline decoration-dotted underline-offset-4">Last login:</span>{" "}
+              {c.client_last_login_at ? (
+                <span className="text-navy font-medium" title={c.client_last_login_at}>
+                  {new Date(c.client_last_login_at).toLocaleString()}
+                </span>
+              ) : (
+                <span className="text-[#94A3B8] italic">never</span>
+              )}
+              {c.client_last_logout_at && (
+                <span className="text-[#94A3B8]"> · last logout {new Date(c.client_last_logout_at).toLocaleString()}</span>
+              )}
+              <span className="ml-1 text-[#94A3B8]">({loginsOpen ? "hide" : "show last 5"})</span>
+            </button>
           </p>
+          {loginsOpen && (
+            <div className="mt-2 max-w-2xl bg-white border border-[#E2E0DA] rounded-md overflow-hidden" data-testid="admin-client-logins-table">
+              {loginRows === null ? (
+                <p className="px-3 py-2 text-sm text-[#94A3B8]">Loading…</p>
+              ) : loginRows.length === 0 ? (
+                <p className="px-3 py-2 text-sm text-[#94A3B8]">No login activity recorded yet.</p>
+              ) : (
+                <table className="w-full text-xs">
+                  <thead className="bg-sand-200/40 text-[#64748B] uppercase tracking-wide">
+                    <tr>
+                      <th className="text-left px-3 py-1.5 font-semibold">Kind</th>
+                      <th className="text-left px-3 py-1.5 font-semibold">When</th>
+                      <th className="text-left px-3 py-1.5 font-semibold">IP</th>
+                      <th className="text-left px-3 py-1.5 font-semibold">User agent</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loginRows.map((r, i) => (
+                      <tr key={i} className="border-t border-[#F1EFEA]" data-testid={`admin-login-row-${i}`}>
+                        <td className={`px-3 py-1.5 font-medium ${r.kind === "login" ? "text-green-700" : "text-[#64748B]"}`}>{r.kind}</td>
+                        <td className="px-3 py-1.5 text-navy">{r.ts ? new Date(r.ts).toLocaleString() : "—"}</td>
+                        <td className="px-3 py-1.5 text-[#64748B] font-mono">{r.ip || "—"}</td>
+                        <td className="px-3 py-1.5 text-[#94A3B8] truncate max-w-[260px]" title={r.user_agent}>{r.user_agent || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           <button

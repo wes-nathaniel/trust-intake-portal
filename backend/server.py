@@ -2190,6 +2190,19 @@ async def admin_get_case(case_id: str, _: dict = Depends(require_admin)):
         case["client_last_logout_at"] = None
     return _attach_pending(case)
 
+@api_router.get("/admin/trust-cases/{case_id}/login-activity")
+async def admin_case_login_activity(case_id: str, limit: int = 5, _: dict = Depends(require_admin)):
+    """Return the most-recent login/logout rows for the client on this case."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "client_id": 1})
+    if not case:
+        raise HTTPException(status_code=404, detail="Not found")
+    limit = max(1, min(int(limit or 5), 50))
+    rows = await db.login_activity.find(
+        {"user_id": case.get("client_id")},
+        {"_id": 0, "kind": 1, "ts": 1, "ip": 1, "user_agent": 1},
+    ).sort("ts", -1).to_list(limit)
+    return {"rows": rows}
+
 @api_router.put("/admin/trust-cases/{case_id}/status")
 async def admin_update_status(case_id: str, body: StatusUpdate, admin: dict = Depends(require_admin)):
     if body.status not in STATUSES:
