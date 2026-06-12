@@ -107,8 +107,8 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
           explainer_html: s.explainer_html || "",
         }))
         .filter((s) => s.title || s.trust_html.trim() || s.explainer_html.trim());
-      const { data } = await api.put(`/admin/trust-cases/${caseId}/trust-sections`, { sections: cleaned });
-      toast.success(`Saved — ${cleaned.length} article${cleaned.length === 1 ? "" : "s"}. ${data.status === "Ready for Client Review" ? "Client notified." : ""}`);
+      await api.put(`/admin/trust-cases/${caseId}/trust-sections`, { sections: cleaned });
+      toast.success(`Saved — ${cleaned.length} article${cleaned.length === 1 ? "" : "s"}. Move the status to "Ready for Client Review" when ready.`);
       setDirty(false);
       onSaved && onSaved(cleaned);
     } catch (e) {

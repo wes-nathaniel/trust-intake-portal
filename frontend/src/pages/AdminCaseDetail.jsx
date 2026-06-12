@@ -340,6 +340,19 @@ export default function AdminCaseDetail() {
             )}
             {" · "}{(c.intake_path || "new") === "review" ? "Existing Trust Review" : (c.trust_type === "joint" ? "Joint Trust" : "Single Trust")}
           </p>
+          <p className="text-[#64748B] mt-1 text-sm" data-testid="admin-client-last-login">
+            Last login:{" "}
+            {c.client_last_login_at ? (
+              <span className="text-navy font-medium" title={c.client_last_login_at}>
+                {new Date(c.client_last_login_at).toLocaleString()}
+              </span>
+            ) : (
+              <span className="text-[#94A3B8] italic">never</span>
+            )}
+            {c.client_last_logout_at && (
+              <span className="text-[#94A3B8]"> · last logout {new Date(c.client_last_logout_at).toLocaleString()}</span>
+            )}
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button

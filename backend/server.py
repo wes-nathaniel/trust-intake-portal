@@ -650,6 +650,78 @@ async def record_failure(identifier: str):
 async def clear_failures(identifier: str):
     await db.login_attempts.delete_one({"identifier": identifier})
 
+async def _log_login_activity(user: dict, request: Request, kind: str):
+    """Persist a login/logout activity row and email ADMIN_NOTIFY_EMAIL with
+    the client's name, case number, and timestamp. `kind` is "login" or "logout".
+    Best-effort: failures are logged but never raised.
+    """
+    ts_iso = now_iso()
+    # Derive client IP from proxy headers (K8s ingress)
+    try:
+        xff = request.headers.get("x-forwarded-for", "")
+        ip = xff.split(",")[0].strip() if xff else (request.headers.get("x-real-ip") or (request.client.host if request.client else ""))
+    except Exception:
+        ip = ""
+    user_agent = (request.headers.get("user-agent") or "")[:300]
+    # Persist activity row
+    try:
+        await db.login_activity.insert_one({
+            "user_id": user["id"],
+            "email": user.get("email"),
+            "name": user.get("name") or "",
+            "role": user.get("role", "client"),
+            "kind": kind,
+            "ip": ip,
+            "user_agent": user_agent,
+            "ts": ts_iso,
+        })
+    except Exception as e:
+        logger.error(f"login_activity insert failed: {e}")
+    # Update last_login_at / last_logout_at on user record (for admin case page)
+    try:
+        field = "last_login_at" if kind == "login" else "last_logout_at"
+        await db.users.update_one({"id": user["id"]}, {"$set": {field: ts_iso}})
+    except Exception as e:
+        logger.error(f"users.{kind}_at update failed: {e}")
+    # Admin-only users don't need a per-login notification email.
+    if user.get("role") == "admin":
+        return
+    # Look up the most-recent (active or any) trust case for this client so we
+    # can surface a case number in the email.
+    try:
+        case = await db.trust_cases.find_one(
+            {"client_id": user["id"]},
+            {"_id": 0, "id": 1, "trust_name": 1, "status": 1},
+            sort=[("created_at", -1)],
+        )
+        case_label = (
+            f"#{case['id'][:8].upper()}" + (f" · {case['trust_name']}" if case.get("trust_name") else "")
+        ) if case else "(no active case)"
+    except Exception as e:
+        logger.error(f"login_activity case lookup failed: {e}")
+        case_label = "(case lookup failed)"
+    # Email admin
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        client_name = user.get("name") or user.get("email") or "(unnamed client)"
+        verb = "logged in" if kind == "login" else "logged out"
+        subject = f"Client {verb} — {client_name}"
+        inner = f"""
+<p style="font-size:18px;margin:0 0 12px 0;font-family:Georgia,serif;">Client {verb}</p>
+<p><b>{client_name}</b> &lt;{user.get('email','')}&gt;</p>
+<p>Case: <b>{case_label}</b></p>
+<p>Time: <b>{ts_iso}</b></p>
+<p style="color:#64748B;font-size:12px;">IP {ip or 'unknown'} · {user_agent[:120]}</p>
+"""
+        html = _email_shell(biz, primary, accent, inner)
+        await send_email_notification(ADMIN_NOTIFY_EMAIL, subject, html)
+    except Exception as e:
+        logger.error(f"login_activity admin email failed: {e}")
+
+
 # ---------- AUTH ENDPOINTS ----------
 def _first_name(full_name: str) -> str:
     return (full_name or "").strip().split(" ")[0] if (full_name or "").strip() else ""
@@ -667,7 +739,7 @@ def public_user(u: dict) -> dict:
     }
 
 @api_router.post("/auth/register")
-async def register(body: RegisterReq, response: Response):
+async def register(body: RegisterReq, request: Request, response: Response):
     email = body.email.lower()
     existing = await db.users.find_one({"email": email})
     if existing:
@@ -689,6 +761,7 @@ async def register(body: RegisterReq, response: Response):
     # sessions show "Welcome Back, {first name}" instead of the generic
     # first-time welcome.
     await db.users.update_one({"id": user["id"]}, {"$set": {"has_logged_in_before": True, "first_login_at": now_iso()}})
+    await _log_login_activity(user, request, "login")
     return body_resp
 
 @api_router.post("/auth/login")
@@ -716,11 +789,13 @@ async def login(body: LoginReq, request: Request, response: Response):
     body_resp = public_user(user)
     if not user.get("has_logged_in_before"):
         await db.users.update_one({"id": user["id"]}, {"$set": {"has_logged_in_before": True, "first_login_at": now_iso()}})
+    await _log_login_activity(user, request, "login")
     return body_resp
 
 @api_router.post("/auth/logout")
-async def logout(response: Response, _: dict = Depends(get_current_user)):
+async def logout(request: Request, response: Response, user: dict = Depends(get_current_user)):
     clear_auth_cookies(response)
+    await _log_login_activity(user, request, "logout")
     return {"ok": True}
 
 @api_router.get("/auth/me")
@@ -901,7 +976,7 @@ async def invite_info(token: str):
 
 
 @api_router.post("/auth/accept-invite")
-async def accept_invite(body: AcceptInviteReq, response: Response):
+async def accept_invite(body: AcceptInviteReq, request: Request, response: Response):
     rec = await db.invites.find_one({"token": body.token, "used": False})
     if not rec:
         raise HTTPException(status_code=400, detail="Invalid or used invitation")
@@ -925,6 +1000,7 @@ async def accept_invite(body: AcceptInviteReq, response: Response):
     body_resp = {**public_user(user), "case_id": rec["case_id"]}
     if not user.get("has_logged_in_before"):
         await db.users.update_one({"id": user["id"]}, {"$set": {"has_logged_in_before": True, "first_login_at": now_iso()}})
+    await _log_login_activity(user, request, "login")
     return body_resp
 
 # ---------- TRUST CASES ----------
@@ -2100,6 +2176,18 @@ async def admin_get_case(case_id: str, _: dict = Depends(require_admin)):
                 "created_at": active.get("created_at"),
             }
     case["pending_invite"] = pending
+    # Attach the client's last login/logout timestamps so admin can see when
+    # the client last accessed the portal.
+    try:
+        client_user = await db.users.find_one(
+            {"id": case.get("client_id")},
+            {"_id": 0, "last_login_at": 1, "last_logout_at": 1},
+        )
+        case["client_last_login_at"] = (client_user or {}).get("last_login_at")
+        case["client_last_logout_at"] = (client_user or {}).get("last_logout_at")
+    except Exception:
+        case["client_last_login_at"] = None
+        case["client_last_logout_at"] = None
     return _attach_pending(case)
 
 @api_router.put("/admin/trust-cases/{case_id}/status")
@@ -2291,14 +2379,12 @@ async def admin_set_trust_sections(case_id: str, body: TrustSectionsBody, admin:
         "trust_sections_updated_at": now_iso(),
         "trust_sections_updated_by": admin["id"],
     }
-    # If admin has populated at least one article AND status is intake-y, flip
-    # to "Ready for Client Review" — same UX as uploading a PDF draft.
-    has_any = any((s.get("trust_html") or "").strip() for s in payload)
-    INTAKE_STATUSES = {"Intake Started", "Intake In Progress", "Waiting on Documents", "In Review", "Drafting Trust"}
-    if has_any and case.get("status") in INTAKE_STATUSES:
-        updates["status"] = "Ready for Client Review"
+    # NOTE: Status is intentionally NOT auto-advanced here. Saving trust
+    # content is an admin action; the status must only move forward via a
+    # real client action (or an explicit admin status change). Admin can use
+    # the Status dropdown on the case page to move to "Ready for Client Review".
     await update_case(case_id, updates)
-    return {"ok": True, "count": len(payload), "status": updates.get("status", case.get("status"))}
+    return {"ok": True, "count": len(payload), "status": case.get("status")}
 
 
 @api_router.post("/admin/trust-cases/{case_id}/trust-draft")
@@ -2332,7 +2418,10 @@ async def admin_upload_trust_draft(case_id: str,
         "uploaded_at": now_iso(),
         "version": int((case.get("trust_draft") or {}).get("version", 0)) + 1,
     }
-    updates = {"trust_draft": draft, "status": "Ready for Client Review"}
+    updates = {"trust_draft": draft}
+    # NOTE: Status is intentionally NOT auto-advanced here. Uploading a draft
+    # is an admin action; the status must only move forward via a real client
+    # action or an explicit admin status change.
     await update_case(case_id, updates)
     # Bust any cached pages from a previous draft version
     try:
