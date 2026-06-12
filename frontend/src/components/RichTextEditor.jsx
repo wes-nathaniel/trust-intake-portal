@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Bold, Italic, Underline, List, ListOrdered, Heading2, Link2, Pilcrow, Quote, Undo, Redo } from "lucide-react";
+import { Bold, Italic, Underline, List, ListOrdered, Heading2, Link2, Pilcrow, Quote, Undo, Redo, FileText, ChevronDown } from "lucide-react";
 
 /**
  * Lightweight HTML-output WYSIWYG editor.
@@ -9,10 +9,17 @@ import { Bold, Italic, Underline, List, ListOrdered, Heading2, Link2, Pilcrow, Q
  *  - value (string HTML), onChange (string HTML)
  *  - placeholder, rows (min visual rows ~ 8)
  *  - testId
+ *  - templates: optional array of { key, title, trust_html, explain_html } for the
+ *    "Insert template" dropdown. When present, the dropdown is rendered.
+ *  - templateField: "trust_html" | "explain_html" — which field of each template to
+ *    insert into THIS editor (defaults to "trust_html").
  */
-export default function RichTextEditor({ value = "", onChange, placeholder = "Start typing…", rows = 8, testId }) {
+export default function RichTextEditor({ value = "", onChange, placeholder = "Start typing…", rows = 8, testId, templates, templateField = "trust_html" }) {
   const ref = useRef(null);
   const [focused, setFocused] = useState(false);
+  const [tplOpen, setTplOpen] = useState(false);
+  const tplBtnRef = useRef(null);
+  const savedRangeRef = useRef(null);
 
   // Sync external value → DOM (but only when actually different to keep cursor stable while typing)
   useEffect(() => {
@@ -42,6 +49,67 @@ export default function RichTextEditor({ value = "", onChange, placeholder = "St
     if (!url) return;
     exec("createLink", url);
   };
+
+  // Save the current selection range inside this editor so we can restore it
+  // after the user clicks a toolbar element that steals focus (e.g. the
+  // Templates dropdown button).
+  const saveSelection = () => {
+    const sel = window.getSelection && window.getSelection();
+    if (!sel || sel.rangeCount === 0 || !ref.current) return;
+    const range = sel.getRangeAt(0);
+    if (ref.current.contains(range.commonAncestorContainer)) {
+      savedRangeRef.current = range.cloneRange();
+    }
+  };
+
+  const restoreSelection = () => {
+    const r = savedRangeRef.current;
+    if (!r || !ref.current) return;
+    ref.current.focus();
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+  };
+
+  const insertTemplate = (tpl) => {
+    if (!tpl) return;
+    const html = (tpl[templateField] || "").trim();
+    if (!html) { setTplOpen(false); return; }
+    // If we have a saved range inside this editor, restore it; otherwise
+    // place caret at end of editor.
+    if (savedRangeRef.current) {
+      restoreSelection();
+    } else {
+      ref.current?.focus();
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      const r = document.createRange();
+      r.selectNodeContents(ref.current);
+      r.collapse(false);
+      sel.addRange(r);
+    }
+    try {
+      document.execCommand("insertHTML", false, html);
+    } catch (_) {
+      // Fallback: append to end
+      if (ref.current) ref.current.insertAdjacentHTML("beforeend", html);
+    }
+    setTplOpen(false);
+    savedRangeRef.current = null;
+    emit();
+  };
+
+  // Close template dropdown on outside click
+  useEffect(() => {
+    if (!tplOpen) return;
+    const onDocClick = (e) => {
+      if (tplBtnRef.current && !tplBtnRef.current.contains(e.target)) {
+        setTplOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [tplOpen]);
 
   const emit = () => {
     if (!ref.current) return;
@@ -95,6 +163,45 @@ export default function RichTextEditor({ value = "", onChange, placeholder = "St
         <Btn onClick={() => exec("insertUnorderedList")} label="Bulleted list"><List className="h-3.5 w-3.5" /></Btn>
         <Btn onClick={() => exec("insertOrderedList")} label="Numbered list"><ListOrdered className="h-3.5 w-3.5" /></Btn>
         <Btn onClick={insertLink} label="Insert link"><Link2 className="h-3.5 w-3.5" /></Btn>
+        {templates && templates.length > 0 && (
+          <div className="relative" ref={tplBtnRef}>
+            <button
+              type="button"
+              onMouseDown={(e) => { e.preventDefault(); saveSelection(); }}
+              onClick={() => setTplOpen((v) => !v)}
+              className="px-2 py-1 rounded hover:bg-bronze/10 text-navy inline-flex items-center gap-1 text-xs"
+              title="Insert boilerplate clause at cursor"
+              aria-haspopup="menu"
+              aria-expanded={tplOpen}
+              data-testid={testId ? `${testId}-templates-btn` : "rte-templates-btn"}>
+              <FileText className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Templates</span>
+              <ChevronDown className="h-3 w-3" />
+            </button>
+            {tplOpen && (
+              <div
+                role="menu"
+                className="absolute z-30 mt-1 left-0 w-64 bg-white border border-[#E2E0DA] rounded-md shadow-lg py-1"
+                data-testid={testId ? `${testId}-templates-menu` : "rte-templates-menu"}>
+                <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-[#94A3B8] border-b border-[#F1EFEA]">
+                  Insert boilerplate clause
+                </div>
+                {templates.map((tpl) => (
+                  <button
+                    key={tpl.key}
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => insertTemplate(tpl)}
+                    className="w-full text-left px-3 py-1.5 text-sm text-navy hover:bg-bronze/10"
+                    role="menuitem"
+                    data-testid={`${testId ? testId + '-' : 'rte-'}template-${tpl.key}`}>
+                    {tpl.title}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <div className="flex-1" />
         <Btn onClick={() => exec("undo")} label="Undo"><Undo className="h-3.5 w-3.5" /></Btn>
         <Btn onClick={() => exec("redo")} label="Redo"><Redo className="h-3.5 w-3.5" /></Btn>
@@ -106,7 +213,7 @@ export default function RichTextEditor({ value = "", onChange, placeholder = "St
         suppressContentEditableWarning
         onInput={emit}
         onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
+        onBlur={() => { setFocused(false); saveSelection(); }}
         onPaste={onPaste}
         onKeyDown={onKeyDown}
         spellCheck

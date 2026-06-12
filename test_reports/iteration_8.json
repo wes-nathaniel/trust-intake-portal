@@ -1,0 +1,41 @@
+{
+  "summary": "Frontend-only verification of the new Templates dropdown in the WYSIWYG RichTextEditor on the admin Trust Sections editor. Drove the full flow via Playwright: admin login -> /admin/cases/{id} -> expand 'Trust Viewer Content' -> Add article (got index 4) -> verified Templates button + menu of exactly 6 items (Revocation, Successor Trustee, Spendthrift, No Contest, Powers of Trustee, Distribution to Beneficiaries) on BOTH trust (left) and explainer (right) editors -> inserted trust_html on left and explain_html on right (correct variants per editor) -> verified cursor-position insertion in the middle of typed text (AAA BBB | [Spendthrift block] | CCC) -> verified all 6 templates each insert non-empty distinct HTML -> verified outside-click closes dropdown -> verified Underline toolbar button now exists and works (produces <u>...</u>) -> Save shows 'Saved — 5 articles. Client notified.' toast -> reload persists the inserted No-Contest clause -> inline Preview toggle renders the inserted template HTML correctly. 12/12 critical Template scenarios PASS. No bugs found in the Templates feature.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Templates insertion HTML", "issues": ["document.execCommand('insertHTML') sometimes wraps the inserted block in the surrounding block format, producing a stray empty <h3> tag right after the template heading (e.g. '<h3>Revocation, Amendment, and Modification</h3><h3>\\n<p>...'). Visually harmless (empty h3 collapses) but technically dirty HTML. Consider stripping/normalizing this in RichTextEditor.insertTemplate, or wrap insertion with a sentinel and re-flow blocks after execCommand."]}
+    ]
+  },
+  "verifications_passed": [
+    "Templates button visible on trust editor toolbar (data-testid trust-section-trust-{i}-templates-btn)",
+    "Templates button visible on explainer editor toolbar (data-testid trust-section-explainer-{i}-templates-btn)",
+    "Dropdown menu shows exactly 6 items with correct titles and stable testIds (template-revocation, template-successor-trustee, template-spendthrift, template-no-contest, template-powers-of-trustee, template-distribution-to-beneficiaries)",
+    "Trust editor Revocation inserts legal block: heading 'Revocation, Amendment, and Modification' + 'revoke' + 'amend' present",
+    "Explainer editor Revocation inserts plain-English variant: 'change your mind' + 'cancel' present; legal heading NOT present",
+    "Cursor-position insertion: typed 'AAA BBB CCC', moved caret 4 chars left, inserted Spendthrift -> output text starts with 'AAA BBB', then 'Spendthrift Provision' block, then 'CCC' at the end (order: AAA_BBB=0, Spendthrift=7, CCC=630)",
+    "All 6 templates produce non-empty, distinct HTML when inserted into a cleared trust editor",
+    "Outside-click closes the dropdown menu (mousedown listener works)",
+    "Underline toolbar button (data-testid trust-section-trust-{i}-underline) exists and produces <u> tags around selected text",
+    "Save 'Trust Viewer content' button shows toast 'Saved — 5 articles. Client notified.'",
+    "After reload, the inserted No-Contest template HTML persists in the saved article",
+    "Inline Preview toggle (data-testid trust-section-preview-toggle-{i}) renders the inserted template HTML in the two-panel preview"
+  ],
+  "test_report_links": [],
+  "action_items": [
+    "(LOW) Normalize HTML emitted by insertTemplate to strip the duplicate empty <h3> artifact left behind by execCommand('insertHTML') when the caret is at the start of an empty block. Not blocking — visual output is unaffected."
+  ],
+  "critical_code_review_comments": [
+    "RichTextEditor.insertTemplate relies on document.execCommand which is officially deprecated. It still works in all current browsers (Chromium/Firefox/Safari Jan 2026) but consider migrating to a Range-based insertion (range.insertNode(fragment)) to (a) eliminate the empty-<h3> artifact and (b) future-proof against eventual removal.",
+    "saveSelection is called on blur and on the Templates button's onMouseDown — good. But if user clicks Templates without ever placing caret in editor, savedRangeRef is null and insertTemplate falls back to end-of-editor. That fallback works, but consider visually conveying 'inserted at end' to the user.",
+    "Templates dropdown does not trap focus or close on Escape. Low priority but improves a11y."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "skipped", "frontend": "100% (12/12 Templates scenarios)"},
+  "test_credentials": "Admin support@igcfirm.com / Wllorenzo03! verified working (curl + UI). Login testIds: login-email-input, login-password-input, login-submit-btn.",
+  "seed_data_creation": "Added 1 new article to case 2a65d6ce-b2c7-4d39-a752-d42c1f032e2c — index 4, empty title, with the No-Contest (In Terrorem) legal clause as trust_html (no explainer_html). Case now has 5 articles. Iteration_7's 'TEST Article — Auto QA' (index 3) is still present. Main agent may want to clean these up.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Templates dropdown feature is fully working — trust editor inserts trust_html, explainer editor inserts explain_html, cursor position is honored, outside-click closes, persistence + preview verified. Underline button is now present and working (closes the iteration_7 spec gap). Only nit is a stray empty <h3> tag after inserted h3 headings due to execCommand quirk — visually harmless. Case 2a65d6ce-b2c7-4d39-a752-d42c1f032e2c now has 5 articles including leftover seed articles."
+}

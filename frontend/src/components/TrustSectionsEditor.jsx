@@ -3,6 +3,7 @@ import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import { Plus, Trash2, Copy, GripVertical, BookOpen, ChevronDown, ChevronUp, Save, Eye, EyeOff } from "lucide-react";
 import RichTextEditor from "@/components/RichTextEditor";
+import { TRUST_TEMPLATES } from "@/lib/trustTemplates";
 
 /** Lightweight single-article preview pair (mirrors the two-panel viewer styling, no scroll-sync) */
 function InlineArticlePreview({ title, trust_html, explainer_html }) {
@@ -194,6 +195,8 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
                       placeholder="The Grantor, John A. Smith, hereby establishes…"
                       rows={8}
                       testId={`trust-section-trust-${i}`}
+                      templates={TRUST_TEMPLATES}
+                      templateField="trust_html"
                     />
                   </div>
                   <div>
@@ -204,6 +207,8 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
                       placeholder="This says you are setting up the trust…"
                       rows={8}
                       testId={`trust-section-explainer-${i}`}
+                      templates={TRUST_TEMPLATES}
+                      templateField="explain_html"
                     />
                   </div>
                 </div>
