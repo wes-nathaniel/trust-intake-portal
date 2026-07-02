@@ -6,6 +6,7 @@ import { ArrowRight, ShieldCheck, Download, FilePen, AlertTriangle, Plus, Sparkl
 import { useAuth } from "@/context/AuthContext";
 import StatusTracker from "@/components/StatusTracker";
 import TourCard from "@/components/TourCard";
+import AdminDocumentCard from "@/components/AdminDocumentCard";
 import { toast } from "sonner";
 
 export default function ClientPortal() {
@@ -194,6 +195,25 @@ export default function ClientPortal() {
                   </Link>
                 </div>
               </div>
+
+              {/* AI-explained documents from the trust team (Operating Agreement, EIN letter, etc.) */}
+              {(c.admin_documents || []).length > 0 && (
+                <div className="bg-white border border-[#E2E0DA] rounded-xl p-4 sm:p-6" data-testid={`client-admin-docs-${c.id}`}>
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Documents from your team</p>
+                  <h3 className="font-serif text-xl text-navy mb-1">Recent uploads</h3>
+                  <p className="text-xs text-[#64748B] mb-4">Each document includes a plain-English explanation prepared by our AI assistant. Download links live in your secure portal.</p>
+                  <div className="space-y-4">
+                    {(c.admin_documents || []).map((d) => (
+                      <AdminDocumentCard
+                        key={d.id}
+                        doc={d}
+                        caseId={c.id}
+                        apiBase={api.defaults.baseURL || ""}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           ))}
           <button

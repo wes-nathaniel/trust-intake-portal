@@ -4,6 +4,7 @@ import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
 import StatusTracker from "@/components/StatusTracker";
 import TrustSectionsEditor from "@/components/TrustSectionsEditor";
+import AdminDocumentsManager from "@/components/AdminDocumentsManager";
 import MessageThread from "@/components/MessageThread";
 import { toast } from "sonner";
 import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, RefreshCw, MailPlus, Clock, Lock, Unlock, BellRing, ExternalLink, Trash2, ShieldCheck } from "lucide-react";
@@ -805,6 +806,12 @@ export default function AdminCaseDetail() {
             </div>
           )}
         </Section>
+
+        <AdminDocumentsManager
+          caseId={caseId}
+          docs={c.admin_documents || []}
+          onChanged={() => load()}
+        />
 
         <Section title="Document Requests from client">
           <DocRequestsPanel caseId={caseId} requests={c.requested_documents} reload={load} />

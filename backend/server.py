@@ -29,6 +29,7 @@ import sms
 from ai_assistant import answer_question as ai_answer_question
 from trust_preview import pdf_bytes_to_preview_pages, pdf_bytes_to_preview_page, page_count as pdf_page_count
 import square_service
+import doc_explainer
 from functools import lru_cache
 import threading
 
@@ -2467,6 +2468,159 @@ async def admin_upload_trust_draft(case_id: str,
         logger.error(f"Trust-ready email failed: {e}")
 
     return {"ok": True, **draft}
+
+
+# ---------- AI DOCUMENT EXPLAINER (admin uploads any doc; AI writes plain-English summary) ----------
+ALLOWED_EXPLAINER_EXTS = {"pdf", "docx", "doc", "txt", "jpg", "jpeg", "png"}
+MAX_EXPLAINER_SIZE = 25 * 1024 * 1024  # 25 MB
+
+
+def _explainer_ext(filename: str) -> str:
+    return (filename.rsplit(".", 1)[-1] if "." in (filename or "") else "").lower()
+
+
+def _find_admin_doc(case: dict, doc_id: str) -> Optional[dict]:
+    for d in (case.get("admin_documents") or []):
+        if d.get("id") == doc_id and not d.get("is_deleted"):
+            return d
+    return None
+
+
+@api_router.post("/admin/trust-cases/{case_id}/admin-documents")
+async def admin_upload_explainer_doc(case_id: str,
+                                     label: str = Form(...),
+                                     file: UploadFile = File(...),
+                                     admin: dict = Depends(require_admin)):
+    """Admin uploads a document (Operating Agreement, EIN letter, Membership Ledger,
+    Schedule A amendment, etc.), types a friendly label, and the AI generates a
+    short plain-English explanation for the client to read in the portal."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    label = (label or "").strip()[:160]
+    if not label:
+        raise HTTPException(status_code=400, detail="A document label is required.")
+
+    ext = _explainer_ext(file.filename or "")
+    if ext not in ALLOWED_EXPLAINER_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '.{ext or 'unknown'}'. Allowed: {', '.join(sorted(ALLOWED_EXPLAINER_EXTS))}",
+        )
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > MAX_EXPLAINER_SIZE:
+        raise HTTPException(status_code=400, detail=f"File exceeds max size ({MAX_EXPLAINER_SIZE // (1024*1024)} MB).")
+
+    path = f"{APP_NAME}/admin-docs/{case_id}/{new_id()}.{ext}"
+    result = put_object(path, data, file.content_type or "application/octet-stream")
+
+    # Extract text (best-effort) and call the LLM for a structured explanation.
+    text = doc_explainer.extract_text(data, file.filename or "", file.content_type or "")
+    ai = await doc_explainer.generate_explanation(label, file.filename or "", text)
+
+    doc = {
+        "id": new_id(),
+        "label": label,
+        "storage_path": result["path"],
+        "filename": file.filename,
+        "content_type": file.content_type or "application/octet-stream",
+        "size": result.get("size", len(data)),
+        "uploaded_by": admin["id"],
+        "uploaded_at": now_iso(),
+        "is_deleted": False,
+        "ai_explanation": ai,
+    }
+    admin_docs = list(case.get("admin_documents") or [])
+    admin_docs.append(doc)
+    await update_case(case_id, {"admin_documents": admin_docs})
+
+    # Notify client by email (best-effort — never blocks the upload).
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        link = f"{FRONTEND_URL}/portal"
+        inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">A new document is ready for you</p>
+<p>Your trust team uploaded <b>{label}</b> to your secure portal.</p>
+<p style="color:#64748B;font-size:13px;">Sign in to view the document alongside a plain-English explanation prepared by our AI assistant.</p>
+{_cta(link, "Open your portal", accent)}
+"""
+        html = _email_shell(biz, primary, accent, inner)
+        await send_email_notification(
+            case.get("client_email"),
+            f"New document uploaded — {label}",
+            html,
+        )
+    except Exception as e:
+        logger.error(f"Admin-doc client email failed: {e}")
+
+    return {"ok": True, **doc}
+
+
+@api_router.post("/admin/trust-cases/{case_id}/admin-documents/{doc_id}/regenerate")
+async def admin_regenerate_explainer(case_id: str, doc_id: str, admin: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    doc = _find_admin_doc(case, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        data, ct = get_object(doc["storage_path"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not read file from storage: {e}")
+    text = doc_explainer.extract_text(data, doc.get("filename", ""), ct or doc.get("content_type", ""))
+    ai = await doc_explainer.generate_explanation(doc.get("label", ""), doc.get("filename", ""), text)
+    # Update in place
+    admin_docs = [dict(d) for d in (case.get("admin_documents") or [])]
+    for d in admin_docs:
+        if d.get("id") == doc_id:
+            d["ai_explanation"] = ai
+            break
+    await update_case(case_id, {"admin_documents": admin_docs})
+    return {"ok": True, "ai_explanation": ai}
+
+
+@api_router.delete("/admin/trust-cases/{case_id}/admin-documents/{doc_id}")
+async def admin_delete_explainer_doc(case_id: str, doc_id: str, _: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    doc = _find_admin_doc(case, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        delete_object(doc["storage_path"])
+    except Exception as e:
+        logger.warning(f"Storage delete failed for {doc['storage_path']}: {e}")
+    admin_docs = [d for d in (case.get("admin_documents") or []) if d.get("id") != doc_id]
+    await update_case(case_id, {"admin_documents": admin_docs})
+    return {"ok": True}
+
+
+@api_router.get("/trust-cases/{case_id}/admin-documents/{doc_id}/download")
+async def download_explainer_doc(case_id: str, doc_id: str, user: dict = Depends(get_current_user)):
+    """Both admin and the case-owning client may download. Auth via get_case."""
+    case = await get_case(case_id, user)
+    doc = _find_admin_doc(case, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        data, ct = get_object(doc["storage_path"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not read file from storage: {e}")
+    safe_name = (doc.get("filename") or f"document-{doc_id[:8]}").replace('"', "'")
+    return Response(
+        content=data,
+        media_type=doc.get("content_type") or ct or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
 
 
 async def _get_trust_draft(case_id: str, user: dict):
