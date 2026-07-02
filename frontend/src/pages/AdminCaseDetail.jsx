@@ -126,6 +126,15 @@ export default function AdminCaseDetail() {
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
+  const removeClientDoc = async (d) => {
+    if (!window.confirm(`Remove "${d.filename}"? The client will no longer see this file.`)) return;
+    try {
+      await api.delete(`/trust-cases/${caseId}/documents/${d.id}`);
+      toast.success("Document removed.");
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
   const resendInvite = async () => {
     setResending(true);
     try {
@@ -827,7 +836,10 @@ export default function AdminCaseDetail() {
                     <span className="truncate">{d.filename}</span>
                     <span className="text-xs text-[#64748B]">({d.doc_type})</span>
                   </span>
-                  <button onClick={() => download(d)} className="text-navy hover:text-bronze" data-testid={`admin-doc-download-${d.id}`}><Download className="h-4 w-4" /></button>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <button onClick={() => download(d)} className="text-navy hover:text-bronze" title="Download" data-testid={`admin-doc-download-${d.id}`}><Download className="h-4 w-4" /></button>
+                    <button onClick={() => removeClientDoc(d)} className="text-red-600 hover:text-red-700" title="Remove document" data-testid={`admin-doc-remove-${d.id}`}><Trash2 className="h-4 w-4" /></button>
+                  </div>
                 </li>
               ))}
             </ul>

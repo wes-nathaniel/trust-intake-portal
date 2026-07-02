@@ -16,6 +16,10 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 
 
 ## Changelog — 2026-02-11 (cont'd)
+- ✅ **Delete flows for documents** — three separate paths, all verified end-to-end:
+  1. Admin can now Remove client-uploaded documents (ID, proof of address, bank statements, etc.) from the "Documents (N)" section on `AdminCaseDetail` — previously only Download existed.
+  2. New `ClientDocumentsPanel` on `ClientPortal` ("Files you've sent us") shows every file the client has uploaded across intake steps with per-item Download + Delete. Admin-uploaded files (EIN letter, trust draft) render read-only with a "From your team" tag.
+  3. Admin delete on the AI Document Explainer (`AdminDocumentsManager`) already worked in preview — was a redeploy gap on production.
 - ✅ **AI Document Explainer** — new admin-uploads-any-document feature with Claude Sonnet 4.5 auto-generated plain-English explanations.
   - Backend: `/app/backend/doc_explainer.py` (text extraction for PDF/DOCX/TXT + LLM call via Emergent LLM Key). New endpoints on `server.py`: `POST /admin/trust-cases/{id}/admin-documents` (upload + label + AI), `POST .../regenerate`, `DELETE .../admin-documents/{doc_id}`, `GET /trust-cases/{id}/admin-documents/{doc_id}/download` (owner or admin).
   - Storage: new `admin_documents[]` field on trust_cases doc (fully independent of `trust_draft` / `trust_sections` / `documents`). Fields: id, label, storage_path, filename, content_type, size, uploaded_by, uploaded_at, ai_explanation{what_is, what_it_does, why_it_matters, notarization, client_action, generated_at, error}.

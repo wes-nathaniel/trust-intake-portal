@@ -7,6 +7,7 @@ import { useAuth } from "@/context/AuthContext";
 import StatusTracker from "@/components/StatusTracker";
 import TourCard from "@/components/TourCard";
 import AdminDocumentCard from "@/components/AdminDocumentCard";
+import ClientDocumentsPanel from "@/components/ClientDocumentsPanel";
 import { toast } from "sonner";
 
 export default function ClientPortal() {
@@ -195,6 +196,13 @@ export default function ClientPortal() {
                   </Link>
                 </div>
               </div>
+
+              {/* Client's own uploaded documents — download + delete */}
+              <ClientDocumentsPanel
+                caseId={c.id}
+                docs={c.documents || []}
+                onChanged={load}
+              />
 
               {/* AI-explained documents from the trust team (Operating Agreement, EIN letter, etc.) */}
               {(c.admin_documents || []).length > 0 && (
