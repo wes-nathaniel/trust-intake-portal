@@ -1,11 +1,15 @@
-import React, { useRef } from "react";
-import { FileText, Download, Sparkles, StampIcon, Info, Upload } from "lucide-react";
+import React, { useRef, useState } from "react";
+import { FileText, Download, Sparkles, StampIcon, Info, Upload, History, RotateCcw, ChevronDown } from "lucide-react";
+import api, { formatApiError } from "@/lib/api";
+import { toast } from "sonner";
 
 /** Compact read-only card that shows a single admin-uploaded document
  *  and the AI-generated explanation directly under it. Used by BOTH
  *  the admin case detail page and the client portal. */
-export default function AdminDocumentCard({ doc, caseId, apiBase, canDelete, onDelete, onRegenerate, regenerating, onReplace, replacing, className = "" }) {
+export default function AdminDocumentCard({ doc, caseId, apiBase, canDelete, onDelete, onRegenerate, regenerating, onReplace, replacing, onRestored, className = "" }) {
   const replaceInputRef = useRef(null);
+  const [showVersions, setShowVersions] = useState(false);
+  const [restoring, setRestoring] = useState(null);
   const ai = doc.ai_explanation || {};
   const hasAi = !!(ai.what_is || ai.what_it_does || ai.why_it_matters || ai.notarization || ai.client_action);
   const download = () => {
@@ -13,6 +17,26 @@ export default function AdminDocumentCard({ doc, caseId, apiBase, canDelete, onD
     window.open(url, "_blank", "noopener,noreferrer");
   };
   const kb = doc.size ? (doc.size / 1024).toFixed(0) : null;
+
+  // Version history is admin-only (surfaced via onRestored callback).
+  const versions = Array.isArray(doc.versions) ? [...doc.versions] : [];
+  versions.sort((a, b) => (b.archived_at || "").localeCompare(a.archived_at || ""));
+  const shown = versions.slice(0, 5);
+  const hasHistory = versions.length > 0 && !!onRestored;
+
+  const restore = async (versionNum) => {
+    if (!window.confirm(`Restore version ${versionNum}? The current file will be archived as a new version so you can undo this.`)) return;
+    setRestoring(versionNum);
+    try {
+      await api.post(`/admin/trust-cases/${caseId}/admin-documents/${doc.id}/versions/${versionNum}/restore`);
+      toast.success(`Restored version ${versionNum}.`);
+      onRestored && onRestored();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setRestoring(null);
+    }
+  };
 
   return (
     <div
@@ -24,7 +48,14 @@ export default function AdminDocumentCard({ doc, caseId, apiBase, canDelete, onD
             <FileText className="h-4 w-4 text-bronze" />
           </div>
           <div className="min-w-0 flex-1">
-            <p className="font-serif text-lg text-navy break-words" data-testid={`admin-doc-label-${doc.id}`}>{doc.label}</p>
+            <p className="font-serif text-lg text-navy break-words" data-testid={`admin-doc-label-${doc.id}`}>
+              {doc.label}
+              {typeof doc.version === "number" && doc.version > 1 && (
+                <span className="ml-2 text-[10px] uppercase tracking-wider bg-bronze/10 text-bronze border border-bronze/30 px-1.5 py-0.5 rounded font-sans font-semibold align-middle">
+                  v{doc.version}
+                </span>
+              )}
+            </p>
             <p className="text-xs text-[#64748B] truncate">{doc.filename}{kb ? ` · ${kb} KB` : ""}</p>
             <p className="text-[11px] text-[#94A3B8] mt-0.5">Uploaded {doc.uploaded_at ? new Date(doc.uploaded_at).toLocaleString() : "—"}</p>
           </div>
@@ -110,6 +141,60 @@ export default function AdminDocumentCard({ doc, caseId, apiBase, canDelete, onD
           </div>
         )}
       </div>
+
+      {hasHistory && (
+        <div className="border-t border-[#F1EFEA] bg-sand-200/20" data-testid={`admin-doc-history-${doc.id}`}>
+          <button
+            type="button"
+            onClick={() => setShowVersions((v) => !v)}
+            className="w-full flex items-center justify-between gap-2 px-4 py-2.5 text-xs text-[#64748B] hover:text-navy"
+            aria-expanded={showVersions}
+            data-testid={`admin-doc-history-toggle-${doc.id}`}>
+            <span className="inline-flex items-center gap-1.5">
+              <History className="h-3.5 w-3.5" />
+              Version history · {versions.length} prior version{versions.length === 1 ? "" : "s"}
+            </span>
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showVersions ? "rotate-180" : ""}`} />
+          </button>
+          {showVersions && (
+            <ul className="px-4 pb-4 space-y-2">
+              {shown.map((v) => (
+                <li
+                  key={v.version}
+                  className="flex items-center justify-between gap-3 bg-white border border-[#E2E0DA] rounded-md px-3 py-2"
+                  data-testid={`admin-doc-version-${doc.id}-${v.version}`}>
+                  <div className="min-w-0">
+                    <p className="text-[13px] text-navy">
+                      <span className="text-[10px] uppercase tracking-wider bg-[#F1EFEA] text-[#64748B] px-1.5 py-0.5 rounded font-semibold mr-2 align-middle">
+                        v{v.version}
+                      </span>
+                      <span className="truncate">{v.filename || "(no filename)"}</span>
+                    </p>
+                    <p className="text-[11px] text-[#94A3B8] mt-0.5">
+                      Uploaded {v.uploaded_at ? new Date(v.uploaded_at).toLocaleString() : "—"}
+                      {v.archived_at && <span> · archived {new Date(v.archived_at).toLocaleString()}</span>}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => restore(v.version)}
+                    disabled={restoring === v.version}
+                    className="btn-secondary text-xs inline-flex items-center shrink-0"
+                    title={`Make v${v.version} the current version`}
+                    data-testid={`admin-doc-restore-${doc.id}-${v.version}`}>
+                    <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                    {restoring === v.version ? "Restoring…" : "Restore"}
+                  </button>
+                </li>
+              ))}
+              {versions.length > 5 && (
+                <li className="text-[11px] text-[#94A3B8] italic px-1">
+                  Showing latest 5 of {versions.length} versions.
+                </li>
+              )}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }

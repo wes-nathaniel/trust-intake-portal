@@ -148,6 +148,7 @@ export default function AdminDocumentsManager({ caseId, docs, onChanged, classNa
               regenerating={!!regenerating[d.id]}
               onReplace={(file) => replace(d.id, file)}
               replacing={!!replacing[d.id]}
+              onRestored={() => onChanged && onChanged()}
             />
           ))}
         </div>

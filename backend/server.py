@@ -2533,6 +2533,8 @@ async def admin_upload_explainer_doc(case_id: str,
         "uploaded_at": now_iso(),
         "is_deleted": False,
         "ai_explanation": ai,
+        "version": 1,
+        "versions": [],
     }
     admin_docs = list(case.get("admin_documents") or [])
     admin_docs.append(doc)
@@ -2593,8 +2595,8 @@ async def admin_replace_explainer_doc(case_id: str, doc_id: str,
                                       file: UploadFile = File(...),
                                       admin: dict = Depends(require_admin)):
     """Replace an existing admin-uploaded document IN PLACE — keeps the same
-    doc_id, deletes the old file from storage, stores the new file, and
-    regenerates the AI explanation. Optionally updates the label."""
+    doc_id, archives the current state to `versions[]`, stores the new file,
+    and regenerates the AI explanation. Optionally updates the label."""
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -2614,21 +2616,30 @@ async def admin_replace_explainer_doc(case_id: str, doc_id: str,
     if len(data) > MAX_EXPLAINER_SIZE:
         raise HTTPException(status_code=400, detail=f"File exceeds max size ({MAX_EXPLAINER_SIZE // (1024*1024)} MB).")
 
-    # Store new file at a fresh key (guarantees a clean overwrite), then delete
-    # the old storage object best-effort.
     new_path = f"{APP_NAME}/admin-docs/{case_id}/{new_id()}.{ext}"
     result = put_object(new_path, data, file.content_type or "application/octet-stream")
-    old_path = doc.get("storage_path")
-    if old_path and old_path != new_path:
-        try:
-            delete_object(old_path)
-        except Exception as e:
-            logger.warning(f"Old storage cleanup failed for {old_path}: {e}")
 
     # Regenerate AI explanation with the (possibly updated) label + new file
     new_label = (label or doc.get("label") or "").strip()[:160] or doc.get("label") or ""
     text = doc_explainer.extract_text(data, file.filename or "", file.content_type or "")
     ai = await doc_explainer.generate_explanation(new_label, file.filename or "", text)
+
+    # Archive the CURRENT state as a prior version BEFORE overwriting.
+    versions = list(doc.get("versions") or [])
+    current_version_num = int(doc.get("version") or 1)
+    archived = {
+        "version": current_version_num,
+        "storage_path": doc.get("storage_path"),
+        "filename": doc.get("filename"),
+        "content_type": doc.get("content_type"),
+        "size": doc.get("size"),
+        "label": doc.get("label"),
+        "uploaded_by": doc.get("uploaded_by"),
+        "uploaded_at": doc.get("uploaded_at"),
+        "ai_explanation": doc.get("ai_explanation"),
+        "archived_at": now_iso(),
+    }
+    versions.append(archived)
 
     admin_docs = [dict(d) for d in (case.get("admin_documents") or [])]
     for d in admin_docs:
@@ -2642,7 +2653,8 @@ async def admin_replace_explainer_doc(case_id: str, doc_id: str,
                 "uploaded_by": admin["id"],
                 "uploaded_at": now_iso(),
                 "ai_explanation": ai,
-                "replaced": True,
+                "version": current_version_num + 1,
+                "versions": versions,
                 "replaced_at": now_iso(),
             })
             break
@@ -2670,7 +2682,91 @@ async def admin_replace_explainer_doc(case_id: str, doc_id: str,
     except Exception as e:
         logger.error(f"Admin-doc replace client email failed: {e}")
 
-    return {"ok": True, "doc_id": doc_id, "label": new_label, "filename": file.filename, "ai_explanation": ai}
+    return {"ok": True, "doc_id": doc_id, "label": new_label, "filename": file.filename,
+            "version": current_version_num + 1, "ai_explanation": ai}
+
+
+@api_router.get("/admin/trust-cases/{case_id}/admin-documents/{doc_id}/versions")
+async def admin_list_explainer_versions(case_id: str, doc_id: str, _: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    doc = _find_admin_doc(case, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    # Newest first
+    versions = sorted(list(doc.get("versions") or []), key=lambda v: v.get("archived_at") or "", reverse=True)
+    return {
+        "current_version": int(doc.get("version") or 1),
+        "current_filename": doc.get("filename"),
+        "current_uploaded_at": doc.get("uploaded_at"),
+        "versions": versions,
+    }
+
+
+@api_router.post("/admin/trust-cases/{case_id}/admin-documents/{doc_id}/versions/{version_num}/restore")
+async def admin_restore_explainer_version(case_id: str, doc_id: str, version_num: int,
+                                          admin: dict = Depends(require_admin)):
+    """Restore a specific prior version as the CURRENT file. The state at the
+    time of restore is archived into `versions[]` so the operation is itself
+    reversible."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    doc = _find_admin_doc(case, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    versions = list(doc.get("versions") or [])
+    target = next((v for v in versions if int(v.get("version") or 0) == int(version_num)), None)
+    if not target:
+        raise HTTPException(status_code=404, detail=f"Version {version_num} not found")
+
+    # Archive the current state before swapping.
+    current_version_num = int(doc.get("version") or 1)
+    versions_next = [v for v in versions if int(v.get("version") or 0) != int(version_num)]
+    versions_next.append({
+        "version": current_version_num,
+        "storage_path": doc.get("storage_path"),
+        "filename": doc.get("filename"),
+        "content_type": doc.get("content_type"),
+        "size": doc.get("size"),
+        "label": doc.get("label"),
+        "uploaded_by": doc.get("uploaded_by"),
+        "uploaded_at": doc.get("uploaded_at"),
+        "ai_explanation": doc.get("ai_explanation"),
+        "archived_at": now_iso(),
+    })
+
+    new_version_num = current_version_num + 1
+    admin_docs = [dict(d) for d in (case.get("admin_documents") or [])]
+    for d in admin_docs:
+        if d.get("id") == doc_id:
+            d.update({
+                "label": target.get("label") or d.get("label") or "",
+                "storage_path": target.get("storage_path"),
+                "filename": target.get("filename"),
+                "content_type": target.get("content_type") or "application/octet-stream",
+                "size": target.get("size"),
+                "ai_explanation": target.get("ai_explanation") or _empty_ai(),
+                "uploaded_by": admin["id"],
+                "uploaded_at": now_iso(),
+                "version": new_version_num,
+                "versions": versions_next,
+                "restored_from_version": int(version_num),
+                "restored_at": now_iso(),
+            })
+            break
+    await update_case(case_id, {"admin_documents": admin_docs})
+    return {"ok": True, "restored_version": int(version_num), "new_current_version": new_version_num}
+
+
+def _empty_ai() -> dict:
+    return {
+        "what_is": "", "what_it_does": "", "why_it_matters": "",
+        "notarization": "", "client_action": "",
+        "generated_at": now_iso(), "error": "",
+    }
 
 
 @api_router.delete("/admin/trust-cases/{case_id}/admin-documents/{doc_id}")
@@ -2685,6 +2781,14 @@ async def admin_delete_explainer_doc(case_id: str, doc_id: str, _: dict = Depend
         delete_object(doc["storage_path"])
     except Exception as e:
         logger.warning(f"Storage delete failed for {doc['storage_path']}: {e}")
+    # Also clean up any prior versioned files
+    for v in (doc.get("versions") or []):
+        vp = v.get("storage_path")
+        if vp:
+            try:
+                delete_object(vp)
+            except Exception as e:
+                logger.warning(f"Version storage delete failed for {vp}: {e}")
     admin_docs = [d for d in (case.get("admin_documents") or []) if d.get("id") != doc_id]
     await update_case(case_id, {"admin_documents": admin_docs})
     return {"ok": True}

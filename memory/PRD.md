@@ -16,6 +16,7 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 
 
 ## Changelog — 2026-02-11 (cont'd)
+- ✅ **Version history + Restore** for AI Explainer docs. Replace no longer deletes old storage — it archives to a `versions[]` array on the doc (each entry keeps storage_path, filename, size, uploaded_at, ai_explanation, archived_at). New endpoints: `GET /admin/trust-cases/{id}/admin-documents/{doc_id}/versions` and `POST .../versions/{n}/restore`. Restore is reversible — the current state is archived as a new version each time. Delete now cleans up all versioned storage objects too. `AdminDocumentCard` shows a `vN` badge next to the label and a collapsible "Version history" row (latest 5 shown, Restore button on each).
 - ✅ **Replace Document** in AI Explainer — new `PUT /api/admin/trust-cases/{id}/admin-documents/{doc_id}` endpoint replaces the file IN PLACE (same doc_id, deletes old storage, regenerates AI explanation, notifies client). New Replace button on `AdminDocumentCard` opens a file picker; no duplicate created. Verified E2E: same doc_id preserved, new content picked up by Claude, storage path rotated.
 - ✅ **AdminDocumentsManager layout fix** — was rendering inside a 2-col grid causing label to wrap character-by-character; added `lg:col-span-2` so it spans full width.
 - ✅ **Delete flows for documents** — three separate paths, all verified end-to-end:
