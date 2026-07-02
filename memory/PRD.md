@@ -16,6 +16,8 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 
 
 ## Changelog — 2026-02-11 (cont'd)
+- ✅ **Replace Document** in AI Explainer — new `PUT /api/admin/trust-cases/{id}/admin-documents/{doc_id}` endpoint replaces the file IN PLACE (same doc_id, deletes old storage, regenerates AI explanation, notifies client). New Replace button on `AdminDocumentCard` opens a file picker; no duplicate created. Verified E2E: same doc_id preserved, new content picked up by Claude, storage path rotated.
+- ✅ **AdminDocumentsManager layout fix** — was rendering inside a 2-col grid causing label to wrap character-by-character; added `lg:col-span-2` so it spans full width.
 - ✅ **Delete flows for documents** — three separate paths, all verified end-to-end:
   1. Admin can now Remove client-uploaded documents (ID, proof of address, bank statements, etc.) from the "Documents (N)" section on `AdminCaseDetail` — previously only Download existed.
   2. New `ClientDocumentsPanel` on `ClientPortal` ("Files you've sent us") shows every file the client has uploaded across intake steps with per-item Download + Delete. Admin-uploaded files (EIN letter, trust draft) render read-only with a "From your team" tag.

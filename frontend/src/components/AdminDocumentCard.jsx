@@ -1,10 +1,11 @@
-import React from "react";
-import { FileText, Download, Sparkles, StampIcon, Info } from "lucide-react";
+import React, { useRef } from "react";
+import { FileText, Download, Sparkles, StampIcon, Info, Upload } from "lucide-react";
 
 /** Compact read-only card that shows a single admin-uploaded document
  *  and the AI-generated explanation directly under it. Used by BOTH
  *  the admin case detail page and the client portal. */
-export default function AdminDocumentCard({ doc, caseId, apiBase, canDelete, onDelete, onRegenerate, regenerating, className = "" }) {
+export default function AdminDocumentCard({ doc, caseId, apiBase, canDelete, onDelete, onRegenerate, regenerating, onReplace, replacing, className = "" }) {
+  const replaceInputRef = useRef(null);
   const ai = doc.ai_explanation || {};
   const hasAi = !!(ai.what_is || ai.what_it_does || ai.why_it_matters || ai.notarization || ai.client_action);
   const download = () => {
@@ -17,22 +18,48 @@ export default function AdminDocumentCard({ doc, caseId, apiBase, canDelete, onD
     <div
       className={`border border-[#E2E0DA] rounded-xl bg-white overflow-hidden ${className}`}
       data-testid={`admin-doc-card-${doc.id}`}>
-      <div className="flex items-start gap-3 p-4 border-b border-[#F1EFEA] bg-sand-200/30">
-        <div className="shrink-0 mt-0.5 h-9 w-9 rounded-md bg-bronze/10 border border-bronze/30 flex items-center justify-center">
-          <FileText className="h-4 w-4 text-bronze" />
+      <div className="flex flex-col sm:flex-row items-start gap-3 p-4 border-b border-[#F1EFEA] bg-sand-200/30">
+        <div className="flex items-start gap-3 min-w-0 flex-1">
+          <div className="shrink-0 mt-0.5 h-9 w-9 rounded-md bg-bronze/10 border border-bronze/30 flex items-center justify-center">
+            <FileText className="h-4 w-4 text-bronze" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="font-serif text-lg text-navy break-words" data-testid={`admin-doc-label-${doc.id}`}>{doc.label}</p>
+            <p className="text-xs text-[#64748B] truncate">{doc.filename}{kb ? ` · ${kb} KB` : ""}</p>
+            <p className="text-[11px] text-[#94A3B8] mt-0.5">Uploaded {doc.uploaded_at ? new Date(doc.uploaded_at).toLocaleString() : "—"}</p>
+          </div>
         </div>
-        <div className="min-w-0 flex-1">
-          <p className="font-serif text-lg text-navy break-words" data-testid={`admin-doc-label-${doc.id}`}>{doc.label}</p>
-          <p className="text-xs text-[#64748B] truncate">{doc.filename}{kb ? ` · ${kb} KB` : ""}</p>
-          <p className="text-[11px] text-[#94A3B8] mt-0.5">Uploaded {doc.uploaded_at ? new Date(doc.uploaded_at).toLocaleString() : "—"}</p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap sm:shrink-0 w-full sm:w-auto">
           <button
             onClick={download}
             className="btn-secondary text-xs inline-flex items-center"
             data-testid={`admin-doc-download-${doc.id}`}>
             <Download className="h-3.5 w-3.5 mr-1" /> Download
           </button>
+          {onReplace && (
+            <>
+              <input
+                ref={replaceInputRef}
+                type="file"
+                accept=".pdf,.docx,.doc,.txt,.jpg,.jpeg,.png"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onReplace(f);
+                  if (replaceInputRef.current) replaceInputRef.current.value = "";
+                }}
+                data-testid={`admin-doc-replace-input-${doc.id}`}
+              />
+              <button
+                onClick={() => replaceInputRef.current?.click()}
+                disabled={replacing}
+                className="btn-secondary text-xs inline-flex items-center"
+                title="Upload a new version — replaces this file and regenerates the AI explanation"
+                data-testid={`admin-doc-replace-${doc.id}`}>
+                <Upload className="h-3.5 w-3.5 mr-1" /> {replacing ? "Replacing…" : "Replace"}
+              </button>
+            </>
+          )}
           {onRegenerate && (
             <button
               onClick={onRegenerate}

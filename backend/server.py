@@ -2587,6 +2587,92 @@ async def admin_regenerate_explainer(case_id: str, doc_id: str, admin: dict = De
     return {"ok": True, "ai_explanation": ai}
 
 
+@api_router.put("/admin/trust-cases/{case_id}/admin-documents/{doc_id}")
+async def admin_replace_explainer_doc(case_id: str, doc_id: str,
+                                      label: Optional[str] = Form(None),
+                                      file: UploadFile = File(...),
+                                      admin: dict = Depends(require_admin)):
+    """Replace an existing admin-uploaded document IN PLACE — keeps the same
+    doc_id, deletes the old file from storage, stores the new file, and
+    regenerates the AI explanation. Optionally updates the label."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    doc = _find_admin_doc(case, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    ext = _explainer_ext(file.filename or "")
+    if ext not in ALLOWED_EXPLAINER_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '.{ext or 'unknown'}'. Allowed: {', '.join(sorted(ALLOWED_EXPLAINER_EXTS))}",
+        )
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > MAX_EXPLAINER_SIZE:
+        raise HTTPException(status_code=400, detail=f"File exceeds max size ({MAX_EXPLAINER_SIZE // (1024*1024)} MB).")
+
+    # Store new file at a fresh key (guarantees a clean overwrite), then delete
+    # the old storage object best-effort.
+    new_path = f"{APP_NAME}/admin-docs/{case_id}/{new_id()}.{ext}"
+    result = put_object(new_path, data, file.content_type or "application/octet-stream")
+    old_path = doc.get("storage_path")
+    if old_path and old_path != new_path:
+        try:
+            delete_object(old_path)
+        except Exception as e:
+            logger.warning(f"Old storage cleanup failed for {old_path}: {e}")
+
+    # Regenerate AI explanation with the (possibly updated) label + new file
+    new_label = (label or doc.get("label") or "").strip()[:160] or doc.get("label") or ""
+    text = doc_explainer.extract_text(data, file.filename or "", file.content_type or "")
+    ai = await doc_explainer.generate_explanation(new_label, file.filename or "", text)
+
+    admin_docs = [dict(d) for d in (case.get("admin_documents") or [])]
+    for d in admin_docs:
+        if d.get("id") == doc_id:
+            d.update({
+                "label": new_label,
+                "storage_path": result["path"],
+                "filename": file.filename,
+                "content_type": file.content_type or "application/octet-stream",
+                "size": result.get("size", len(data)),
+                "uploaded_by": admin["id"],
+                "uploaded_at": now_iso(),
+                "ai_explanation": ai,
+                "replaced": True,
+                "replaced_at": now_iso(),
+            })
+            break
+    await update_case(case_id, {"admin_documents": admin_docs})
+
+    # Notify client that the document was updated (best-effort)
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        link = f"{FRONTEND_URL}/portal"
+        inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">A document was updated</p>
+<p>Your trust team replaced <b>{new_label}</b> with a new version in your secure portal.</p>
+<p style="color:#64748B;font-size:13px;">Sign in to review the updated document and its refreshed AI explanation.</p>
+{_cta(link, "Open your portal", accent)}
+"""
+        html = _email_shell(biz, primary, accent, inner)
+        await send_email_notification(
+            case.get("client_email"),
+            f"Document updated — {new_label}",
+            html,
+        )
+    except Exception as e:
+        logger.error(f"Admin-doc replace client email failed: {e}")
+
+    return {"ok": True, "doc_id": doc_id, "label": new_label, "filename": file.filename, "ai_explanation": ai}
+
+
 @api_router.delete("/admin/trust-cases/{case_id}/admin-documents/{doc_id}")
 async def admin_delete_explainer_doc(case_id: str, doc_id: str, _: dict = Depends(require_admin)):
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})

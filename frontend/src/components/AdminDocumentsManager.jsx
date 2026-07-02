@@ -10,11 +10,12 @@ import AdminDocumentCard from "@/components/AdminDocumentCard";
  * (with a custom label), regenerate the AI explanation, and remove docs.
  * Client-side download link uses the axios base URL so cookies flow correctly.
  */
-export default function AdminDocumentsManager({ caseId, docs, onChanged }) {
+export default function AdminDocumentsManager({ caseId, docs, onChanged, className = "" }) {
   const [label, setLabel] = useState("");
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [regenerating, setRegenerating] = useState({});
+  const [replacing, setReplacing] = useState({});
   const fileRef = useRef(null);
 
   const apiBase = api.defaults.baseURL || "";
@@ -66,8 +67,26 @@ export default function AdminDocumentsManager({ caseId, docs, onChanged }) {
     }
   };
 
+  const replace = async (docId, file) => {
+    if (!file) return;
+    setReplacing((m) => ({ ...m, [docId]: true }));
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      await api.put(`/admin/trust-cases/${caseId}/admin-documents/${docId}`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      toast.success("Document replaced — AI explanation regenerated. Client notified.");
+      onChanged && onChanged();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setReplacing((m) => ({ ...m, [docId]: false }));
+    }
+  };
+
   return (
-    <section className="bg-white border border-[#E2E0DA] rounded-xl p-6" data-testid="admin-documents-manager">
+    <section className={`bg-white border border-[#E2E0DA] rounded-xl p-6 ${className}`} data-testid="admin-documents-manager">
       <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
         <div>
           <h3 className="font-serif text-2xl text-navy">Client Documents (AI Explainer)</h3>
@@ -127,6 +146,8 @@ export default function AdminDocumentsManager({ caseId, docs, onChanged }) {
               onDelete={() => remove(d.id, d.label)}
               onRegenerate={() => regen(d.id)}
               regenerating={!!regenerating[d.id]}
+              onReplace={(file) => replace(d.id, file)}
+              replacing={!!replacing[d.id]}
             />
           ))}
         </div>

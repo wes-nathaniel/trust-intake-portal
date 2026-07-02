@@ -820,6 +820,7 @@ export default function AdminCaseDetail() {
           caseId={caseId}
           docs={c.admin_documents || []}
           onChanged={() => load()}
+          className="lg:col-span-2"
         />
 
         <Section title="Document Requests from client">
