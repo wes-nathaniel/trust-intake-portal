@@ -28,6 +28,7 @@ import esign
 import sms
 import whatsapp
 import notify
+import whatsapp_commands
 from ai_assistant import answer_question as ai_answer_question
 from trust_preview import pdf_bytes_to_preview_pages, pdf_bytes_to_preview_page, page_count as pdf_page_count
 import square_service
@@ -4368,7 +4369,7 @@ async def twilio_whatsapp_inbound(
     MessageSid: str = Form(""),
     ProfileName: str = Form(""),
 ):
-    """Twilio posts here whenever a client replies on WhatsApp.
+    """Twilio posts here whenever a client (or the admin) replies on WhatsApp.
 
     Configure this URL in the Twilio Console under Messaging → Try WhatsApp →
     Sandbox settings (or WhatsApp Sender settings) as the 'When a message comes
@@ -4377,7 +4378,31 @@ async def twilio_whatsapp_inbound(
     text = (Body or "").strip()
     stamp = now_iso()
 
-    # Best-effort match to an existing case by client_phone or grantor.phone
+    # --- Path 1: admin commands (message from ADMIN_WHATSAPP_NUMBER) ---
+    admin_num = (whatsapp.ADMIN_WHATSAPP_NUMBER or "").strip()
+    if admin_num and raw_from == admin_num:
+        admin_email = os.environ.get("ADMIN_EMAIL", "").strip() or None
+        try:
+            reply = await whatsapp_commands.handle_admin_command(text, raw_from, admin_email)
+        except Exception as e:
+            logger.exception(f"WhatsApp admin command failed: {e}")
+            reply = f"Command failed: {e}"
+        # Reply back on WhatsApp; also persist both sides to whatsapp_admin_log
+        whatsapp.send_whatsapp(raw_from, reply)
+        try:
+            await db.whatsapp_admin_log.insert_one({
+                "id": str(uuid.uuid4()),
+                "from": raw_from,
+                "body": text,
+                "reply": reply,
+                "at": stamp,
+                "message_sid": MessageSid,
+            })
+        except Exception as e:
+            logger.error(f"whatsapp_admin_log insert failed: {e}")
+        return Response(content="<Response></Response>", media_type="application/xml")
+
+    # --- Path 2: client reply — try to match to an existing case ---
     case = None
     if raw_from:
         case = await db.trust_cases.find_one(
@@ -4408,11 +4433,184 @@ async def twilio_whatsapp_inbound(
         )
     else:
         # Unmatched — still log to an inbox collection so nothing is lost
-        await db.whatsapp_inbox.insert_one({**entry, "matched": False})
+        await db.whatsapp_inbox.insert_one({**entry, "matched": False, "archived": False})
         notify.notify_admin(f"IGC WhatsApp: message from unknown number {raw_from}. Check inbox.")
 
-    # Twilio expects an HTTP 200 with either empty body or TwiML
     return Response(content="<Response></Response>", media_type="application/xml")
+
+
+# ---------- WHATSAPP INBOX (unmatched senders) ----------
+@api_router.get("/admin/whatsapp/inbox")
+async def admin_whatsapp_inbox(_: dict = Depends(require_admin)):
+    """Group all unarchived inbox messages by sender number. Newest thread first."""
+    docs = await db.whatsapp_inbox.find(
+        {"archived": {"$ne": True}}, {"_id": 0}
+    ).sort("at", -1).to_list(500)
+    threads: dict = {}
+    for d in docs:
+        key = d.get("from") or "unknown"
+        t = threads.setdefault(key, {
+            "from": key,
+            "profile_name": d.get("profile_name") or "",
+            "messages": [],
+            "latest_at": d.get("at"),
+        })
+        t["messages"].append(d)
+        if not t["latest_at"] or d.get("at", "") > t["latest_at"]:
+            t["latest_at"] = d.get("at")
+            if d.get("profile_name"):
+                t["profile_name"] = d["profile_name"]
+    return {"threads": sorted(threads.values(), key=lambda x: x["latest_at"] or "", reverse=True)}
+
+
+class InboxAttachReq(BaseModel):
+    from_number: str  # E.164 sender to attach
+    case_id: str      # target case
+    save_phone: bool = True  # if True, sets client_phone on the case for future auto-routing
+
+
+@api_router.post("/admin/whatsapp/inbox/attach")
+async def admin_whatsapp_inbox_attach(body: InboxAttachReq, admin: dict = Depends(require_admin)):
+    """Move every unarchived inbox message from `from_number` into the given
+    case's `whatsapp_thread[]`, and optionally record the sender's phone on
+    the case so future replies auto-route."""
+    case = await db.trust_cases.find_one({"id": body.case_id}, {"_id": 0, "id": 1})
+    if case is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    docs = await db.whatsapp_inbox.find(
+        {"from": body.from_number, "archived": {"$ne": True}}, {"_id": 0}
+    ).sort("at", 1).to_list(500)
+    if not docs:
+        raise HTTPException(status_code=404, detail="No inbox messages for that number")
+    stamp = now_iso()
+    entries = [{
+        "id": d.get("id") or str(uuid.uuid4()),
+        "direction": "inbound",
+        "from": d.get("from"),
+        "profile_name": d.get("profile_name") or "",
+        "body": d.get("body") or "",
+        "message_sid": d.get("message_sid"),
+        "at": d.get("at") or stamp,
+        "attached_by": admin.get("email"),
+        "attached_at": stamp,
+    } for d in docs]
+    updates: dict = {
+        "$push": {"whatsapp_thread": {"$each": entries}},
+        "$set": {"updated_at": stamp},
+    }
+    if body.save_phone:
+        updates["$set"]["client_phone"] = body.from_number
+    await db.trust_cases.update_one({"id": body.case_id}, updates)
+    # Mark those inbox docs archived (they now live on the case)
+    await db.whatsapp_inbox.update_many(
+        {"from": body.from_number, "archived": {"$ne": True}},
+        {"$set": {"archived": True, "attached_to_case": body.case_id, "archived_at": stamp}},
+    )
+    return {"ok": True, "attached": len(entries), "case_id": body.case_id}
+
+
+@api_router.post("/admin/whatsapp/inbox/archive")
+async def admin_whatsapp_inbox_archive(body: dict = Body(...), _: dict = Depends(require_admin)):
+    """Archive all unarchived messages from a given sender (spam / handled)."""
+    from_number = (body.get("from_number") or "").strip()
+    if not from_number:
+        raise HTTPException(status_code=400, detail="from_number required")
+    res = await db.whatsapp_inbox.update_many(
+        {"from": from_number, "archived": {"$ne": True}},
+        {"$set": {"archived": True, "archived_at": now_iso()}},
+    )
+    return {"ok": True, "archived": res.modified_count}
+
+
+# ---------- WHATSAPP CLIENT OPT-IN ----------
+class WhatsAppOptInReq(BaseModel):
+    opt_in: bool
+    phone: Optional[str] = None  # override phone; falls back to primary grantor's phone
+
+
+@api_router.post("/trust-cases/{case_id}/whatsapp-opt-in")
+async def client_whatsapp_opt_in(case_id: str, body: WhatsAppOptInReq, user: dict = Depends(get_current_user)):
+    """Client toggles WhatsApp notifications for their case. On first opt-in
+    we fire a friendly welcome message (once); subsequent flips only update
+    the flag."""
+    case = await get_case(case_id, user)
+    phone = (body.phone or "").strip() or _resolve_case_phone(case)
+    updates: dict = {
+        "whatsapp_opt_in": bool(body.opt_in),
+        "whatsapp_opt_in_at": now_iso(),
+    }
+    if phone:
+        updates["client_phone"] = phone
+    await update_case(case_id, updates)
+
+    welcomed = bool(case.get("whatsapp_welcomed_at"))
+    sent = False
+    if body.opt_in and phone and not welcomed:
+        biz = "IGC Trust Portal"
+        try:
+            branding = await _branding_doc()
+            biz = branding.get("business_name") or biz
+        except Exception:
+            pass
+        name = (case.get("client_name") or "").split(" ")[0] or "there"
+        text = (
+            f"Hi {name} — thanks for starting your trust with {biz}. "
+            "You'll get case updates on this channel. Reply here anytime "
+            "with questions or documents."
+        )
+        sent = whatsapp.send_whatsapp(phone, text)
+        entry = {
+            "id": str(uuid.uuid4()),
+            "direction": "outbound",
+            "to": phone,
+            "body": text,
+            "at": now_iso(),
+            "sent": bool(sent),
+            "system": "welcome",
+        }
+        await db.trust_cases.update_one(
+            {"id": case_id},
+            {
+                "$push": {"whatsapp_thread": entry},
+                "$set": {"whatsapp_welcomed_at": now_iso()},
+            },
+        )
+    return {"ok": True, "welcome_sent": bool(sent), "opt_in": bool(body.opt_in)}
+
+
+# ---------- COMMAND-HANDLER WIRING ----------
+async def _wa_update_status(case_id: str, new_status: str):
+    """Called by whatsapp_commands to change a case status via WhatsApp."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    prev = (case or {}).get("status")
+    await update_case(case_id, {"status": new_status})
+    if case:
+        case["status"] = new_status
+        try:
+            await _notify_status_change(case, prev_status=prev, new_status=new_status, source="whatsapp")
+        except Exception as e:
+            logger.error(f"_wa_update_status notify failed: {e}")
+
+
+async def _wa_append_note(case_id: str, body_text: str) -> dict:
+    """Called by whatsapp_commands to append an internal admin note via WhatsApp."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise ValueError("case not found")
+    notes = case.get("admin_notes", [])
+    note = {"id": new_id(), "note": body_text, "author": "WhatsApp Admin", "created_at": now_iso()}
+    notes.append(note)
+    await update_case(case_id, {"admin_notes": notes})
+    return note
+
+
+whatsapp_commands.configure(
+    db=db,
+    statuses=STATUSES,
+    now_iso=now_iso,
+    update_status=_wa_update_status,
+    append_note=_wa_append_note,
+)
 
 
 # ---------- ROOT ----------

@@ -111,6 +111,38 @@ export default function GrantorStep({ caseId, trustCase, reload }) {
   const [editing, setEditing] = useState(null); // null | index | "new"
   const grantors = trustCase.grantors || [];
   const max = trustCase.trust_type === "joint" ? 2 : 1;
+  const optedIn = !!trustCase.whatsapp_opt_in;
+  const [saving, setSaving] = useState(false);
+
+  const toggleOptIn = async (checked) => {
+    // Prefer the primary grantor's phone if available
+    const phone = grantors[0]?.phone || trustCase.client_phone || "";
+    if (checked && !phone) {
+      toast.error("Add a grantor with a phone number first, then opt in.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const { data } = await api.post(`/trust-cases/${caseId}/whatsapp-opt-in`, {
+        opt_in: checked,
+        phone: phone || null,
+      });
+      if (checked) {
+        toast.success(
+          data.welcome_sent
+            ? "Opted in — welcome message sent"
+            : "Opted in (welcome logged; delivery pending sandbox)"
+        );
+      } else {
+        toast.success("WhatsApp updates paused");
+      }
+      reload();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const remove = async (gid) => {
     if (!window.confirm("Remove this grantor?")) return;
@@ -171,6 +203,42 @@ export default function GrantorStep({ caseId, trustCase, reload }) {
       )}
 
       <NotesQuestionsBox caseId={caseId} section="grantors" />
+
+      {grantors.length > 0 && (
+        <div
+          className="mt-6 p-5 rounded-lg border border-[#25D366]/40 bg-[#25D366]/5"
+          data-testid="whatsapp-opt-in-card"
+        >
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={optedIn}
+              disabled={saving}
+              onChange={(e) => toggleOptIn(e.target.checked)}
+              className="mt-1 h-5 w-5"
+              data-testid="whatsapp-opt-in-checkbox"
+            />
+            <div>
+              <p className="font-semibold text-navy">
+                Send me case updates on WhatsApp
+              </p>
+              <p className="text-sm text-[#64748B] mt-1">
+                We&apos;ll message you at{" "}
+                <span className="font-medium text-navy">
+                  {grantors[0]?.phone || "(no phone on file)"}
+                </span>{" "}
+                with status changes, document requests, and questions from your
+                trust team. Reply anytime — messages land straight in your case.
+              </p>
+              {optedIn && (
+                <p className="text-xs text-[#25D366] mt-2 font-semibold uppercase tracking-wide">
+                  ✓ Active
+                </p>
+              )}
+            </div>
+          </label>
+        </div>
+      )}
     </div>
   );
 }

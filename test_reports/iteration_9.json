@@ -1,0 +1,52 @@
+{
+  "summary": "End-to-end verification of the WhatsApp expansion features (Inbox, Intake opt-in, Admin command shortcuts). Wrote /app/backend/tests/test_whatsapp_features.py (18 tests) — all 18 PASS. Playwright verified: (1) Login page heading is 'IGC Trust Portal' with 'Sign in to your IGC Trust Portal account.' subheader; (2) admin nav shows 'WhatsApp' link (data-testid nav-admin-whatsapp-inbox); (3) /admin/whatsapp-inbox renders with threads (seeded via webhook), Attach modal opens with searchable case list, Archive removes thread after confirm; (4) intake wizard Grantor step shows the green-bordered whatsapp-opt-in-card with grantor phone once a grantor is added, checkbox POSTs /trust-cases/{id}/whatsapp-opt-in and success toast fires ('Opted in (welcome logged; delivery pending sandbox)') — verified backend stored whatsapp_opt_in=true, whatsapp_welcomed_at set, and exactly 1 welcome entry appears in whatsapp_thread with system='welcome'; unchecking flips to false with 'WhatsApp updates paused' toast; (5) AdminCaseDetail still renders WhatsAppPanel with 'Live' badge and existing send/thread endpoints work. Admin commands: /whoami, /cases, /case <sid> info/status/note all execute correctly — status flips confirmed via GET /admin/trust-cases/{id}, note appended to admin_notes with author='WhatsApp Admin'. Invalid short id and bogus status properly rejected with no side-effects. Idempotency of welcome verified (2nd opt_in:true call does NOT create 2nd welcome). Twilio sandbox returning sent:false is expected — we assert DB side-effects, not delivery.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "verifications_passed": [
+    "GET /api/admin/whatsapp/status → enabled:true, admin_number:+19545983681, notify_admin_on_events:true",
+    "POST /api/webhooks/twilio/whatsapp-inbound unknown sender → whatsapp_inbox entry created, TwiML 200",
+    "POST /api/webhooks/twilio/whatsapp-inbound with grantor phone → appended to case whatsapp_thread (NOT inbox)",
+    "POST /api/admin/whatsapp/inbox/attach → messages moved to case whatsapp_thread, client_phone set, inbox emptied of that sender",
+    "POST /api/admin/whatsapp/inbox/attach with unknown case → 404",
+    "POST /api/admin/whatsapp/inbox/archive → thread removed from subsequent /inbox response",
+    "POST /api/admin/whatsapp/inbox/archive missing from_number → 400",
+    "POST /api/trust-cases/{id}/whatsapp-opt-in {opt_in:true} → welcome entry (system='welcome') in thread + whatsapp_welcomed_at set; second call idempotent (no 2nd welcome)",
+    "POST /api/trust-cases/{id}/whatsapp-opt-in {opt_in:false} → whatsapp_opt_in=false, no welcome entry",
+    "Admin /whoami → no inbox entry (routed through whatsapp_admin_log, verified indirectly by absence in inbox)",
+    "Admin /cases → executes without side-effect on inbox",
+    "Admin /case <sid> info → 200, no side effects",
+    "Admin /case <sid> status <valid> → GET returns updated status",
+    "Admin /case <sid> note <text> → admin_notes entry with author='WhatsApp Admin'",
+    "Admin /case DEADBEEF info → status unchanged on real case",
+    "Admin /case <sid> status Bogus → status unchanged",
+    "Backwards compat: POST /admin/trust-cases/{id}/send-whatsapp and GET .../whatsapp-thread both return 200 with expected shape",
+    "FE: Login heading 'IGC Trust Portal' and subheader 'Sign in to your IGC Trust Portal account.'",
+    "FE: Admin nav 'WhatsApp' link visible (data-testid nav-admin-whatsapp-inbox)",
+    "FE: /admin/whatsapp-inbox renders empty state OR threads; refresh button works",
+    "FE: Attach modal opens with data-testid=attach-modal, searchable cases list",
+    "FE: Archive with confirm dialog removes thread from UI",
+    "FE: GrantorStep shows whatsapp-opt-in-card with grantor phone; checkbox POSTs opt-in, welcome logged, uncheck pauses; toasts fire",
+    "FE: AdminCaseDetail WhatsAppPanel present with 'Live' badge"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_whatsapp_features.py",
+    "/app/test_reports/pytest/whatsapp_features.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 4,840 lines — well past the 700-line threshold. Consider splitting per-domain modules (whatsapp routes, trust-cases routes, admin routes, auth routes) into separate FastAPI routers included on api_router. Everything is still working; this is a maintainability nit.",
+    "whatsapp_commands.handle_admin_command catches every command exception with a generic 'Command failed' reply — good UX, but the exception is swallowed by the outer try/except in twilio_whatsapp_inbound as well, causing double-logging. Consider passing structured errors up.",
+    "Idempotency of welcome relies on whatsapp_welcomed_at flag on the case doc — correct. However once flipped to false and back to true the flag is still set, so subsequent re-opt-ins never re-fire the welcome. That's acceptable per spec ('one-time welcome') but worth documenting for the client team.",
+    "/admin/whatsapp/inbox/archive uses a raw dict body instead of a Pydantic model (unlike attach which uses InboxAttachReq). Minor consistency nit — a WhatsAppInboxArchiveReq model would give automatic validation for from_number.",
+    "GrantorStep opt-in card falls back to trust_case.client_phone only if grantors[0].phone is missing. If a grantor is added WITHOUT a phone, the card will still render (grantors.length > 0) and the toggle error 'Add a grantor with a phone number first' fires only after click. Consider hiding the card until a phone is available."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_whatsapp_features.py (created — 18 pytest cases, all pass)"
+  ],
+  "success_rate": {"backend": "100% (18/18)", "frontend": "100% (5/5 flows)"},
+  "test_credentials": "Admin: support@igcfirm.com / Wllorenzo03! (verified). Test clients created dynamically per run.",
+  "seed_data_creation": "Backend tests created ephemeral clients + cases (prefixed testwa_) and one archived inbox entry attached to case 6f96b5b7-084e-43df-af66-aa2022f1417d. Test also toggled case 6f96b5b7 status through 'In Review' → 'Drafting Trust' → 'In Review' and left client_phone set to a synthetic +1555xxx number from the attach test. Added one admin_note with author='WhatsApp Admin' containing marker 'AutoQA-note-…'. Two fresh client accounts (waclient_*, waclient2_*) with associated cases created via Playwright.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "WhatsApp expansion is fully functional. Case 6f96b5b7-084e-43df-af66-aa2022f1417d has been touched by tests (client_phone set to a synthetic number, one AutoQA note appended, status left at 'In Review'). If further inbox tests are needed, seed via POST /api/webhooks/twilio/whatsapp-inbound with form-encoded From/To/Body — no signature required in current impl. Twilio sandbox will return sent:false for unregistered numbers — that's expected; verify DB side-effects (whatsapp_thread pushes, whatsapp_admin_log inserts, admin_notes pushes)."
+}
