@@ -1,7 +1,7 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useMemo } from "react";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { Upload, FolderPlus } from "lucide-react";
+import { Upload, FolderPlus, HardDrive, AlertCircle } from "lucide-react";
 import AdminDocumentCard from "@/components/AdminDocumentCard";
 
 /**
@@ -19,6 +19,38 @@ export default function AdminDocumentsManager({ caseId, docs, onChanged, classNa
   const fileRef = useRef(null);
 
   const apiBase = api.defaults.baseURL || "";
+
+  // Live storage-usage stats (client-side derived — no extra API call needed
+  // since the docs prop already carries size + versions[].size).
+  const stats = useMemo(() => {
+    const list = docs || [];
+    let currentBytes = 0, versionBytes = 0, versionCount = 0;
+    for (const d of list) {
+      currentBytes += Number(d.size || 0);
+      for (const v of (d.versions || [])) {
+        versionBytes += Number(v.size || 0);
+        versionCount += 1;
+      }
+    }
+    const totalBytes = currentBytes + versionBytes;
+    return {
+      docCount: list.length,
+      currentBytes, versionBytes, totalBytes, versionCount,
+    };
+  }, [docs]);
+
+  const formatBytes = (n) => {
+    if (!n) return "0 KB";
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  };
+
+  // Soft threshold: warn when archived versions exceed 100 MB — the trim-history
+  // control is the intended remediation.
+  const ARCHIVE_WARN_BYTES = 100 * 1024 * 1024;
+  const archiveOver = stats.versionBytes >= ARCHIVE_WARN_BYTES;
 
   const upload = async () => {
     if (!file) { toast.error("Choose a file first."); return; }
@@ -96,6 +128,35 @@ export default function AdminDocumentsManager({ caseId, docs, onChanged, classNa
           </p>
         </div>
       </div>
+
+      {stats.docCount > 0 && (
+        <div
+          className={`mb-4 flex items-center justify-between gap-3 flex-wrap rounded-lg border px-4 py-2.5 ${archiveOver ? "border-amber-300 bg-amber-50" : "border-[#E2E0DA] bg-sand-200/30"}`}
+          data-testid="admin-docs-storage-indicator">
+          <div className="flex items-center gap-2 min-w-0 text-xs">
+            {archiveOver ? (
+              <AlertCircle className="h-3.5 w-3.5 text-amber-700 shrink-0" />
+            ) : (
+              <HardDrive className="h-3.5 w-3.5 text-bronze shrink-0" />
+            )}
+            <span className="text-navy" data-testid="admin-docs-storage-summary">
+              <b>{stats.docCount}</b> document{stats.docCount === 1 ? "" : "s"}
+              <span className="text-[#94A3B8]"> · </span>
+              <b>{formatBytes(stats.totalBytes)}</b> total
+              <span className="text-[#94A3B8]"> · </span>
+              <b>{stats.versionCount}</b> archived version{stats.versionCount === 1 ? "" : "s"}
+              {stats.versionCount > 0 && (
+                <span className="text-[#94A3B8]"> ({formatBytes(stats.versionBytes)})</span>
+              )}
+            </span>
+          </div>
+          {archiveOver && (
+            <span className="text-[11px] text-amber-800 font-medium">
+              Archive over {formatBytes(ARCHIVE_WARN_BYTES)} — consider using the <b>Trim</b> button on individual documents.
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="rounded-lg border border-dashed border-bronze/40 bg-sand-200/30 p-4 mb-5" data-testid="admin-doc-upload-form">
         <p className="text-[10px] uppercase tracking-wide font-bold text-bronze mb-2 inline-flex items-center gap-1">
