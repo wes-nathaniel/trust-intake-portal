@@ -21,6 +21,16 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
     - `POST /api/webhooks/twilio/whatsapp-inbound` — Twilio-facing webhook that captures client replies. If the `From` matches an existing case (`client_phone` or grantor phone), the message is stored on that case; otherwise it lands in `whatsapp_inbox`. Admin is pinged either way.
   - New env vars in `backend/.env`: `TWILIO_WHATSAPP_FROM=whatsapp:+14155238886` (Twilio Sandbox default), `ADMIN_WHATSAPP_NUMBER=+19545983681`, `WHATSAPP_NOTIFY_ADMIN=true`.
   - Admin UI: new `WhatsAppPanel` component on every case detail page — status badge (Live / Sandbox / disabled), to-number override, message compose, and threaded outbound+inbound history.
+- ✅ **WhatsApp Inbox** (`/admin/whatsapp-inbox`, `AdminWhatsAppInbox.jsx`) — grouped view of unmatched inbound senders. Endpoints: `GET /api/admin/whatsapp/inbox`, `POST /api/admin/whatsapp/inbox/attach` (moves entire thread onto a case and saves the sender's phone for future auto-routing), `POST /api/admin/whatsapp/inbox/archive`. New nav link "WhatsApp" for admins. Verified end-to-end via 18 backend pytest cases + Playwright flow.
+- ✅ **Intake WhatsApp opt-in** — Grantor step now shows a green-bordered opt-in card once a grantor with a phone is on the case. `POST /api/trust-cases/{id}/whatsapp-opt-in {opt_in, phone?}` toggles `whatsapp_opt_in` and — on first-time opt-in only — fires a personalized welcome message ("Hi {name} — thanks for starting your trust with IGC Trust Portal. You'll get case updates on this channel…"). Idempotent via `whatsapp_welcomed_at`.
+- ✅ **Admin command shortcuts via WhatsApp** — messages from `ADMIN_WHATSAPP_NUMBER` are routed to `whatsapp_commands.handle_admin_command` and never touch the inbox. Recognized commands (all persisted to `whatsapp_admin_log`):
+  - `/help` — list of commands
+  - `/whoami` — sanity check
+  - `/cases [status]` — list up to 10 cases (default: active)
+  - `/case <short-id> info` — status, email, trust type, last 3 notes
+  - `/case <short-id> status <new-status>` — flips status (fires the normal `_notify_status_change` pipeline including client email)
+  - `/case <short-id> note <text>` — appends admin note with `author='WhatsApp Admin'`
+  Short-id is the first 8 chars of the case UUID (case-insensitive). Fuzzy status matching (spaces/case ignored). Invalid inputs reply gracefully.
 
 ## Changelog — 2026-02-11 (cont'd)
 - ✅ **New canonical `trust_sections[]` schema** per client spec: `{article_number, article_title, article_text, explainer_text, id}`. Legacy `{title, trust_html, explainer_html}` fields kept in DB (self-healing normalize() on save) so old records continue to render without migration. Extractor prompt updated to emit both. Viewer + editor read canonical first, legacy fallback. Verified end-to-end: 6-section Hartwell trust extracted with article_number values ["Preamble","I","II","III","IV","V"], client-side viewer renders "Article I — Declaration of Trust" etc. with verbatim legal text on left and clause-by-clause plain-English on right (defines "Grantor", "Trustee", "Schedule A", "'IN TRUST'" inline). Scroll-sync + click-to-jump intact.
