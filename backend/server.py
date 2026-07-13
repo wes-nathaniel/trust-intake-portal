@@ -17,7 +17,7 @@ import jwt
 import requests
 import resend
 from bson import ObjectId
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Form, Header, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Form, Header, Query, Body
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
@@ -2767,6 +2767,50 @@ def _empty_ai() -> dict:
         "notarization": "", "client_action": "",
         "generated_at": now_iso(), "error": "",
     }
+
+
+@api_router.post("/admin/trust-cases/{case_id}/admin-documents/{doc_id}/trim-history")
+async def admin_trim_version_history(case_id: str, doc_id: str,
+                                     body: dict = Body(...),
+                                     _: dict = Depends(require_admin)):
+    """Trim `versions[]` so that only the newest N are kept. Older versions'
+    storage files are deleted from object storage. Pass `{ "keep": N }` where
+    N=0 means "clear all history"."""
+    try:
+        keep = int(body.get("keep", 5))
+    except Exception:
+        raise HTTPException(status_code=400, detail="`keep` must be an integer")
+    if keep < 0 or keep > 100:
+        raise HTTPException(status_code=400, detail="`keep` must be between 0 and 100")
+
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    doc = _find_admin_doc(case, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    versions = list(doc.get("versions") or [])
+    # Newest archived_at first, then keep the top `keep`
+    versions.sort(key=lambda v: v.get("archived_at") or "", reverse=True)
+    kept = versions[:keep]
+    trimmed = versions[keep:]
+    for v in trimmed:
+        sp = v.get("storage_path")
+        if sp:
+            try:
+                delete_object(sp)
+            except Exception as e:
+                logger.warning(f"Trim: storage delete failed for {sp}: {e}")
+
+    admin_docs = [dict(d) for d in (case.get("admin_documents") or [])]
+    for d in admin_docs:
+        if d.get("id") == doc_id:
+            d["versions"] = kept
+            d["history_trimmed_at"] = now_iso()
+            break
+    await update_case(case_id, {"admin_documents": admin_docs})
+    return {"ok": True, "kept": len(kept), "removed": len(trimmed)}
 
 
 @api_router.delete("/admin/trust-cases/{case_id}/admin-documents/{doc_id}")

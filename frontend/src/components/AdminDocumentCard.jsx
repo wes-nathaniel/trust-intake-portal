@@ -1,5 +1,5 @@
-import React, { useRef, useState } from "react";
-import { FileText, Download, Sparkles, StampIcon, Info, Upload, History, RotateCcw, ChevronDown } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { FileText, Download, Sparkles, StampIcon, Info, Upload, History, RotateCcw, ChevronDown, Scissors } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -10,6 +10,8 @@ export default function AdminDocumentCard({ doc, caseId, apiBase, canDelete, onD
   const replaceInputRef = useRef(null);
   const [showVersions, setShowVersions] = useState(false);
   const [restoring, setRestoring] = useState(null);
+  const [trimOpen, setTrimOpen] = useState(false);
+  const [trimming, setTrimming] = useState(false);
   const ai = doc.ai_explanation || {};
   const hasAi = !!(ai.what_is || ai.what_it_does || ai.why_it_matters || ai.notarization || ai.client_action);
   const download = () => {
@@ -37,6 +39,41 @@ export default function AdminDocumentCard({ doc, caseId, apiBase, canDelete, onD
       setRestoring(null);
     }
   };
+
+  const trim = async (keep) => {
+    const trimmedCount = Math.max(0, versions.length - keep);
+    if (trimmedCount === 0) {
+      toast.info("Nothing to trim.");
+      setTrimOpen(false);
+      return;
+    }
+    const label = keep === 0 ? "clear ALL history" : `keep only the newest ${keep} version(s)`;
+    if (!window.confirm(`This will ${label} and permanently delete ${trimmedCount} older file(s) from storage. Continue?`)) return;
+    setTrimming(true);
+    try {
+      const { data } = await api.post(`/admin/trust-cases/${caseId}/admin-documents/${doc.id}/trim-history`, { keep });
+      toast.success(`Trimmed history — kept ${data.kept}, removed ${data.removed}.`);
+      setTrimOpen(false);
+      onRestored && onRestored();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setTrimming(false);
+    }
+  };
+
+  // Close the trim dropdown when clicking outside
+  useEffect(() => {
+    if (!trimOpen) return;
+    const onDown = (e) => {
+      const trigger = document.querySelector(`[data-testid="admin-doc-trim-toggle-${doc.id}"]`);
+      const menu = document.querySelector(`[data-testid="admin-doc-trim-menu-${doc.id}"]`);
+      if (trigger?.contains(e.target) || menu?.contains(e.target)) return;
+      setTrimOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [trimOpen, doc.id]);
 
   return (
     <div
@@ -144,18 +181,61 @@ export default function AdminDocumentCard({ doc, caseId, apiBase, canDelete, onD
 
       {hasHistory && (
         <div className="border-t border-[#F1EFEA] bg-sand-200/20" data-testid={`admin-doc-history-${doc.id}`}>
-          <button
-            type="button"
-            onClick={() => setShowVersions((v) => !v)}
-            className="w-full flex items-center justify-between gap-2 px-4 py-2.5 text-xs text-[#64748B] hover:text-navy"
-            aria-expanded={showVersions}
-            data-testid={`admin-doc-history-toggle-${doc.id}`}>
-            <span className="inline-flex items-center gap-1.5">
-              <History className="h-3.5 w-3.5" />
-              Version history · {versions.length} prior version{versions.length === 1 ? "" : "s"}
-            </span>
-            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showVersions ? "rotate-180" : ""}`} />
-          </button>
+          <div className="flex items-center justify-between px-4 py-2.5 gap-2">
+            <button
+              type="button"
+              onClick={() => setShowVersions((v) => !v)}
+              className="flex-1 flex items-center justify-between gap-2 text-xs text-[#64748B] hover:text-navy text-left"
+              aria-expanded={showVersions}
+              data-testid={`admin-doc-history-toggle-${doc.id}`}>
+              <span className="inline-flex items-center gap-1.5">
+                <History className="h-3.5 w-3.5" />
+                Version history · {versions.length} prior version{versions.length === 1 ? "" : "s"}
+              </span>
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showVersions ? "rotate-180" : ""}`} />
+            </button>
+            {onRestored && versions.length > 0 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setTrimOpen((v) => !v)}
+                  disabled={trimming}
+                  className="text-[11px] text-[#94A3B8] hover:text-red-600 inline-flex items-center gap-1 disabled:opacity-50"
+                  title="Delete older versions from storage"
+                  data-testid={`admin-doc-trim-toggle-${doc.id}`}>
+                  <Scissors className="h-3 w-3" /> {trimming ? "Trimming…" : "Trim"}
+                </button>
+                {trimOpen && (
+                  <div
+                    className="absolute right-0 top-full mt-1 z-30 bg-white border border-[#E2E0DA] rounded-md shadow-lg py-1 w-52"
+                    role="menu"
+                    data-testid={`admin-doc-trim-menu-${doc.id}`}>
+                    <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-[#94A3B8] border-b border-[#F1EFEA]">
+                      Keep newest…
+                    </div>
+                    {[10, 5, 3, 1].map((n) => (
+                      <button
+                        key={n}
+                        onClick={() => trim(n)}
+                        disabled={trimming || versions.length <= n}
+                        className="w-full text-left px-3 py-1.5 text-sm text-navy hover:bg-bronze/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                        data-testid={`admin-doc-trim-keep-${n}-${doc.id}`}>
+                        Keep last {n} <span className="text-[10px] text-[#94A3B8]">({Math.max(0, versions.length - n)} to remove)</span>
+                      </button>
+                    ))}
+                    <div className="border-t border-[#F1EFEA] my-1" />
+                    <button
+                      onClick={() => trim(0)}
+                      disabled={trimming}
+                      className="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 font-medium"
+                      data-testid={`admin-doc-trim-clear-${doc.id}`}>
+                      Clear all history ({versions.length})
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           {showVersions && (
             <ul className="px-4 pb-4 space-y-2">
               {shown.map((v) => (
