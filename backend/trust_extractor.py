@@ -61,23 +61,28 @@ SYSTEM_PROMPT = (
 
 USER_TEMPLATE = """Parse the following trust document into ordered Articles. For EACH Article:
 
-1. Copy the legal text VERBATIM into `trust_html` — preserve paragraphs, numbered/lettered lists, and defined-term formatting (use <p>, <ol>, <ul>, <li>, <strong>, <em>).
-2. Write a 2–4 sentence plain-English explanation in `explainer_html` — warm, non-legalese tone. Use <p> and <ul>/<li> when helpful. Never quote the legal text; paraphrase it.
-3. `title` should mirror the document's exact heading (e.g. "Article I — Declaration of Trust"). If the document uses "SECTION 1" or similar, use that. If untitled, invent a short human title.
+1. Copy the legal text VERBATIM into `article_text` — preserve paragraphs, numbered/lettered lists, and defined-term formatting. Use ONLY these HTML tags: <p>, <ol>, <ul>, <li>, <strong>, <em>. Do NOT paraphrase or shorten.
+
+2. Write a friendly, plain-English `explainer_text` — walk the client through each meaningful sentence or clause in order. Define any legal jargon inline (e.g., "'per stirpes' means each branch of the family shares equally"). Use <p> and <ul>/<li> when helpful. Warm, non-condescending, non-legalese tone.
+
+3. `article_title` should mirror the document's exact heading (e.g. "Declaration of Trust" — WITHOUT the "Article I —" prefix; the number goes in article_number).
+
+4. `article_number` should be the roman numeral or number as it appears (e.g. "I", "II", "3", "IV"). Use "Preamble" for any recitals/introduction block before Article I. Use "N/A" only if no clear number.
 
 Return ONLY this JSON (no wrapper, no code fences):
 {{
   "sections": [
-    {{"title": "...", "trust_html": "...", "explainer_html": "..."}},
+    {{"article_number": "...", "article_title": "...", "article_text": "...", "explainer_text": "..."}},
     ...
   ]
 }}
 
 Rules:
 - Include EVERY article, in document order. Do not skip, merge, or renumber.
-- If a "recitals" or preamble block appears before Article I, include it as the first section with title "Preamble".
+- If a "recitals" or preamble block appears before Article I, include it as the first section with article_number "Preamble" and article_title "Introduction".
 - If the document has no clear articles, split by top-level headings or major numbered sections instead.
 - Do not add sections that aren't in the document.
+- Every explainer must define any legal terms it uses (trustee, grantor, per stirpes, spendthrift, corpus, in terrorem, etc.).
 
 Trust document text (filename: {filename}, may be truncated):
 ---
@@ -143,15 +148,27 @@ async def extract_trust_sections(pdf_bytes: bytes, filename: str) -> List[Dict]:
     for i, s in enumerate(parsed["sections"]):
         if not isinstance(s, dict):
             continue
-        title = str(s.get("title") or f"Article {i+1}").strip()[:200]
-        trust_html = str(s.get("trust_html") or "").strip()
-        explainer_html = str(s.get("explainer_html") or "").strip()
-        if not trust_html and not explainer_html:
+        article_number = str(s.get("article_number") or "").strip()[:20] or str(i + 1)
+        article_title = str(s.get("article_title") or s.get("title") or f"Article {article_number}").strip()[:200]
+        article_text = str(s.get("article_text") or s.get("trust_html") or "").strip()
+        explainer_text = str(s.get("explainer_text") or s.get("explainer_html") or s.get("explain_html") or "").strip()
+        if not article_text and not explainer_text:
             continue
+        # Composite title for display when the viewer only reads a single title
+        # (e.g., legacy consumers). Format: "Article II — Revocation".
+        prefix = "" if article_number.lower() in {"", "preamble"} else f"Article {article_number} — "
+        composite_title = f"{prefix}{article_title}".strip(" —")
         out.append({
             "id": str(uuid.uuid4()),
-            "title": title,
-            "trust_html": trust_html,
-            "explainer_html": explainer_html,
+            # New canonical schema (per user spec)
+            "article_number": article_number,
+            "article_title": article_title,
+            "article_text": article_text,
+            "explainer_text": explainer_text,
+            # Legacy aliases so the existing TrustViewerTwoPanel + TrustSectionsEditor
+            # keep rendering without any migration on old records.
+            "title": composite_title,
+            "trust_html": article_text,
+            "explainer_html": explainer_text,
         })
     return out

@@ -4,7 +4,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  * Two-panel trust viewer per the IGC prototype.
  *
  * Props:
- *  - sections: [{ title?, trust_html, explainer_html }] (variable count)
+ *  - sections: [{ id?, article_number?, article_title?, article_text?, explainer_text?, title?, trust_html?, explainer_html? }] (variable count)
+ *     New canonical fields: article_number, article_title, article_text, explainer_text.
+ *     Legacy fallbacks: title, trust_html, explainer_html (rendered when new fields missing).
  *  - caseShortId: e.g. "33B4BFE5"
  *  - clientName, trustName: header context
  *
@@ -120,33 +122,47 @@ export default function TrustViewerTwoPanel({ sections = [], caseShortId, client
       <div className="igc-panels">
         {/* LEFT */}
         <div ref={leftRef} className="igc-panel igc-panel-left" data-testid="trust-viewer-left">
-          {sections.map((s, n) => (
-            <div
-              key={n}
-              id={`igc-trust-${n}`}
-              className={`igc-trust-section${activeIdx === n ? " active" : ""}`}
-              onClick={() => clickTo(n)}
-              data-testid={`trust-section-${n}`}>
-              {s.title && (
-                <h2 className="igc-trust-title"><span>{s.title}</span></h2>
-              )}
-              <div className="igc-trust-body" dangerouslySetInnerHTML={{ __html: s.trust_html || "" }} />
-            </div>
-          ))}
+          {sections.map((s, n) => {
+            const num = (s.article_number || "").trim();
+            const tt = (s.article_title || "").trim();
+            const prefix = !num || num.toLowerCase() === "preamble" ? "" : `Article ${num} — `;
+            const displayTitle = (prefix + tt).trim(" —") || s.title || "";
+            const trustBody = s.article_text || s.trust_html || "";
+            return (
+              <div
+                key={s.id || n}
+                id={`igc-trust-${n}`}
+                className={`igc-trust-section${activeIdx === n ? " active" : ""}`}
+                onClick={() => clickTo(n)}
+                data-testid={`trust-section-${n}`}>
+                {displayTitle && (
+                  <h2 className="igc-trust-title"><span>{displayTitle}</span></h2>
+                )}
+                <div className="igc-trust-body" dangerouslySetInnerHTML={{ __html: trustBody }} />
+              </div>
+            );
+          })}
         </div>
 
         {/* RIGHT */}
         <div ref={rightRef} className="igc-panel igc-panel-right" data-testid="trust-viewer-right">
-          {sections.map((s, n) => (
-            <div
-              key={n}
-              id={`igc-explain-${n}`}
-              className={`igc-explain-section${activeIdx === n ? " active" : ""}`}
-              data-testid={`explain-section-${n}`}>
-              {s.title && <div className="igc-explain-label">{s.title} — Plain English</div>}
-              <div className="igc-explain-body" dangerouslySetInnerHTML={{ __html: s.explainer_html || "" }} />
-            </div>
-          ))}
+          {sections.map((s, n) => {
+            const num = (s.article_number || "").trim();
+            const tt = (s.article_title || "").trim();
+            const prefix = !num || num.toLowerCase() === "preamble" ? "" : `Article ${num} — `;
+            const displayTitle = (prefix + tt).trim(" —") || s.title || "";
+            const explainBody = s.explainer_text || s.explainer_html || "";
+            return (
+              <div
+                key={s.id || n}
+                id={`igc-explain-${n}`}
+                className={`igc-explain-section${activeIdx === n ? " active" : ""}`}
+                data-testid={`explain-section-${n}`}>
+                {displayTitle && <div className="igc-explain-label">{displayTitle} — Plain English</div>}
+                <div className="igc-explain-body" dangerouslySetInnerHTML={{ __html: explainBody }} />
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>

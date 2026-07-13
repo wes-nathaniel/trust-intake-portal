@@ -2472,10 +2472,41 @@ async def client_credit_repair_link(case_id: str, user: dict = Depends(get_curre
 # endpoints (low-res, watermarked). Raw PDF is NOT served to clients.
 
 class TrustSection(BaseModel):
-    """A single article: trust text on the left + matching explainer on the right."""
-    title: Optional[str] = Field(default="", max_length=160)
-    trust_html: str = Field(default="", max_length=50_000)
-    explainer_html: str = Field(default="", max_length=20_000)
+    """A single article: trust text on the left + matching explainer on the right.
+    New canonical fields per the client-facing spec (article_number, article_title,
+    article_text, explainer_text). Legacy aliases (title, trust_html, explainer_html)
+    are kept so existing records continue to render without a migration."""
+    # New canonical schema
+    article_number: Optional[str] = Field(default="", max_length=20)
+    article_title: Optional[str] = Field(default="", max_length=200)
+    article_text: Optional[str] = Field(default="", max_length=50_000)
+    explainer_text: Optional[str] = Field(default="", max_length=20_000)
+    # Legacy aliases (kept in DB alongside the new fields)
+    title: Optional[str] = Field(default="", max_length=200)
+    trust_html: Optional[str] = Field(default="", max_length=50_000)
+    explainer_html: Optional[str] = Field(default="", max_length=20_000)
+    id: Optional[str] = None
+
+    def normalized(self) -> dict:
+        """Populate legacy aliases from canonical fields and vice-versa so both
+        readers see consistent data. Applied on save so DB rows are self-healing."""
+        num = (self.article_number or "").strip()
+        atitle = (self.article_title or "").strip()
+        atext = (self.article_text or self.trust_html or "").strip()
+        etext = (self.explainer_text or self.explainer_html or "").strip()
+        # Composite title for legacy consumers
+        prefix = "" if num.lower() in {"", "preamble"} else f"Article {num} — "
+        composite = self.title or f"{prefix}{atitle}".strip(" —")
+        return {
+            "id": self.id,
+            "article_number": num,
+            "article_title": atitle,
+            "article_text": atext,
+            "explainer_text": etext,
+            "title": composite,
+            "trust_html": atext,
+            "explainer_html": etext,
+        }
 
 
 class TrustSectionsBody(BaseModel):
@@ -2490,7 +2521,7 @@ async def admin_set_trust_sections(case_id: str, body: TrustSectionsBody, admin:
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    payload = [s.model_dump() for s in body.sections]
+    payload = [s.normalized() for s in body.sections]
     updates: dict = {
         "trust_sections": payload,
         "trust_sections_updated_at": now_iso(),

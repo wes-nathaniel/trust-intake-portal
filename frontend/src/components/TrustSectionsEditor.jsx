@@ -75,9 +75,15 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
     setSections((arr) => {
       const src = arr[i];
       const copy = {
+        // Preserve new canonical fields when present
+        article_number: src.article_number || "",
+        article_title: src.article_title || "",
+        article_text: src.article_text || src.trust_html || "",
+        explainer_text: src.explainer_text || src.explainer_html || "",
+        // Legacy display title
         title: src.title ? `${src.title} (copy)` : "",
-        trust_html: src.trust_html || "",
-        explainer_html: src.explainer_html || "",
+        trust_html: src.trust_html || src.article_text || "",
+        explainer_html: src.explainer_html || src.explainer_text || "",
       };
       const next = arr.slice();
       next.splice(i + 1, 0, copy);
@@ -114,14 +120,25 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
   const save = async () => {
     setSaving(true);
     try {
-      // Strip whitespace; allow empty rows to be filtered out if both blank
+      // Strip whitespace; allow empty rows to be filtered out if both blank.
+      // Preserve BOTH new canonical fields (article_number/title/text, explainer_text)
+      // AND legacy fields (title, trust_html, explainer_html). The backend
+      // normalizes and stores both so any reader stays happy.
       const cleaned = sections
-        .map((s) => ({
-          title: (s.title || "").trim().slice(0, 160),
-          trust_html: s.trust_html || "",
-          explainer_html: s.explainer_html || "",
-        }))
-        .filter((s) => s.title || s.trust_html.trim() || s.explainer_html.trim());
+        .map((s) => {
+          const trust = s.trust_html ?? s.article_text ?? "";
+          const explain = s.explainer_html ?? s.explainer_text ?? "";
+          return {
+            article_number: (s.article_number || "").trim().slice(0, 20),
+            article_title: (s.article_title || "").trim().slice(0, 200),
+            article_text: trust,
+            explainer_text: explain,
+            title: (s.title || "").trim().slice(0, 200),
+            trust_html: trust,
+            explainer_html: explain,
+          };
+        })
+        .filter((s) => s.title || s.article_title || s.trust_html.trim() || s.explainer_html.trim());
       await api.put(`/admin/trust-cases/${caseId}/trust-sections`, { sections: cleaned });
       toast.success(`Saved — ${cleaned.length} article${cleaned.length === 1 ? "" : "s"}. Move the status to "Ready for Client Review" when ready.`);
       setDirty(false);
