@@ -1861,6 +1861,69 @@ async def admin_reply_question(qid: str, body: QuestionReply, admin: dict = Depe
 
 
 # ---------- ADMIN ----------
+STORAGE_HEAVY_CASE_BYTES = 100 * 1024 * 1024  # per-case threshold used by the storage rollup
+
+
+@api_router.get("/admin/storage-rollup")
+async def admin_storage_rollup(_: dict = Depends(require_admin)):
+    """Aggregate AI-Explainer storage usage across ALL non-archived cases.
+    Returns totals + a small "top offenders" list so admin can plan trim sweeps."""
+    cursor = db.trust_cases.find(
+        {"archived": {"$ne": True}},
+        {"_id": 0, "id": 1, "client_name": 1, "client_email": 1, "trust_name": 1, "admin_documents": 1},
+    )
+    total_cases = 0
+    cases_with_docs = 0
+    doc_count = 0
+    version_count = 0
+    current_bytes = 0
+    version_bytes = 0
+    per_case = []
+    async for c in cursor:
+        total_cases += 1
+        docs = c.get("admin_documents") or []
+        if not docs:
+            continue
+        cases_with_docs += 1
+        case_current = 0
+        case_versions = 0
+        case_version_count = 0
+        for d in docs:
+            doc_count += 1
+            case_current += int(d.get("size") or 0)
+            for v in (d.get("versions") or []):
+                case_version_count += 1
+                case_versions += int(v.get("size") or 0)
+        current_bytes += case_current
+        version_bytes += case_versions
+        version_count += case_version_count
+        per_case.append({
+            "case_id": c["id"],
+            "client_name": c.get("client_name") or "",
+            "client_email": c.get("client_email") or "",
+            "trust_name": c.get("trust_name") or "",
+            "doc_count": len(docs),
+            "version_count": case_version_count,
+            "current_bytes": case_current,
+            "version_bytes": case_versions,
+            "total_bytes": case_current + case_versions,
+        })
+    per_case.sort(key=lambda x: x["total_bytes"], reverse=True)
+    heavy = [x for x in per_case if x["total_bytes"] >= STORAGE_HEAVY_CASE_BYTES]
+    return {
+        "total_cases": total_cases,
+        "cases_with_docs": cases_with_docs,
+        "doc_count": doc_count,
+        "version_count": version_count,
+        "current_bytes": current_bytes,
+        "version_bytes": version_bytes,
+        "total_bytes": current_bytes + version_bytes,
+        "heavy_threshold_bytes": STORAGE_HEAVY_CASE_BYTES,
+        "heavy_case_count": len(heavy),
+        "top_cases": per_case[:10],
+    }
+
+
 @api_router.get("/admin/trust-cases")
 async def admin_list_cases(
     q: Optional[str] = Query(None),

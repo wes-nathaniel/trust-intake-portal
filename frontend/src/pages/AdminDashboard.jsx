@@ -6,6 +6,7 @@ import { Search, Users, FileClock, ArrowRight, UserPlus, Trash2, Archive, X, Che
 import { Input } from "@/components/ui/input";
 import InviteClientDialog from "@/components/InviteClientDialog";
 import DiagnosticsPanel from "@/components/DiagnosticsPanel";
+import StorageRollupCard from "@/components/StorageRollupCard";
 import ExportCsvControl from "@/components/ExportCsvControl";
 import { toast } from "sonner";
 
@@ -177,6 +178,8 @@ export default function AdminDashboard() {
           </div>
         </div>
       )}
+
+      <StorageRollupCard />
 
       <div className="flex flex-col md:flex-row gap-3 mb-6">
         <div className="relative flex-1">
