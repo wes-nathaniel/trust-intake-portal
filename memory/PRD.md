@@ -6,14 +6,21 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 ## Architecture
 - **Backend**: FastAPI + MongoDB (motor). JWT auth (httpOnly cookies), bcrypt, brute-force lockout.
 - **Frontend**: React (CRA + craco) + Tailwind + shadcn/ui. Cormorant Garamond + IBM Plex Sans.
-- **3rd-party**: Resend (email), Emergent LLM key (AI Q&A — Claude Sonnet), Dropbox Sign (dormant), Square (invoices + webhooks — live production).
+- **3rd-party**: Resend (email), Emergent LLM key (AI Q&A — Claude Sonnet), Dropbox Sign (dormant), Square (invoices + webhooks — live production), Twilio SMS + **Twilio WhatsApp** (fan-out admin notifications, per-case outbound + inbound thread).
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
-## User Personas
-- **Client**: 50+, completes intake, reviews watermarked trust draft, pays via Square, downloads/prints notarizable final trust.
-- **Admin** (Iron Gate staff): invites clients, reviews cases, uploads EIN letter (IRS CP-575), uploads trust draft PDF, creates Square invoices, confirms payment, unlocks final trust.
-
-
+## Changelog — 2026-07-13
+- ✅ **Login header** updated from "Welcome back" → "IGC Trust Portal" (sub-header retained). Verified via screenshot.
+- ✅ **WhatsApp integration (Twilio)** — reuses existing Twilio credentials.
+  - New `/app/backend/whatsapp.py` (`send_whatsapp`, `send_admin_whatsapp`) + `/app/backend/notify.py` (fan-out helper that pushes admin notifications to both SMS and WhatsApp).
+  - All 12 existing `sms.send_admin_sms(...)` call sites now use `notify.notify_admin(...)` — every event that used to only text the admin (new call requested, review completed, payment cleared, etc.) now also pings WhatsApp.
+  - New endpoints:
+    - `GET /api/admin/whatsapp/status` — reports whether the sender is fully configured.
+    - `POST /api/admin/trust-cases/{id}/send-whatsapp` — admin outbound to a client, appended to the case's `whatsapp_thread[]`.
+    - `GET /api/admin/trust-cases/{id}/whatsapp-thread` — full outbound/inbound history for a case.
+    - `POST /api/webhooks/twilio/whatsapp-inbound` — Twilio-facing webhook that captures client replies. If the `From` matches an existing case (`client_phone` or grantor phone), the message is stored on that case; otherwise it lands in `whatsapp_inbox`. Admin is pinged either way.
+  - New env vars in `backend/.env`: `TWILIO_WHATSAPP_FROM=whatsapp:+14155238886` (Twilio Sandbox default), `ADMIN_WHATSAPP_NUMBER=+19545983681`, `WHATSAPP_NOTIFY_ADMIN=true`.
+  - Admin UI: new `WhatsAppPanel` component on every case detail page — status badge (Live / Sandbox / disabled), to-number override, message compose, and threaded outbound+inbound history.
 
 ## Changelog — 2026-02-11 (cont'd)
 - ✅ **New canonical `trust_sections[]` schema** per client spec: `{article_number, article_title, article_text, explainer_text, id}`. Legacy `{title, trust_html, explainer_html}` fields kept in DB (self-healing normalize() on save) so old records continue to render without migration. Extractor prompt updated to emit both. Viewer + editor read canonical first, legacy fallback. Verified end-to-end: 6-section Hartwell trust extracted with article_number values ["Preamble","I","II","III","IV","V"], client-side viewer renders "Article I — Declaration of Trust" etc. with verbatim legal text on left and clause-by-clause plain-English on right (defines "Grantor", "Trustee", "Schedule A", "'IN TRUST'" inline). Scroll-sync + click-to-jump intact.

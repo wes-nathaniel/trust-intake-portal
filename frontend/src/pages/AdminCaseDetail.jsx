@@ -6,6 +6,7 @@ import StatusTracker from "@/components/StatusTracker";
 import TrustSectionsEditor from "@/components/TrustSectionsEditor";
 import AdminDocumentsManager from "@/components/AdminDocumentsManager";
 import MessageThread from "@/components/MessageThread";
+import WhatsAppPanel from "@/components/WhatsAppPanel";
 import { toast } from "sonner";
 import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, RefreshCw, MailPlus, Clock, Lock, Unlock, BellRing, ExternalLink, Trash2, ShieldCheck } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
@@ -765,9 +766,11 @@ export default function AdminCaseDetail() {
           <TrustSectionsEditor
             caseId={caseId}
             initialSections={c.trust_sections || []}
+            draftSections={c.trust_sections_draft || []}
             hasTrustDraft={!!c.trust_draft}
             onSaved={() => load()}
             onAutoExtracted={() => load()}
+            onDraftChanged={() => load()}
           />
           {!c.trust_draft ? (
             <div>
@@ -865,6 +868,10 @@ export default function AdminCaseDetail() {
             <StickyNote className="h-4 w-4 inline mr-1" /> Add Note
           </button>
         </Section>
+      </div>
+
+      <div className="mt-6">
+        <WhatsAppPanel caseId={caseId} defaultTo={c.grantors?.[0]?.phone || c.client_phone || ""} />
       </div>
 
       <div className="mt-6">

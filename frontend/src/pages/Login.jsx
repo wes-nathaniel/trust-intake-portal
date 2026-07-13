@@ -49,7 +49,7 @@ export default function Login() {
             <span className="text-xs uppercase tracking-[0.2em]">Secure Sign In</span>
           </div>
           <div>
-            <h2 className="font-serif text-4xl text-navy mb-1">Welcome back</h2>
+            <h2 className="font-serif text-4xl text-navy mb-1">IGC Trust Portal</h2>
             <p className="text-[#64748B]">Sign in to your {branding.business_name} account.</p>
           </div>
           {error && (

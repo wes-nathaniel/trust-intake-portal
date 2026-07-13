@@ -26,6 +26,8 @@ import io
 from pdf_export import build_intake_pdf
 import esign
 import sms
+import whatsapp
+import notify
 from ai_assistant import answer_question as ai_answer_question
 from trust_preview import pdf_bytes_to_preview_pages, pdf_bytes_to_preview_page, page_count as pdf_page_count
 import square_service
@@ -1366,7 +1368,7 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
                     f"IGC: {case.get('client_name') or case.get('client_email')} completed review. "
                     f"Case #{case_id[:8].upper()}."
                 )
-            sms.send_admin_sms(sms_body)
+            notify.notify_admin(sms_body)
         except Exception as e:
             logger.error(f"Review-completed SMS failed: {e}")
 
@@ -1385,7 +1387,7 @@ async def client_schedule_call(case_id: str, body: ScheduleCallReq, user: dict =
 
     # SMS admin
     try:
-        sms.send_admin_sms(
+        notify.notify_admin(
             f"IGC: {case.get('client_name') or case.get('client_email')} requested a call. "
             f"Case #{case_id[:8].upper()}. Call them back from a 954 number within 10 minutes."
         )
@@ -1472,7 +1474,7 @@ async def client_callback_request(case_id: str, body: CallbackRequestReq, user: 
 
     # --- SMS admin ---
     try:
-        sms.send_admin_sms(
+        notify.notify_admin(
             f"IGC: {record['name']} requested a callback at {record['callback_phone']} re trust draft. "
             f"Case #{case_id[:8].upper()}."
         )
@@ -1762,8 +1764,8 @@ async def post_question(case_id: str, body: QuestionCreate, user: dict = Depends
             f"[IGC Trust Portal] New question from {q['client_name']} in '{section_label}': "
             f"\"{body.question[:180]}{'…' if len(body.question) > 180 else ''}\" — Reply: {admin_link}"
         )
-        sms_sent = sms.send_admin_sms(sms_body)
-        if not sms_sent:
+        notify_result = notify.notify_admin(sms_body)
+        if not (notify_result.get("sms") or notify_result.get("whatsapp")):
             # Fallback to email (keeps admin in the loop while SMS is not configured)
             try:
                 branding = await _branding_doc()
@@ -2351,7 +2353,7 @@ async def admin_update_status(case_id: str, body: StatusUpdate, admin: dict = De
             logger.error(f"Completion email failed: {e}")
         # SMS admin so they can make the promised "within 10 minutes" call
         try:
-            sms.send_admin_sms(
+            notify.notify_admin(
                 f"IGC: Case #{case_id[:8].upper()} marked Completed for "
                 f"{case.get('client_name') or case.get('client_email')}. "
                 f"Promised call within 10 minutes."
@@ -2538,10 +2540,8 @@ async def admin_set_trust_sections(case_id: str, body: TrustSectionsBody, admin:
 @api_router.post("/admin/trust-cases/{case_id}/trust-sections/auto-extract")
 async def admin_auto_extract_trust_sections(case_id: str, admin: dict = Depends(require_admin)):
     """Run Claude Sonnet 4.5 on the already-uploaded trust_draft PDF and
-    populate `trust_sections[]` from the extracted Articles + generated
-    explainers. Overwrites any existing sections — the caller should
-    confirm before invoking. Idempotent-safe: caller can re-run to
-    regenerate. Returns the new section count."""
+    populate `trust_sections_draft[]` (NOT the live `trust_sections[]`) so the
+    admin can review and edit before publishing to the client."""
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -2565,12 +2565,62 @@ async def admin_auto_extract_trust_sections(case_id: str, admin: dict = Depends(
             detail="Could not detect any Articles in this PDF. It may be a scanned image (no text layer) or an unsupported format.",
         )
     await update_case(case_id, {
-        "trust_sections": sections,
+        "trust_sections_draft": sections,
+        "trust_sections_draft_created_at": now_iso(),
+        "trust_sections_draft_created_by": admin["id"],
+    })
+    return {"ok": True, "count": len(sections), "draft": True}
+
+
+@api_router.put("/admin/trust-cases/{case_id}/trust-sections/draft")
+async def admin_update_draft_sections(case_id: str, body: TrustSectionsBody, admin: dict = Depends(require_admin)):
+    """Save admin edits to the pending draft (before publishing to client)."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if not (case.get("trust_sections_draft") or []):
+        raise HTTPException(status_code=400, detail="No draft to update. Run auto-extract first.")
+    payload = [s.normalized() for s in body.sections]
+    await update_case(case_id, {
+        "trust_sections_draft": payload,
+        "trust_sections_draft_updated_at": now_iso(),
+        "trust_sections_draft_updated_by": admin["id"],
+    })
+    return {"ok": True, "count": len(payload), "draft": True}
+
+
+@api_router.post("/admin/trust-cases/{case_id}/trust-sections/publish-draft")
+async def admin_publish_trust_sections_draft(case_id: str, admin: dict = Depends(require_admin)):
+    """Promote `trust_sections_draft[]` → `trust_sections[]` so the client sees
+    the reviewed content. Removes the draft field after promotion."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    draft = case.get("trust_sections_draft") or []
+    if not draft:
+        raise HTTPException(status_code=400, detail="No draft to publish.")
+    await update_case(case_id, {
+        "trust_sections": draft,
         "trust_sections_updated_at": now_iso(),
         "trust_sections_updated_by": admin["id"],
         "trust_sections_auto_extracted": True,
+        "trust_sections_draft": [],
+        "trust_sections_draft_published_at": now_iso(),
     })
-    return {"ok": True, "count": len(sections)}
+    return {"ok": True, "count": len(draft), "published": True}
+
+
+@api_router.delete("/admin/trust-cases/{case_id}/trust-sections/draft")
+async def admin_discard_trust_sections_draft(case_id: str, _: dict = Depends(require_admin)):
+    """Discard the pending draft without publishing."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    await update_case(case_id, {
+        "trust_sections_draft": [],
+        "trust_sections_draft_discarded_at": now_iso(),
+    })
+    return {"ok": True, "discarded": True}
 
 
 @api_router.post("/admin/trust-cases/{case_id}/trust-draft")
@@ -2613,16 +2663,15 @@ async def admin_upload_trust_draft(case_id: str,
     # + generates a plain-English explainer for each, populating the sections
     # array that unlocks the synchronized two-panel Trust Viewer. Runs only
     # when sections are currently empty so we never overwrite manual edits.
-    if not (case.get("trust_sections") or []):
+    if not (case.get("trust_sections") or []) and not (case.get("trust_sections_draft") or []):
         try:
             import trust_extractor
             sections = await trust_extractor.extract_trust_sections(data, file.filename or "trust.pdf")
             if sections:
-                updates["trust_sections"] = sections
-                updates["trust_sections_updated_at"] = now_iso()
-                updates["trust_sections_updated_by"] = admin["id"]
-                updates["trust_sections_auto_extracted"] = True
-                logger.info(f"Auto-extracted {len(sections)} trust sections for case {case_id}")
+                updates["trust_sections_draft"] = sections
+                updates["trust_sections_draft_created_at"] = now_iso()
+                updates["trust_sections_draft_created_by"] = admin["id"]
+                logger.info(f"Auto-extracted {len(sections)} DRAFT trust sections for case {case_id} (pending admin review)")
             else:
                 logger.info(f"Auto-extract returned 0 sections for case {case_id}; falling back to PDF-only viewer")
         except Exception as e:
@@ -3809,7 +3858,7 @@ async def admin_mark_payment_received(case_id: str, admin: dict = Depends(requir
         logger.error(f"Mark-paid email failed: {e}")
     # SMS admin
     try:
-        sms.send_admin_sms(
+        notify.notify_admin(
             f"IGC: Payment manually marked RECEIVED for {case.get('client_name') or case.get('client_email')} "
             f"(case #{case_id[:8].upper()})."
         )
@@ -3930,7 +3979,7 @@ async def client_claimed_payment(case_id: str, body: PaymentClaimedReq, user: di
         logger.error(f"Payment-claimed admin email failed: {e}")
 
     try:
-        sms.send_admin_sms(
+        notify.notify_admin(
             f"IGC: {case.get('client_name') or case.get('client_email')} claims payment via "
             f"{body.method.upper()}. Case #{case_id[:8].upper()}. Please verify."
         )
@@ -3986,7 +4035,7 @@ async def admin_verify_payment(case_id: str, body: PaymentVerifyReq, admin: dict
         logger.error(f"Verify-payment email failed: {e}")
 
     try:
-        sms.send_admin_sms(
+        notify.notify_admin(
             f"IGC: Payment VERIFIED for {case.get('client_name') or case.get('client_email')} (case #{case_id[:8].upper()})."
         )
     except Exception as e:
@@ -4137,13 +4186,13 @@ async def square_webhook(request: Request):
                 client_label = case.get("client_name") or case.get("client_email") or "client"
                 short = case_id[:8].upper()
                 if new_status == "paid":
-                    sms.send_admin_sms(f"IGC: Payment CLEARED for {client_label} (case #{short}).")
+                    notify.notify_admin(f"IGC: Payment CLEARED for {client_label} (case #{short}).")
                 elif new_status == "ach_pending":
-                    sms.send_admin_sms(f"IGC: ACH pending for {client_label} (case #{short}). Waiting 3-5 business days.")
+                    notify.notify_admin(f"IGC: ACH pending for {client_label} (case #{short}). Waiting 3-5 business days.")
                 elif new_status == "failed":
-                    sms.send_admin_sms(f"IGC: Payment FAILED for {client_label} (case #{short}). Please follow up.")
+                    notify.notify_admin(f"IGC: Payment FAILED for {client_label} (case #{short}). Please follow up.")
                 elif new_status == "canceled":
-                    sms.send_admin_sms(f"IGC: Invoice canceled for {client_label} (case #{short}).")
+                    notify.notify_admin(f"IGC: Invoice canceled for {client_label} (case #{short}).")
     except Exception as e:
         logger.error(f"Payment webhook SMS failed: {e}")
 
@@ -4239,6 +4288,134 @@ async def admin_monthly_summary_history(_: dict = Depends(require_admin)):
     return docs
 
 
+# ---------- WHATSAPP ----------
+class WhatsAppSendReq(BaseModel):
+    to: Optional[str] = None  # E.164 number (if omitted, uses primary grantor / client_phone on the case)
+    body: str
+
+
+@api_router.get("/admin/whatsapp/status")
+async def admin_whatsapp_status(_: dict = Depends(require_admin)):
+    """Returns configuration state for the WhatsApp integration so admins can see
+    at a glance whether outbound messages will actually deliver."""
+    return {
+        "enabled": whatsapp.is_enabled(),
+        "from": whatsapp.TWILIO_WHATSAPP_FROM or None,
+        "admin_number": whatsapp.ADMIN_WHATSAPP_NUMBER or None,
+        "notify_admin_on_events": notify.WHATSAPP_NOTIFY_ADMIN,
+    }
+
+
+def _resolve_case_phone(case: dict) -> Optional[str]:
+    """Find a phone number to WhatsApp for a given trust case."""
+    if case.get("client_phone"):
+        return case["client_phone"]
+    for g in (case.get("grantors") or []):
+        if g.get("phone"):
+            return g["phone"]
+    return None
+
+
+@api_router.post("/admin/trust-cases/{case_id}/send-whatsapp")
+async def admin_send_case_whatsapp(case_id: str, body: WhatsAppSendReq,
+                                    admin: dict = Depends(require_admin)):
+    """Send a WhatsApp message to the client attached to `case_id`.
+    The message is also recorded on the case activity log."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Not found")
+    to_number = (body.to or "").strip() or _resolve_case_phone(case)
+    if not to_number:
+        raise HTTPException(status_code=400, detail="No phone number on file for this client. Provide `to` explicitly.")
+    text = (body.body or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message body is empty")
+    if len(text) > 1500:
+        raise HTTPException(status_code=400, detail="Message exceeds 1500 characters")
+    ok = whatsapp.send_whatsapp(to_number, text)
+
+    stamp = now_iso()
+    log_entry = {
+        "id": str(uuid.uuid4()),
+        "direction": "outbound",
+        "to": to_number,
+        "body": text,
+        "at": stamp,
+        "sent": bool(ok),
+        "admin_id": admin["id"],
+        "admin_email": admin.get("email"),
+    }
+    await db.trust_cases.update_one(
+        {"id": case_id},
+        {"$push": {"whatsapp_thread": log_entry}, "$set": {"updated_at": stamp}},
+    )
+    return {"ok": True, "sent": bool(ok), "entry": log_entry}
+
+
+@api_router.get("/admin/trust-cases/{case_id}/whatsapp-thread")
+async def admin_get_case_whatsapp_thread(case_id: str, _: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "whatsapp_thread": 1})
+    if case is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"thread": case.get("whatsapp_thread") or []}
+
+
+@api_router.post("/webhooks/twilio/whatsapp-inbound")
+async def twilio_whatsapp_inbound(
+    From: str = Form(""),
+    To: str = Form(""),
+    Body: str = Form(""),
+    MessageSid: str = Form(""),
+    ProfileName: str = Form(""),
+):
+    """Twilio posts here whenever a client replies on WhatsApp.
+
+    Configure this URL in the Twilio Console under Messaging → Try WhatsApp →
+    Sandbox settings (or WhatsApp Sender settings) as the 'When a message comes
+    in' webhook (HTTP POST, form-encoded)."""
+    raw_from = (From or "").replace("whatsapp:", "").strip()
+    text = (Body or "").strip()
+    stamp = now_iso()
+
+    # Best-effort match to an existing case by client_phone or grantor.phone
+    case = None
+    if raw_from:
+        case = await db.trust_cases.find_one(
+            {"$or": [
+                {"client_phone": raw_from},
+                {"grantors.phone": raw_from},
+            ]},
+            {"_id": 0, "id": 1, "client_name": 1, "client_email": 1},
+        )
+
+    entry = {
+        "id": str(uuid.uuid4()),
+        "direction": "inbound",
+        "from": raw_from,
+        "profile_name": ProfileName or "",
+        "body": text,
+        "message_sid": MessageSid,
+        "at": stamp,
+    }
+    if case:
+        await db.trust_cases.update_one(
+            {"id": case["id"]},
+            {"$push": {"whatsapp_thread": entry}, "$set": {"updated_at": stamp}},
+        )
+        preview = text[:180] + ("…" if len(text) > 180 else "")
+        notify.notify_admin(
+            f"IGC WhatsApp reply from {case.get('client_name') or case.get('client_email') or raw_from}: \"{preview}\""
+        )
+    else:
+        # Unmatched — still log to an inbox collection so nothing is lost
+        await db.whatsapp_inbox.insert_one({**entry, "matched": False})
+        notify.notify_admin(f"IGC WhatsApp: message from unknown number {raw_from}. Check inbox.")
+
+    # Twilio expects an HTTP 200 with either empty body or TwiML
+    return Response(content="<Response></Response>", media_type="application/xml")
+
+
+# ---------- ROOT ----------
 @api_router.get("/")
 async def root():
     return {"status": "ok", "service": "trust-portal"}

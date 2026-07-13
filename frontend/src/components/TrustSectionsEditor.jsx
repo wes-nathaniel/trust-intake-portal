@@ -37,19 +37,31 @@ function InlineArticlePreview({ title, trust_html, explainer_html }) {
  * Side-by-side textareas per article, variable count, "+ Add Article".
  * Persists as case.trust_sections via PUT /admin/trust-cases/{id}/trust-sections.
  */
-export default function TrustSectionsEditor({ caseId, initialSections = [], onSaved, hasTrustDraft = false, onAutoExtracted }) {
-  const [sections, setSections] = useState(initialSections.length > 0 ? initialSections : []);
+export default function TrustSectionsEditor({ caseId, initialSections = [], onSaved, hasTrustDraft = false, onAutoExtracted, draftSections = null, onDraftChanged }) {
+  // If a pending draft exists, we edit THAT (not the published sections).
+  const editingDraft = Array.isArray(draftSections) && draftSections.length > 0;
+  const [sections, setSections] = useState(
+    editingDraft ? draftSections : (initialSections.length > 0 ? initialSections : [])
+  );
   const [saving, setSaving] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   const [autoExtracting, setAutoExtracting] = useState(false);
-  const [open, setOpen] = useState(initialSections.length === 0); // collapsed when already populated
+  const [open, setOpen] = useState(editingDraft || initialSections.length === 0);
   const [dirty, setDirty] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState({}); // { [idx]: bool }
+  const [previewOpen, setPreviewOpen] = useState({});
 
-  // Intentional: when parent loads a new case, hydrate the editor state.
+  // Intentional: when parent loads a new case or the draft state changes,
+  // hydrate the editor accordingly.
   useEffect(() => {
-    setSections(initialSections.length > 0 ? initialSections : []);
+    if (editingDraft) {
+      setSections(draftSections);
+    } else {
+      setSections(initialSections.length > 0 ? initialSections : []);
+    }
     setDirty(false);
-  }, [initialSections]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSections, draftSections, editingDraft]);
 
   const update = (i, patch) => {
     setSections((arr) => {
@@ -108,12 +120,45 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
     setAutoExtracting(true);
     try {
       const { data } = await api.post(`/admin/trust-cases/${caseId}/trust-sections/auto-extract`);
-      toast.success(`Auto-extracted ${data.count} article${data.count === 1 ? "" : "s"} from the PDF.`);
+      toast.success(`AI drafted ${data.count} article${data.count === 1 ? "" : "s"} from the PDF. Review below, then click "Publish to client".`);
       onAutoExtracted && onAutoExtracted();
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail));
     } finally {
       setAutoExtracting(false);
+    }
+  };
+
+  const publishDraft = async () => {
+    if (dirty) {
+      if (!window.confirm("You have unsaved changes to the draft. Save them first, then publish? (Cancel to save manually.)")) return;
+      // caller can save then publish; for now just block
+      return;
+    }
+    if (!window.confirm(`Publish these ${sections.length} article(s) to the client? They will immediately see the side-by-side viewer.`)) return;
+    setPublishing(true);
+    try {
+      await api.post(`/admin/trust-cases/${caseId}/trust-sections/publish-draft`);
+      toast.success("Draft published — client can now see the trust viewer.");
+      onDraftChanged && onDraftChanged();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const discardDraft = async () => {
+    if (!window.confirm("Discard this AI draft? You'll lose all edits made since generation.")) return;
+    setDiscarding(true);
+    try {
+      await api.delete(`/admin/trust-cases/${caseId}/trust-sections/draft`);
+      toast.success("Draft discarded.");
+      onDraftChanged && onDraftChanged();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setDiscarding(false);
     }
   };
 
@@ -139,10 +184,21 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
           };
         })
         .filter((s) => s.title || s.article_title || s.trust_html.trim() || s.explainer_html.trim());
-      await api.put(`/admin/trust-cases/${caseId}/trust-sections`, { sections: cleaned });
-      toast.success(`Saved — ${cleaned.length} article${cleaned.length === 1 ? "" : "s"}. Move the status to "Ready for Client Review" when ready.`);
+      const url = editingDraft
+        ? `/admin/trust-cases/${caseId}/trust-sections/draft`
+        : `/admin/trust-cases/${caseId}/trust-sections`;
+      await api.put(url, { sections: cleaned });
+      toast.success(
+        editingDraft
+          ? `Draft saved — ${cleaned.length} article${cleaned.length === 1 ? "" : "s"}. Click "Publish to client" when you're ready.`
+          : `Saved — ${cleaned.length} article${cleaned.length === 1 ? "" : "s"}. Move the status to "Ready for Client Review" when ready.`
+      );
       setDirty(false);
-      onSaved && onSaved(cleaned);
+      if (editingDraft) {
+        onDraftChanged && onDraftChanged();
+      } else {
+        onSaved && onSaved(cleaned);
+      }
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail));
     } finally {
@@ -152,6 +208,36 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
 
   return (
     <div className="bg-white border border-[#E2E0DA] rounded-xl mb-6" data-testid="trust-sections-editor">
+      {editingDraft && (
+        <div className="mx-5 mt-5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 flex items-center justify-between gap-3 flex-wrap" data-testid="trust-sections-draft-banner">
+          <div className="flex items-center gap-2 min-w-0">
+            <Sparkles className="h-4 w-4 text-amber-700 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-amber-900">AI draft — pending your review</p>
+              <p className="text-xs text-amber-800">
+                Clients do NOT see this yet. Edit any article below, then click <b>Publish to client</b> when it's ready.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={discardDraft}
+              disabled={discarding || publishing}
+              className="btn-secondary text-xs"
+              data-testid="trust-sections-discard-draft-btn">
+              {discarding ? "Discarding…" : "Discard draft"}
+            </button>
+            <button
+              onClick={publishDraft}
+              disabled={publishing || discarding || dirty}
+              className="btn-primary text-xs"
+              title={dirty ? "Save your edits first" : "Make this visible to the client"}
+              data-testid="trust-sections-publish-draft-btn">
+              {publishing ? "Publishing…" : "Publish to client"}
+            </button>
+          </div>
+        </div>
+      )}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -160,7 +246,10 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
         <div className="flex items-center gap-3">
           <BookOpen className="h-5 w-5 text-bronze" />
           <div>
-            <p className="font-serif text-lg text-navy">Trust Viewer Content</p>
+            <p className="font-serif text-lg text-navy">
+              Trust Viewer Content
+              {editingDraft && <span className="ml-2 text-[10px] uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded font-sans font-semibold align-middle">Draft</span>}
+            </p>
             <p className="text-xs text-[#64748B]">
               {sections.length === 0
                 ? "Paste the per-article trust + plain-English text. Variable number of articles."
