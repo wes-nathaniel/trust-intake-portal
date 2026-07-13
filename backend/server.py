@@ -1866,58 +1866,98 @@ STORAGE_HEAVY_CASE_BYTES = 100 * 1024 * 1024  # per-case threshold used by the s
 
 @api_router.get("/admin/storage-rollup")
 async def admin_storage_rollup(_: dict = Depends(require_admin)):
-    """Aggregate AI-Explainer storage usage across ALL non-archived cases.
-    Returns totals + a small "top offenders" list so admin can plan trim sweeps."""
+    """Aggregate storage usage across ALL non-archived cases. Covers three
+    sources: AI Explainer docs (current + archived versions), client-uploaded
+    documents (IDs, bills, etc.), and the Trust Draft PDF. Returns totals +
+    a small "top offenders" list so admin can plan trim sweeps."""
     cursor = db.trust_cases.find(
         {"archived": {"$ne": True}},
-        {"_id": 0, "id": 1, "client_name": 1, "client_email": 1, "trust_name": 1, "admin_documents": 1},
+        {"_id": 0, "id": 1, "client_name": 1, "client_email": 1, "trust_name": 1,
+         "admin_documents": 1, "documents": 1, "trust_draft": 1},
     )
     total_cases = 0
     cases_with_docs = 0
+    # AI Explainer
     doc_count = 0
     version_count = 0
     current_bytes = 0
     version_bytes = 0
+    # Client uploads
+    client_doc_count = 0
+    client_bytes = 0
+    # Trust drafts
+    draft_count = 0
+    draft_bytes = 0
     per_case = []
     async for c in cursor:
         total_cases += 1
-        docs = c.get("admin_documents") or []
-        if not docs:
+        admin_docs = c.get("admin_documents") or []
+        client_docs = [d for d in (c.get("documents") or []) if not d.get("is_deleted")]
+        draft = c.get("trust_draft") or {}
+        draft_size = int(draft.get("size") or 0) if draft.get("storage_path") else 0
+
+        # AI Explainer aggregates
+        case_ai_current = 0
+        case_ai_versions = 0
+        case_ai_version_count = 0
+        for d in admin_docs:
+            doc_count += 1
+            case_ai_current += int(d.get("size") or 0)
+            for v in (d.get("versions") or []):
+                case_ai_version_count += 1
+                case_ai_versions += int(v.get("size") or 0)
+        # Client uploads aggregate
+        case_client_bytes = sum(int(d.get("size") or 0) for d in client_docs)
+
+        if not admin_docs and not client_docs and not draft_size:
             continue
         cases_with_docs += 1
-        case_current = 0
-        case_versions = 0
-        case_version_count = 0
-        for d in docs:
-            doc_count += 1
-            case_current += int(d.get("size") or 0)
-            for v in (d.get("versions") or []):
-                case_version_count += 1
-                case_versions += int(v.get("size") or 0)
-        current_bytes += case_current
-        version_bytes += case_versions
-        version_count += case_version_count
+        current_bytes += case_ai_current
+        version_bytes += case_ai_versions
+        version_count += case_ai_version_count
+        client_doc_count += len(client_docs)
+        client_bytes += case_client_bytes
+        if draft_size:
+            draft_count += 1
+            draft_bytes += draft_size
+
+        case_total = case_ai_current + case_ai_versions + case_client_bytes + draft_size
         per_case.append({
             "case_id": c["id"],
             "client_name": c.get("client_name") or "",
             "client_email": c.get("client_email") or "",
             "trust_name": c.get("trust_name") or "",
-            "doc_count": len(docs),
-            "version_count": case_version_count,
-            "current_bytes": case_current,
-            "version_bytes": case_versions,
-            "total_bytes": case_current + case_versions,
+            # AI explainer
+            "doc_count": len(admin_docs),
+            "version_count": case_ai_version_count,
+            "ai_bytes": case_ai_current + case_ai_versions,
+            # Client uploads
+            "client_doc_count": len(client_docs),
+            "client_bytes": case_client_bytes,
+            # Trust draft
+            "trust_draft_bytes": draft_size,
+            # Grand total
+            "total_bytes": case_total,
         })
     per_case.sort(key=lambda x: x["total_bytes"], reverse=True)
     heavy = [x for x in per_case if x["total_bytes"] >= STORAGE_HEAVY_CASE_BYTES]
     return {
         "total_cases": total_cases,
         "cases_with_docs": cases_with_docs,
+        # AI Explainer
         "doc_count": doc_count,
         "version_count": version_count,
         "current_bytes": current_bytes,
         "version_bytes": version_bytes,
-        "total_bytes": current_bytes + version_bytes,
+        "ai_bytes": current_bytes + version_bytes,
+        # Client uploads
+        "client_doc_count": client_doc_count,
+        "client_bytes": client_bytes,
+        # Trust drafts
+        "draft_count": draft_count,
+        "draft_bytes": draft_bytes,
+        # Grand totals
+        "total_bytes": current_bytes + version_bytes + client_bytes + draft_bytes,
         "heavy_threshold_bytes": STORAGE_HEAVY_CASE_BYTES,
         "heavy_case_count": len(heavy),
         "top_cases": per_case[:10],

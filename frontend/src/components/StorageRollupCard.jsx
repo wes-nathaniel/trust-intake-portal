@@ -40,7 +40,7 @@ export default function StorageRollupCard() {
       </div>
     );
   }
-  if (data.doc_count === 0) return null; // Nothing to show yet.
+  if (data.total_bytes === 0) return null; // Nothing to show yet.
 
   const heavy = data.heavy_case_count > 0;
 
@@ -56,16 +56,26 @@ export default function StorageRollupCard() {
             <HardDrive className="h-5 w-5 text-bronze shrink-0" />
           )}
           <div className="min-w-0">
-            <p className="text-[10px] uppercase tracking-[0.2em] text-bronze font-semibold mb-0.5">AI Explainer Storage</p>
+            <p className="text-[10px] uppercase tracking-[0.2em] text-bronze font-semibold mb-0.5">Storage Usage</p>
             <p className="text-sm text-navy" data-testid="storage-rollup-summary">
-              You&rsquo;re using <b>{fmt(data.total_bytes)}</b> across{" "}
+              <b>{fmt(data.total_bytes)}</b> total across{" "}
               <b>{data.cases_with_docs}</b> case{data.cases_with_docs === 1 ? "" : "s"}
+            </p>
+            <p className="text-xs text-[#64748B] mt-1">
+              <span title="Documents uploaded by admin + their AI explanations + archived versions">
+                🤖 AI Explainer <b className="text-navy">{fmt(data.ai_bytes)}</b>
+                <span className="text-[#94A3B8]"> ({data.doc_count} docs · {data.version_count} archived)</span>
+              </span>
               <span className="text-[#94A3B8]"> · </span>
-              <b>{data.doc_count}</b> document{data.doc_count === 1 ? "" : "s"}
+              <span title="Files clients uploaded (IDs, bills, existing trust, etc.)">
+                📄 Client uploads <b className="text-navy">{fmt(data.client_bytes)}</b>
+                <span className="text-[#94A3B8]"> ({data.client_doc_count})</span>
+              </span>
               <span className="text-[#94A3B8]"> · </span>
-              <b>{data.version_count}</b> archived version{data.version_count === 1 ? "" : "s"}
-              {" "}
-              <span className="text-[#94A3B8]">({fmt(data.version_bytes)})</span>
+              <span title="Trust Draft PDFs uploaded by admin">
+                📜 Trust drafts <b className="text-navy">{fmt(data.draft_bytes)}</b>
+                <span className="text-[#94A3B8]"> ({data.draft_count})</span>
+              </span>
             </p>
             {heavy && (
               <p className="text-xs text-amber-800 mt-1">
@@ -93,8 +103,9 @@ export default function StorageRollupCard() {
             <thead className="bg-sand-200/40 text-[#64748B] uppercase tracking-wide">
               <tr>
                 <th className="text-left px-3 py-1.5 font-semibold">Client</th>
-                <th className="text-right px-3 py-1.5 font-semibold">Docs</th>
-                <th className="text-right px-3 py-1.5 font-semibold">Versions</th>
+                <th className="text-right px-3 py-1.5 font-semibold" title="AI Explainer">🤖 AI</th>
+                <th className="text-right px-3 py-1.5 font-semibold" title="Client uploads">📄 Client</th>
+                <th className="text-right px-3 py-1.5 font-semibold" title="Trust draft PDF">📜 Draft</th>
                 <th className="text-right px-3 py-1.5 font-semibold">Total</th>
                 <th className="px-3 py-1.5" />
               </tr>
@@ -108,8 +119,9 @@ export default function StorageRollupCard() {
                       <span className="text-navy font-medium truncate">{c.client_name || c.client_email || "(unknown)"}</span>
                       {c.trust_name && <span className="text-[#94A3B8]"> · {c.trust_name}</span>}
                     </td>
-                    <td className="px-3 py-1.5 text-right text-navy">{c.doc_count}</td>
-                    <td className="px-3 py-1.5 text-right text-navy">{c.version_count}</td>
+                    <td className="px-3 py-1.5 text-right text-navy">{c.ai_bytes ? fmt(c.ai_bytes) : "—"}</td>
+                    <td className="px-3 py-1.5 text-right text-navy">{c.client_bytes ? fmt(c.client_bytes) : "—"}</td>
+                    <td className="px-3 py-1.5 text-right text-navy">{c.trust_draft_bytes ? fmt(c.trust_draft_bytes) : "—"}</td>
                     <td className={`px-3 py-1.5 text-right font-semibold ${isHeavy ? "text-amber-800" : "text-navy"}`}>{fmt(c.total_bytes)}</td>
                     <td className="px-3 py-1.5 text-right">
                       <Link
