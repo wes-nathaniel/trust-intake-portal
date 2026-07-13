@@ -1,7 +1,7 @@
 import React, { useState, useRef, useMemo } from "react";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { Upload, FolderPlus, HardDrive, AlertCircle } from "lucide-react";
+import { Upload, FolderPlus, HardDrive, AlertCircle, FileDown } from "lucide-react";
 import AdminDocumentCard from "@/components/AdminDocumentCard";
 
 /**
@@ -10,10 +10,11 @@ import AdminDocumentCard from "@/components/AdminDocumentCard";
  * (with a custom label), regenerate the AI explanation, and remove docs.
  * Client-side download link uses the axios base URL so cookies flow correctly.
  */
-export default function AdminDocumentsManager({ caseId, docs, onChanged, className = "" }) {
+export default function AdminDocumentsManager({ caseId, docs, hasTrustDraft = false, onChanged, className = "" }) {
   const [label, setLabel] = useState("");
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [importingDraft, setImportingDraft] = useState(false);
   const [regenerating, setRegenerating] = useState({});
   const [replacing, setReplacing] = useState({});
   const fileRef = useRef(null);
@@ -117,6 +118,25 @@ export default function AdminDocumentsManager({ caseId, docs, onChanged, classNa
     }
   };
 
+  const importFromTrustDraft = async () => {
+    setImportingDraft(true);
+    try {
+      const { data } = await api.post(
+        `/admin/trust-cases/${caseId}/admin-documents/from-trust-draft`
+      );
+      if (data.already_imported) {
+        toast.info("Trust draft is already imported into the explainer.");
+      } else {
+        toast.success("Trust draft imported — AI explanation generated.");
+      }
+      onChanged && onChanged();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setImportingDraft(false);
+    }
+  };
+
   return (
     <section className={`bg-white border border-[#E2E0DA] rounded-xl p-6 ${className}`} data-testid="admin-documents-manager">
       <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
@@ -191,6 +211,21 @@ export default function AdminDocumentsManager({ caseId, docs, onChanged, classNa
         <p className="text-[11px] text-[#94A3B8] mt-2">
           Accepted: PDF, DOCX, DOC, TXT, JPG, PNG · Max 25 MB. The AI runs immediately after upload; take ~5–15s.
         </p>
+
+        {hasTrustDraft && (
+          <div className="mt-3 pt-3 border-t border-bronze/30 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-[#64748B]">
+              <b>Shortcut:</b> The uploaded Trust Draft PDF can be imported here so the AI can explain it — no re-upload needed.
+            </p>
+            <button
+              onClick={importFromTrustDraft}
+              disabled={importingDraft}
+              className="btn-accent text-sm inline-flex items-center whitespace-nowrap"
+              data-testid="admin-doc-import-trust-draft-btn">
+              <FileDown className="h-4 w-4 mr-1" /> {importingDraft ? "Importing…" : "Import Trust Draft PDF"}
+            </button>
+          </div>
+        )}
       </div>
 
       {(!docs || docs.length === 0) ? (

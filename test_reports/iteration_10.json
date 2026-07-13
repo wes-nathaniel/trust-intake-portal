@@ -1,0 +1,46 @@
+{
+  "summary": "Verified the two new fixes: (1) POST /admin/trust-cases/{id}/admin-documents/from-trust-draft imports the trust_draft PDF into admin_documents[] with a fully populated ai_explanation, marks source='trust_draft', is idempotent, and returns 400/404/401 correctly; (2) DELETE /admin/trust-cases/{id}/trust-draft removes the PDF, clears trust_sections + trust_sections_draft, sets trust_draft_deleted_at/by, marks previously-imported explainer docs source_orphaned=true so their AI explanations are preserved. Backend pytest: 14/14 pass. Frontend Playwright end-to-end (fresh case → upload draft → import → duplicate-click idempotent → delete draft → verify reset + card persists) all steps PASS. Screenshot confirms the imported card renders with WHAT IT IS / WHAT IT DOES / WHY IT MATTERS / NOTARIZATION / WHAT YOU SHOULD DO — user's core blocker ('AI Document Explainer isn't generating') is fixed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "verifications_passed": [
+    "Backend: from-trust-draft returns 400 with 'No trust draft PDF on this case' when case has no draft",
+    "Backend: from-trust-draft returns 404 for unknown case_id",
+    "Backend: from-trust-draft returns 401/403 for anon and non-admin client",
+    "Backend: from-trust-draft creates admin_documents[] entry with source='trust_draft', source_storage_path==draft.storage_path, source_draft_id, source_draft_version, label 'Trust Draft — …', and a populated ai_explanation object (not empty)",
+    "Backend: from-trust-draft is idempotent — second call returns already_imported:true with the SAME id, admin_documents length unchanged",
+    "Backend: DELETE trust-draft returns 400 with 'No trust draft on file for this case' when no draft",
+    "Backend: DELETE trust-draft returns 404 for unknown case",
+    "Backend: DELETE trust-draft returns 401/403 for anon and client",
+    "Backend: DELETE trust-draft sets trust_draft=None, trust_draft_deleted_at, trust_draft_deleted_by, trust_sections=[], trust_sections_draft=[] (verified via GET)",
+    "Backend combined workflow: after import+delete, admin_documents entry PERSISTS with source_orphaned=true and ai_explanation intact",
+    "Backend regression: POST /admin/trust-cases/{id}/admin-documents (label + file) still returns 200 with expected shape",
+    "Frontend: 'Import Trust Draft PDF' button NOT rendered when case has no trust_draft (data-testid admin-doc-import-trust-draft-btn absent)",
+    "Frontend: 'Delete draft' button NOT rendered when case has no trust_draft",
+    "Frontend: after uploading a draft, both data-testid=trust-draft-delete-btn and data-testid=admin-doc-import-trust-draft-btn appear",
+    "Frontend: clicking Import creates a Trust Draft card in AdminDocumentsManager with a rendered plain-English AI explanation (screenshot captured)",
+    "Frontend: clicking Import twice does NOT create a duplicate card (still exactly 1 'Trust Draft — ' entry)",
+    "Frontend: clicking Delete draft (native confirm auto-accepted) removes the trust_draft KV panel, hides delete + import buttons, and re-exposes the Upload Trust Draft PDF button (data-testid=trust-draft-upload-label)",
+    "Frontend: imported AI Explainer card persists after Delete draft"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_trust_draft_explainer.py",
+    "/app/test_reports/pytest/trust_draft_explainer.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py line 2760: ALLOWED_EXPLAINER_EXTS constant is defined immediately after the `return` of admin_delete_trust_draft with NO blank line between them (looks like `return {..}\\nALLOWED_EXPLAINER_EXTS = {...}`). Purely cosmetic — add two blank lines for PEP-8 compliance and readability.",
+    "server.py is now 4,948 lines. Splitting into per-domain routers (trust_draft_router, admin_docs_router, whatsapp_router, auth_router) would materially improve maintainability. Repeat of prior iteration note.",
+    "admin_delete_trust_draft best-effort storage delete swallows all exceptions with only a warning log. If the object-store 'delete' fails, the case is still cleared and the user sees success — orphaned bytes will accumulate. Consider surfacing a soft warning to the admin UI or a background reconciliation job.",
+    "from-trust-draft idempotency key is (source='trust_draft' AND source_storage_path==draft.storage_path AND not is_deleted). If admin deletes the imported card (sets is_deleted=true) and then clicks Import again, a NEW entry will be created — probably desirable but worth documenting.",
+    "from-trust-draft returns 502 on storage read failure with the raw exception string in `detail`. Consider redacting internal storage paths from user-facing errors."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_trust_draft_explainer.py (created — 14 pytest cases, all pass)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (all 7 E2E checkpoints)"},
+  "test_credentials": "Admin: support@igcfirm.com / Wllorenzo03! (verified working). Test clients created dynamically per run.",
+  "seed_data_creation": "Created ~10 ephemeral client accounts (prefixed tdtest_/tdcase_/e2etd_/e2etd2_) each owning one trust case (prefixed TEST_TD_ / E2E_TD_ / E2E2_). Cases have a single uploaded trust_draft PDF (~1.5 KB) plus one imported 'Trust Draft — …' admin_documents entry with AI explanation. Two of these ended with source_orphaned=true after the delete flow — safe to leave, they demonstrate the intended state.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Both fixes are fully functional across backend + frontend. Test file /app/backend/tests/test_trust_draft_explainer.py can be re-used as regression. For future runs, note that /admin/trust-cases/{id}/admin-documents (regular upload) requires multipart body with fields 'label' (Form) + 'file' (UploadFile). The from-trust-draft endpoint takes NO body — just POST to it. Idempotency lookup matches on source_storage_path so replacing the draft (which creates a new storage object at a different path) will legitimately allow a re-import; deleting the imported card and re-clicking Import will also create a new card (idempotency is is_deleted-aware)."
+}

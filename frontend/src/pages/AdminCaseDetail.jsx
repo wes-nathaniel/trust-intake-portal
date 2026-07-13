@@ -189,6 +189,21 @@ export default function AdminCaseDetail() {
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
+  const deleteDraft = async () => {
+    if (!window.confirm(
+      "Delete this trust draft PDF?\n\nThis will:\n" +
+      "• Permanently remove the PDF from storage\n" +
+      "• Clear the auto-extracted two-panel sections (published + drafts)\n" +
+      "• Preserve any AI-explainer entry that was imported from this draft (marked as source removed)\n\n" +
+      "This action cannot be undone."
+    )) return;
+    try {
+      await api.delete(`/admin/trust-cases/${caseId}/trust-draft`);
+      toast.success("Trust draft deleted. Case is reset — upload a new PDF when ready.");
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
   const createInvoice = async () => {
     const cents = Math.round(parseFloat(invoiceAmount || "0") * 100);
     if (!(cents > 0)) { toast.error("Enter an amount greater than $0.00"); return; }
@@ -803,6 +818,9 @@ export default function AdminCaseDetail() {
                   <Upload className="h-4 w-4 inline mr-1" /> {uploadingTrust ? "Uploading…" : "Replace draft"}
                   <input ref={trustDraftInputRef} type="file" accept="application/pdf" className="hidden" onChange={(e) => uploadTrustDraft(e.target.files?.[0])} />
                 </label>
+                <button onClick={deleteDraft} className="btn-secondary text-sm text-red-700 hover:text-red-800 border-red-200 hover:border-red-300" data-testid="trust-draft-delete-btn">
+                  <Trash2 className="h-4 w-4 inline mr-1" /> Delete draft
+                </button>
                 <button onClick={sendReviewReminder} className="btn-secondary text-sm" data-testid="send-review-reminder-btn">
                   <BellRing className="h-4 w-4 inline mr-1" /> Send review reminder
                 </button>
@@ -824,6 +842,7 @@ export default function AdminCaseDetail() {
         <AdminDocumentsManager
           caseId={caseId}
           docs={c.admin_documents || []}
+          hasTrustDraft={!!c.trust_draft}
           onChanged={() => load()}
           className="lg:col-span-2"
         />

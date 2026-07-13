@@ -2712,7 +2712,51 @@ async def admin_upload_trust_draft(case_id: str,
     return {"ok": True, **draft}
 
 
-# ---------- AI DOCUMENT EXPLAINER (admin uploads any doc; AI writes plain-English summary) ----------
+@api_router.delete("/admin/trust-cases/{case_id}/trust-draft")
+async def admin_delete_trust_draft(case_id: str, admin: dict = Depends(require_admin)):
+    """Fully remove the uploaded trust draft PDF from a case.
+
+    Also clears any auto-extracted `trust_sections` / `trust_sections_draft`
+    that were derived from this PDF so the case starts clean. Any linked
+    admin_documents that were "Import from Trust Draft" copies are marked
+    orphaned (kept, so their AI explanations survive, but flagged)."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    draft = case.get("trust_draft") or {}
+    if not draft:
+        raise HTTPException(status_code=400, detail="No trust draft on file for this case")
+
+    old_path = draft.get("storage_path")
+    # Delete the underlying object (best-effort)
+    if old_path:
+        try:
+            delete_object(old_path)
+        except Exception as e:
+            logger.warning(f"delete trust_draft object failed: {e}")
+        try:
+            _cache_bust_prefix(old_path)
+        except Exception:
+            pass
+
+    # Mark any admin_documents that referenced this draft as orphaned so the
+    # UI can indicate the source PDF is gone (their storage is untouched).
+    admin_docs = [dict(d) for d in (case.get("admin_documents") or [])]
+    for d in admin_docs:
+        if d.get("source") == "trust_draft" and d.get("source_storage_path") == old_path:
+            d["source_orphaned"] = True
+
+    updates = {
+        "trust_draft": None,
+        "trust_draft_deleted_at": now_iso(),
+        "trust_draft_deleted_by": admin["id"],
+        # Auto-extracted sections were derived from this PDF — clear them
+        "trust_sections": [],
+        "trust_sections_draft": [],
+        "admin_documents": admin_docs,
+    }
+    await update_case(case_id, updates)
+    return {"ok": True, "deleted": True}
 ALLOWED_EXPLAINER_EXTS = {"pdf", "docx", "doc", "txt", "jpg", "jpeg", "png"}
 MAX_EXPLAINER_SIZE = 25 * 1024 * 1024  # 25 MB
 
@@ -2726,6 +2770,70 @@ def _find_admin_doc(case: dict, doc_id: str) -> Optional[dict]:
         if d.get("id") == doc_id and not d.get("is_deleted"):
             return d
     return None
+
+
+@api_router.post("/admin/trust-cases/{case_id}/admin-documents/from-trust-draft")
+async def admin_import_trust_draft_to_explainer(case_id: str,
+                                                admin: dict = Depends(require_admin)):
+    """Take the currently uploaded `trust_draft` PDF and register it as an
+    entry in the AI Document Explainer (`admin_documents[]`). Reuses the
+    existing storage object — no double-storage. Runs Claude on the extracted
+    text and stores the structured plain-English explanation.
+
+    Idempotent: if an admin_document already exists with source='trust_draft'
+    and the same source_storage_path, returns that entry instead of creating a
+    duplicate."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    draft = case.get("trust_draft") or {}
+    if not draft or not draft.get("storage_path"):
+        raise HTTPException(status_code=400, detail="No trust draft PDF on this case. Upload one first.")
+
+    src_path = draft["storage_path"]
+    src_filename = draft.get("filename") or "trust-draft.pdf"
+
+    # Idempotency: if we've already imported this exact draft, return existing entry.
+    for d in (case.get("admin_documents") or []):
+        if (
+            d.get("source") == "trust_draft"
+            and d.get("source_storage_path") == src_path
+            and not d.get("is_deleted")
+        ):
+            return {"ok": True, "already_imported": True, **d}
+
+    # Fetch the bytes from the existing storage object
+    try:
+        data, ct = get_object(src_path)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not read trust draft from storage: {e}")
+
+    label = f"Trust Draft — {draft.get('filename') or 'v' + str(draft.get('version') or 1)}"[:160]
+    text = doc_explainer.extract_text(data, src_filename, ct or "application/pdf")
+    ai = await doc_explainer.generate_explanation(label, src_filename, text)
+
+    doc = {
+        "id": new_id(),
+        "label": label,
+        "storage_path": src_path,             # reuse same object
+        "source": "trust_draft",              # link marker
+        "source_storage_path": src_path,      # for orphan detection on delete
+        "source_draft_id": draft.get("id"),
+        "source_draft_version": draft.get("version"),
+        "filename": src_filename,
+        "content_type": ct or "application/pdf",
+        "size": draft.get("size") or len(data),
+        "uploaded_by": admin["id"],
+        "uploaded_at": now_iso(),
+        "is_deleted": False,
+        "ai_explanation": ai,
+        "version": 1,
+        "versions": [],
+    }
+    admin_docs = list(case.get("admin_documents") or [])
+    admin_docs.append(doc)
+    await update_case(case_id, {"admin_documents": admin_docs})
+    return {"ok": True, "already_imported": False, **doc}
 
 
 @api_router.post("/admin/trust-cases/{case_id}/admin-documents")
