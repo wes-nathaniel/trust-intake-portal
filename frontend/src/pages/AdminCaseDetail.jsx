@@ -765,7 +765,9 @@ export default function AdminCaseDetail() {
           <TrustSectionsEditor
             caseId={caseId}
             initialSections={c.trust_sections || []}
+            hasTrustDraft={!!c.trust_draft}
             onSaved={() => load()}
+            onAutoExtracted={() => load()}
           />
           {!c.trust_draft ? (
             <div>

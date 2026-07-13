@@ -2504,6 +2504,44 @@ async def admin_set_trust_sections(case_id: str, body: TrustSectionsBody, admin:
     return {"ok": True, "count": len(payload), "status": case.get("status")}
 
 
+@api_router.post("/admin/trust-cases/{case_id}/trust-sections/auto-extract")
+async def admin_auto_extract_trust_sections(case_id: str, admin: dict = Depends(require_admin)):
+    """Run Claude Sonnet 4.5 on the already-uploaded trust_draft PDF and
+    populate `trust_sections[]` from the extracted Articles + generated
+    explainers. Overwrites any existing sections — the caller should
+    confirm before invoking. Idempotent-safe: caller can re-run to
+    regenerate. Returns the new section count."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    draft = case.get("trust_draft") or {}
+    storage_path = draft.get("storage_path")
+    if not storage_path:
+        raise HTTPException(status_code=400, detail="No trust draft PDF uploaded yet.")
+    try:
+        data, _ct = get_object(storage_path)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not read PDF from storage: {e}")
+    try:
+        import trust_extractor
+        sections = await trust_extractor.extract_trust_sections(data, draft.get("filename") or "trust.pdf")
+    except Exception as e:
+        logger.error(f"Auto-extract failed for case {case_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"AI extraction failed: {e}")
+    if not sections:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not detect any Articles in this PDF. It may be a scanned image (no text layer) or an unsupported format.",
+        )
+    await update_case(case_id, {
+        "trust_sections": sections,
+        "trust_sections_updated_at": now_iso(),
+        "trust_sections_updated_by": admin["id"],
+        "trust_sections_auto_extracted": True,
+    })
+    return {"ok": True, "count": len(sections)}
+
+
 @api_router.post("/admin/trust-cases/{case_id}/trust-draft")
 async def admin_upload_trust_draft(case_id: str,
                                    file: UploadFile = File(...),
@@ -2539,6 +2577,26 @@ async def admin_upload_trust_draft(case_id: str,
     # NOTE: Status is intentionally NOT auto-advanced here. Uploading a draft
     # is an admin action; the status must only move forward via a real client
     # action or an explicit admin status change.
+    #
+    # AUTO-EXTRACT trust_sections from the PDF — Claude parses every Article
+    # + generates a plain-English explainer for each, populating the sections
+    # array that unlocks the synchronized two-panel Trust Viewer. Runs only
+    # when sections are currently empty so we never overwrite manual edits.
+    if not (case.get("trust_sections") or []):
+        try:
+            import trust_extractor
+            sections = await trust_extractor.extract_trust_sections(data, file.filename or "trust.pdf")
+            if sections:
+                updates["trust_sections"] = sections
+                updates["trust_sections_updated_at"] = now_iso()
+                updates["trust_sections_updated_by"] = admin["id"]
+                updates["trust_sections_auto_extracted"] = True
+                logger.info(f"Auto-extracted {len(sections)} trust sections for case {case_id}")
+            else:
+                logger.info(f"Auto-extract returned 0 sections for case {case_id}; falling back to PDF-only viewer")
+        except Exception as e:
+            logger.error(f"Auto-extract failed for case {case_id}: {e}")
+
     await update_case(case_id, updates)
     # Bust any cached pages from a previous draft version
     try:

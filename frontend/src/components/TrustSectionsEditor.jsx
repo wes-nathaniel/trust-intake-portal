@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { Plus, Trash2, Copy, GripVertical, BookOpen, ChevronDown, ChevronUp, Save, Eye, EyeOff } from "lucide-react";
+import { Plus, Trash2, Copy, GripVertical, BookOpen, ChevronDown, ChevronUp, Save, Eye, EyeOff, Sparkles } from "lucide-react";
 import RichTextEditor from "@/components/RichTextEditor";
 import { TRUST_TEMPLATES } from "@/lib/trustTemplates";
 
@@ -37,9 +37,10 @@ function InlineArticlePreview({ title, trust_html, explainer_html }) {
  * Side-by-side textareas per article, variable count, "+ Add Article".
  * Persists as case.trust_sections via PUT /admin/trust-cases/{id}/trust-sections.
  */
-export default function TrustSectionsEditor({ caseId, initialSections = [], onSaved }) {
+export default function TrustSectionsEditor({ caseId, initialSections = [], onSaved, hasTrustDraft = false, onAutoExtracted }) {
   const [sections, setSections] = useState(initialSections.length > 0 ? initialSections : []);
   const [saving, setSaving] = useState(false);
+  const [autoExtracting, setAutoExtracting] = useState(false);
   const [open, setOpen] = useState(initialSections.length === 0); // collapsed when already populated
   const [dirty, setDirty] = useState(false);
   const [previewOpen, setPreviewOpen] = useState({}); // { [idx]: bool }
@@ -96,6 +97,20 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
     setDirty(true);
   };
 
+  const autoExtract = async () => {
+    if (sections.length > 0 && !window.confirm("This will REPLACE all existing articles with AI-extracted ones from the uploaded PDF. Continue?")) return;
+    setAutoExtracting(true);
+    try {
+      const { data } = await api.post(`/admin/trust-cases/${caseId}/trust-sections/auto-extract`);
+      toast.success(`Auto-extracted ${data.count} article${data.count === 1 ? "" : "s"} from the PDF.`);
+      onAutoExtracted && onAutoExtracted();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setAutoExtracting(false);
+    }
+  };
+
   const save = async () => {
     setSaving(true);
     try {
@@ -142,8 +157,26 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
       {open && (
         <div className="px-5 pb-5">
           {sections.length === 0 && (
-            <div className="text-center py-8 text-sm text-[#64748B]">
-              No articles yet. Click <b>Add article</b> below to start.
+            <div className="text-center py-8 text-sm text-[#64748B]" data-testid="trust-sections-empty">
+              {hasTrustDraft ? (
+                <>
+                  <p className="mb-3">No articles yet. Two ways to get started:</p>
+                  <div className="flex flex-col sm:flex-row gap-2 justify-center items-center">
+                    <button
+                      onClick={autoExtract}
+                      disabled={autoExtracting}
+                      className="btn-primary text-sm inline-flex items-center"
+                      data-testid="trust-sections-auto-extract-btn">
+                      <Sparkles className="h-4 w-4 mr-1" />
+                      {autoExtracting ? "AI is reading the PDF — ~30s…" : "Auto-generate from PDF"}
+                    </button>
+                    <span className="text-xs text-[#94A3B8]">or</span>
+                    <span className="text-xs">click <b>Add article</b> below to type manually</span>
+                  </div>
+                </>
+              ) : (
+                <>No articles yet. Click <b>Add article</b> below to start, or upload a trust draft PDF first for auto-extraction.</>
+              )}
             </div>
           )}
 
