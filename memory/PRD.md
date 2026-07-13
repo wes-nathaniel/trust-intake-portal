@@ -9,6 +9,13 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **3rd-party**: Resend (email), Emergent LLM key (AI Q&A — Claude Sonnet), Dropbox Sign (dormant), Square (invoices + webhooks — live production), Twilio SMS + **Twilio WhatsApp** (fan-out admin notifications, per-case outbound + inbound thread).
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
+## Changelog — 2026-07-13 (later)
+- ✅ **Bug fix — AI Explainer had no PDF to read.** Two additive endpoints ship together:
+  - `POST /api/admin/trust-cases/{id}/admin-documents/from-trust-draft` — one-click import of the existing trust draft PDF into the AI Document Explainer. Reuses the same storage object (no duplicate bytes). Runs Claude and stores structured plain-English explanation. Idempotent (`source='trust_draft'` + `source_storage_path` guard).
+  - `DELETE /api/admin/trust-cases/{id}/trust-draft` — fully removes a wrongly-uploaded trust draft. Clears `trust_sections` + `trust_sections_draft` (they were derived from that PDF). Any imported explainer card is preserved but flagged `source_orphaned=true`.
+  - UI: red-tinted "Delete draft" button in the Trust Draft section (data-testid `trust-draft-delete-btn`), "Import Trust Draft PDF" accent button in the AI Explainer panel (data-testid `admin-doc-import-trust-draft-btn`), only rendered when a draft exists.
+  - Tests: 14 backend pytest cases + 7 frontend Playwright checkpoints, all pass (see `/app/backend/tests/test_trust_draft_explainer.py`).
+
 ## Changelog — 2026-07-13
 - ✅ **Login header** updated from "Welcome back" → "IGC Trust Portal" (sub-header retained). Verified via screenshot.
 - ✅ **WhatsApp integration (Twilio)** — reuses existing Twilio credentials.
