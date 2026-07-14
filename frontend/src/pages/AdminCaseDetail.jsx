@@ -3,7 +3,6 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
 import StatusTracker from "@/components/StatusTracker";
-import TrustSectionsEditor from "@/components/TrustSectionsEditor";
 import AdminDocumentsManager from "@/components/AdminDocumentsManager";
 import MessageThread from "@/components/MessageThread";
 import WhatsAppPanel from "@/components/WhatsAppPanel";
@@ -778,15 +777,6 @@ export default function AdminCaseDetail() {
         </Section>
 
         <Section title="Trust Draft — Secure Preview">
-          <TrustSectionsEditor
-            caseId={caseId}
-            initialSections={c.trust_sections || []}
-            draftSections={c.trust_sections_draft || []}
-            hasTrustDraft={!!c.trust_draft}
-            onSaved={() => load()}
-            onAutoExtracted={() => load()}
-            onDraftChanged={() => load()}
-          />
           {!c.trust_draft ? (
             <div>
               <p className="text-sm text-[#64748B] mb-3">
