@@ -9,6 +9,13 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **3rd-party**: Resend (email), Emergent LLM key (AI Q&A — Claude Sonnet), Dropbox Sign (dormant), Square (invoices + webhooks — live production), Twilio SMS + **Twilio WhatsApp** (fan-out admin notifications, per-case outbound + inbound thread).
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
+## Changelog — 2026-07-14 (post-Support hotfix pass)
+- ✅ **Event loop no longer blocks on PDF text extraction.** `trust_extractor._extract_pdf_text()` (sync pypdfium2 call) now runs via `await asyncio.to_thread(...)`, so a large PDF can't freeze the FastAPI worker.
+- ✅ **`GET /trust-sections/extract-status` wrapped in try/except.** Any unexpected exception now returns `{status:"error", error, sections_count:0}` with HTTP 200 so the frontend poll can't crash on a bad server response. Genuine 404 is preserved.
+- ✅ **Stuck-job watchdog** — `extract_jobs.mark_failed_if_stuck()` flips a pending job to `failed` when the last progress (or start) timestamp is older than 300 seconds. Fires from inside `extract-status` on every poll, so orphaned jobs don't hang forever. `progress_cb` now stamps `last_progress_at` on each batch.
+- ✅ **Startup sweep** — new `extract_jobs.sweep_stuck_jobs_on_startup()` runs during FastAPI startup and marks every `trust_extract_job` still in `pending` with no `finished_at` as `failed` with error "Server restarted while extraction was in progress. Please re-run auto-extract." This clears the ghost jobs left behind after a pod restart.
+- Tests: 21/21 across `/app/backend/tests/test_watchdog_and_sweep.py` (new, 8 cases) + `/app/backend/tests/test_auto_extract_bg.py` (regression). Iteration 13.
+
 ## Changelog — 2026-07-14 (per Emergent Support / Wes Nathaniel)
 - ✅ **CRITICAL FIX — Auto Generate from PDF was timing out through Cloudflare** because the sync LLM call outran the request timeout. Refactored to the exact pattern Support recommended:
   - `POST /api/admin/trust-cases/{id}/trust-sections/auto-extract` now returns **HTTP 202** with a `task_id` in **~0.5s** (was blocking 30-90s). The heavy work runs as an asyncio background task via new `/app/backend/extract_jobs.py` (in-memory task registry + case-doc mirror so restarts don't lose state).
