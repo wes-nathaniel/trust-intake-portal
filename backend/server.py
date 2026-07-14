@@ -29,6 +29,7 @@ import sms
 import whatsapp
 import notify
 import whatsapp_commands
+import extract_jobs
 from ai_assistant import answer_question as ai_answer_question
 from trust_preview import pdf_bytes_to_preview_pages, pdf_bytes_to_preview_page, page_count as pdf_page_count
 import square_service
@@ -87,6 +88,9 @@ db = client[os.environ["DB_NAME"]]
 
 # ---------- APP ----------
 app = FastAPI(title="Trust Intake & Client Portal")
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 api_router = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("trust-portal")
@@ -2538,11 +2542,16 @@ async def admin_set_trust_sections(case_id: str, body: TrustSectionsBody, admin:
     return {"ok": True, "count": len(payload), "status": case.get("status")}
 
 
-@api_router.post("/admin/trust-cases/{case_id}/trust-sections/auto-extract")
-async def admin_auto_extract_trust_sections(case_id: str, admin: dict = Depends(require_admin)):
-    """Run Claude Sonnet 4.5 on the already-uploaded trust_draft PDF and
-    populate `trust_sections_draft[]` (NOT the live `trust_sections[]`) so the
-    admin can review and edit before publishing to the client."""
+@api_router.post("/admin/trust-cases/{case_id}/trust-sections/auto-extract", status_code=202)
+async def admin_auto_extract_trust_sections(case_id: str, response: Response,
+                                            admin: dict = Depends(require_admin)):
+    """Kick off a BACKGROUND Claude Sonnet 4.5 extraction on the already-uploaded
+    trust_draft PDF. Returns 202 immediately with a task id. Poll
+    `GET /admin/trust-cases/{case_id}/trust-sections/extract-status` every
+    5-10 seconds until status='completed' (or 'failed').
+
+    Sections are written to `trust_sections_draft[]` (NOT the live
+    `trust_sections[]`) so the admin can review and edit before publishing."""
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -2554,23 +2563,54 @@ async def admin_auto_extract_trust_sections(case_id: str, admin: dict = Depends(
         data, _ct = get_object(storage_path)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not read PDF from storage: {e}")
-    try:
-        import trust_extractor
-        sections = await trust_extractor.extract_trust_sections(data, draft.get("filename") or "trust.pdf")
-    except Exception as e:
-        logger.error(f"Auto-extract failed for case {case_id}: {e}")
-        raise HTTPException(status_code=502, detail=f"AI extraction failed: {e}")
-    if not sections:
-        raise HTTPException(
-            status_code=422,
-            detail="Could not detect any Articles in this PDF. It may be a scanned image (no text layer) or an unsupported format.",
-        )
-    await update_case(case_id, {
-        "trust_sections_draft": sections,
-        "trust_sections_draft_created_at": now_iso(),
-        "trust_sections_draft_created_by": admin["id"],
-    })
-    return {"ok": True, "count": len(sections), "draft": True}
+
+    job = await extract_jobs.start_extract_job(
+        case_id=case_id,
+        pdf_bytes=data,
+        filename=draft.get("filename") or "trust.pdf",
+        admin_id=admin["id"],
+        db=db,
+        update_case_fn=update_case,
+    )
+    response.status_code = 202
+    return {
+        "ok": True,
+        "task_id": job["task_id"],
+        "status": job["status"],
+        "already_running": job.get("already_running", False),
+    }
+
+
+@api_router.get("/admin/trust-cases/{case_id}/trust-sections/extract-status")
+async def admin_auto_extract_status(case_id: str, _: dict = Depends(require_admin)):
+    """Poll this every 5-10 seconds after firing auto-extract. Returns the
+    current job state — one of `pending`, `completed`, or `failed`."""
+    case = await db.trust_cases.find_one(
+        {"id": case_id},
+        {"_id": 0, "trust_extract_job": 1, "trust_sections_draft": 1},
+    )
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    job = await extract_jobs.get_status(case_id, db)
+    if not job:
+        return {
+            "status": "idle",
+            "sections_count": 0,
+            "message": "No extraction has been run for this case yet.",
+        }
+    # Merge in a live count from the draft field so the caller always sees the
+    # actual number written to the DB, not just whatever the job dict remembered.
+    draft_len = len(case.get("trust_sections_draft") or [])
+    return {
+        "task_id": job.get("task_id"),
+        "status": job.get("status"),
+        "sections_count": max(int(job.get("sections_count") or 0), draft_len),
+        "batches_done": job.get("batches_done") or 0,
+        "batches_total": job.get("batches_total") or 0,
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "error": job.get("error"),
+    }
 
 
 @api_router.put("/admin/trust-cases/{case_id}/trust-sections/draft")
@@ -2659,25 +2699,7 @@ async def admin_upload_trust_draft(case_id: str,
     # NOTE: Status is intentionally NOT auto-advanced here. Uploading a draft
     # is an admin action; the status must only move forward via a real client
     # action or an explicit admin status change.
-    #
-    # AUTO-EXTRACT trust_sections from the PDF — Claude parses every Article
-    # + generates a plain-English explainer for each, populating the sections
-    # array that unlocks the synchronized two-panel Trust Viewer. Runs only
-    # when sections are currently empty so we never overwrite manual edits.
-    if not (case.get("trust_sections") or []) and not (case.get("trust_sections_draft") or []):
-        try:
-            import trust_extractor
-            sections = await trust_extractor.extract_trust_sections(data, file.filename or "trust.pdf")
-            if sections:
-                updates["trust_sections_draft"] = sections
-                updates["trust_sections_draft_created_at"] = now_iso()
-                updates["trust_sections_draft_created_by"] = admin["id"]
-                logger.info(f"Auto-extracted {len(sections)} DRAFT trust sections for case {case_id} (pending admin review)")
-            else:
-                logger.info(f"Auto-extract returned 0 sections for case {case_id}; falling back to PDF-only viewer")
-        except Exception as e:
-            logger.error(f"Auto-extract failed for case {case_id}: {e}")
-
+    # Persist the draft record BEFORE kicking off any background jobs.
     await update_case(case_id, updates)
     # Bust any cached pages from a previous draft version
     try:
@@ -2686,6 +2708,24 @@ async def admin_upload_trust_draft(case_id: str,
             _cache_bust_prefix(old_path)
     except Exception:
         pass
+
+    # AUTO-EXTRACT trust_sections from the PDF — Claude parses every Article
+    # + generates a plain-English explainer. Runs as a BACKGROUND task so the
+    # upload response returns immediately (no more Cloudflare timeouts on a
+    # large PDF). Only kicks off when sections/draft are currently empty.
+    if not (case.get("trust_sections") or []) and not (case.get("trust_sections_draft") or []):
+        try:
+            await extract_jobs.start_extract_job(
+                case_id=case_id,
+                pdf_bytes=data,
+                filename=file.filename or "trust.pdf",
+                admin_id=admin["id"],
+                db=db,
+                update_case_fn=update_case,
+            )
+            logger.info(f"trust_extract_job kicked off (inline path) for case {case_id}")
+        except Exception as e:
+            logger.error(f"Failed to schedule background extract for case {case_id}: {e}")
 
     # Notify client: trust ready for review
     try:

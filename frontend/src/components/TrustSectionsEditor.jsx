@@ -118,13 +118,59 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
   const autoExtract = async () => {
     if (sections.length > 0 && !window.confirm("This will REPLACE all existing articles with AI-extracted ones from the uploaded PDF. Continue?")) return;
     setAutoExtracting(true);
+    let pollTimer = null;
+    let elapsedMs = 0;
+    const POLL_INTERVAL_MS = 6000;
+    const MAX_POLL_MS = 4 * 60 * 1000; // 4 minutes
     try {
-      const { data } = await api.post(`/admin/trust-cases/${caseId}/trust-sections/auto-extract`);
-      toast.success(`AI drafted ${data.count} article${data.count === 1 ? "" : "s"} from the PDF. Review below, then click "Publish to client".`);
-      onAutoExtracted && onAutoExtracted();
+      // Fire-and-forget: server returns 202 immediately with a task id.
+      await api.post(`/admin/trust-cases/${caseId}/trust-sections/auto-extract`);
+      toast.message("AI is reading the PDF in the background — this can take up to 90 seconds.");
+
+      // Poll the status endpoint until completed or failed.
+      await new Promise((resolve, reject) => {
+        const tick = async () => {
+          try {
+            const { data } = await api.get(
+              `/admin/trust-cases/${caseId}/trust-sections/extract-status`
+            );
+            if (data.status === "completed") {
+              const n = data.sections_count || 0;
+              toast.success(
+                `AI drafted ${n} article${n === 1 ? "" : "s"} from the PDF. Review below, then click "Publish to client".`
+              );
+              onAutoExtracted && onAutoExtracted();
+              resolve();
+              return;
+            }
+            if (data.status === "failed") {
+              toast.error(data.error || "AI extraction failed. Please try again.");
+              resolve();
+              return;
+            }
+            // Still pending — surface incremental progress if available.
+            if (data.batches_total > 0) {
+              // Silent — the button label already conveys "working"; extra toasts would spam.
+            }
+            elapsedMs += POLL_INTERVAL_MS;
+            if (elapsedMs >= MAX_POLL_MS) {
+              toast.error(
+                "AI extraction is still running after 4 minutes. Please refresh the page in a moment to see the results."
+              );
+              resolve();
+              return;
+            }
+            pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+          } catch (e) {
+            reject(e);
+          }
+        };
+        pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+      });
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail));
     } finally {
+      if (pollTimer) clearTimeout(pollTimer);
       setAutoExtracting(false);
     }
   };
@@ -274,7 +320,7 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
                       className="btn-primary text-sm inline-flex items-center"
                       data-testid="trust-sections-auto-extract-btn">
                       <Sparkles className="h-4 w-4 mr-1" />
-                      {autoExtracting ? "AI is reading the PDF — ~30s…" : "Auto-generate from PDF"}
+                      {autoExtracting ? "AI is reading the PDF (up to 90s)…" : "Auto-generate from PDF"}
                     </button>
                     <span className="text-xs text-[#94A3B8]">or</span>
                     <span className="text-xs">click <b>Add article</b> below to type manually</span>
