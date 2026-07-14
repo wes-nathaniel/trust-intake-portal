@@ -9,6 +9,15 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **3rd-party**: Resend (email), Emergent LLM key (AI Q&A — Claude Sonnet), Dropbox Sign (dormant), Square (invoices + webhooks — live production), Twilio SMS + **Twilio WhatsApp** (fan-out admin notifications, per-case outbound + inbound thread).
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
+## Changelog — 2026-07-14 (per Emergent Support / Wes Nathaniel)
+- ✅ **CRITICAL FIX — Auto Generate from PDF was timing out through Cloudflare** because the sync LLM call outran the request timeout. Refactored to the exact pattern Support recommended:
+  - `POST /api/admin/trust-cases/{id}/trust-sections/auto-extract` now returns **HTTP 202** with a `task_id` in **~0.5s** (was blocking 30-90s). The heavy work runs as an asyncio background task via new `/app/backend/extract_jobs.py` (in-memory task registry + case-doc mirror so restarts don't lose state).
+  - New `GET /api/admin/trust-cases/{id}/trust-sections/extract-status` — poll every 6s until `status='completed'` or `'failed'`. Returns `{task_id, status, sections_count, batches_done, batches_total, error}`.
+  - `/app/backend/trust_extractor.py` rewritten to chunk: heading-based `_split_into_articles()` splits the PDF into blocks; batches of 3 sections per LLM call; **each call wrapped in `asyncio.wait_for(..., timeout=85s)`** so a hung Claude call can't freeze the extractor.
+  - Inline path (auto-extract on trust_draft upload) also switched to the background task, and the trust-ready email fire-off is now `asyncio.create_task(...)` so uploads return in <3s (was ~30s).
+  - Frontend `TrustSectionsEditor.autoExtract()` rewritten to fire → poll `/extract-status` every 6s → toast on completion (or failure). Button label: "AI is reading the PDF (up to 90s)…". Max polling window 4 minutes; job continues after that if still running.
+  - Tests: 4/4 targeted pytest cases + regression suite pass (`/app/backend/tests/test_auto_extract_bg.py`). Iterations 11 + 12.
+
 ## Changelog — 2026-07-13 (later)
 - ✅ **Bug fix — AI Explainer had no PDF to read.** Two additive endpoints ship together:
   - `POST /api/admin/trust-cases/{id}/admin-documents/from-trust-draft` — one-click import of the existing trust draft PDF into the AI Document Explainer. Reuses the same storage object (no duplicate bytes). Runs Claude and stores structured plain-English explanation. Idempotent (`source='trust_draft'` + `source_storage_path` guard).
