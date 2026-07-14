@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
-import { Search, Users, FileClock, ArrowRight, UserPlus, Trash2, Archive, X, CheckSquare, Square } from "lucide-react";
+import { Search, Users, FileClock, ArrowRight, UserPlus, Trash2, Archive, X, CheckSquare, Square, Sparkles } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import InviteClientDialog from "@/components/InviteClientDialog";
 import DiagnosticsPanel from "@/components/DiagnosticsPanel";
@@ -123,6 +123,18 @@ export default function AdminDashboard() {
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [status, includeArchived]);
+
+  // If any case is currently mid-extract, quietly refresh the list every 15s so
+  // the "Extracting…" badge clears as soon as the background job completes.
+  useEffect(() => {
+    const anyExtracting = (cases || []).some(
+      (c) => c.trust_extract_job && c.trust_extract_job.status === "pending"
+    );
+    if (!anyExtracting) return;
+    const t = setInterval(() => { load(); }, 15000);
+    return () => clearInterval(t);
+    /* eslint-disable-next-line */
+  }, [cases]);
 
   const quickArchive = async (id, label, e) => {
     e.preventDefault(); e.stopPropagation();
@@ -298,6 +310,22 @@ export default function AdminDashboard() {
                     <p className="font-medium text-navy">
                       {c.client_name || c.client_email}
                       {c.archived && <span className="ml-2 inline-block text-[9px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 uppercase tracking-wide" data-testid={`archived-badge-${c.id}`}>Archived</span>}
+                      {c.trust_extract_job && c.trust_extract_job.status === "pending" && (() => {
+                        const j = c.trust_extract_job;
+                        const done = j.batches_done || 0;
+                        const total = j.batches_total || 0;
+                        const detail = total > 0 ? `${done}/${total}` : "reading PDF";
+                        return (
+                          <span
+                            className="ml-2 inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded bg-bronze/15 text-bronze uppercase tracking-wide font-semibold animate-pulse"
+                            title={`AI is extracting trust sections (${detail})`}
+                            data-testid={`extracting-badge-${c.id}`}
+                          >
+                            <Sparkles className="h-2.5 w-2.5" />
+                            Extracting… {detail}
+                          </span>
+                        );
+                      })()}
                     </p>
                     <p className="text-xs text-[#64748B]" data-testid={`client-email-${c.id}`}>{c.client_email}</p>
                     {c.client_phone && (
