@@ -91,6 +91,7 @@ async def start_extract_job(
                     job["batches_done"] = done
                     job["batches_total"] = total
                     job["sections_count"] = count
+                    job["last_progress_at"] = _now_iso()
                     await _persist(db, case_id, job, update_case_fn)
 
                 sections = await trust_extractor.extract_trust_sections(
@@ -159,3 +160,93 @@ async def get_status(case_id: str, db) -> Optional[Dict]:
     if not case:
         return None
     return case.get("trust_extract_job")
+
+
+def _parse_iso(s: Optional[str]) -> Optional[datetime]:
+    if not s:
+        return None
+    try:
+        # Python 3.11+ handles trailing Z; explicit strip for older stdlib.
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+async def mark_failed_if_stuck(
+    *,
+    case_id: str,
+    db,
+    update_case_fn: Callable[[str, dict], Awaitable[None]],
+    max_age_seconds: int = 300,
+) -> Optional[Dict]:
+    """If a job is still `pending` older than `max_age_seconds` (measured from
+    the last progress timestamp, or `started_at` if no batches have completed),
+    flip it to `failed`. Returns the updated job dict, or None if untouched."""
+    job = _jobs.get(case_id)
+    persisted = False
+    if not job:
+        # Try to reconstruct from case doc
+        try:
+            case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "trust_extract_job": 1})
+        except Exception as e:
+            logger.warning(f"mark_failed_if_stuck: DB lookup failed for {case_id}: {e}")
+            return None
+        if not case or not case.get("trust_extract_job"):
+            return None
+        job = dict(case["trust_extract_job"])
+        persisted = True
+
+    if job.get("status") != "pending":
+        return None
+
+    ref_iso = job.get("last_progress_at") or job.get("started_at")
+    ref = _parse_iso(ref_iso)
+    if ref is None:
+        return None
+    age = (datetime.now(timezone.utc) - ref).total_seconds()
+    if age < max_age_seconds:
+        return None
+
+    job["status"] = "failed"
+    job["error"] = (
+        f"Extraction stalled — no progress for {int(age)}s (limit {max_age_seconds}s). "
+        "Please try again."
+    )
+    job["finished_at"] = _now_iso()
+    logger.warning(f"mark_failed_if_stuck: flagging stuck job on case {case_id} (age={int(age)}s)")
+    # Update in-memory and persisted copies
+    _jobs[case_id] = job
+    await _persist(db, case_id, job, update_case_fn)
+    return job
+
+
+async def sweep_stuck_jobs_on_startup(db, update_case_fn: Callable[[str, dict], Awaitable[None]]) -> int:
+    """Called once during FastAPI startup. Any `trust_extract_job` still in
+    'pending' with no `finished_at` from a prior process is marked failed —
+    the runner task that owned it is gone, so it will never complete on its
+    own. Returns the count of cases updated."""
+    try:
+        cursor = db.trust_cases.find(
+            {"trust_extract_job.status": "pending", "trust_extract_job.finished_at": None},
+            {"_id": 0, "id": 1, "trust_extract_job": 1},
+        )
+        docs = await cursor.to_list(500)
+    except Exception as e:
+        logger.warning(f"sweep_stuck_jobs_on_startup query failed: {e}")
+        return 0
+    n = 0
+    for d in docs:
+        job = dict(d.get("trust_extract_job") or {})
+        if not job or job.get("status") != "pending":
+            continue
+        job["status"] = "failed"
+        job["error"] = "Server restarted while extraction was in progress. Please re-run auto-extract."
+        job["finished_at"] = _now_iso()
+        try:
+            await update_case_fn(d["id"], {"trust_extract_job": job})
+            n += 1
+        except Exception as e:
+            logger.warning(f"sweep_stuck_jobs_on_startup failed to persist for {d['id']}: {e}")
+    if n:
+        logger.info(f"sweep_stuck_jobs_on_startup: marked {n} orphaned job(s) as failed")
+    return n

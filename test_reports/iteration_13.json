@@ -1,0 +1,30 @@
+{
+  "summary": "Verified all 4 backend fixes from iteration 13 (async pdf extract, extract-status try/except, watchdog for stuck pending jobs >300s, startup sweep for orphaned pending jobs). Added new pytest file /app/backend/tests/test_watchdog_and_sweep.py with 8 tests covering code-review invariants, watchdog positive+negative, startup sweep positive+no-op, and sweep log verification. NEW: 8/8 PASS. REGRESSION test_auto_extract_bg.py: 13/13 PASS (previously flaky dedupe/202-fast tests both green this run). Total: 21/21.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_watchdog_and_sweep.py",
+    "/app/backend/tests/test_auto_extract_bg.py",
+    "/app/test_reports/pytest/watchdog_sweep.xml",
+    "/app/test_reports/pytest/auto_extract_bg.xml"
+  ],
+  "action_items": [
+    "FIX 1 (asyncio.to_thread for pypdfium2) VERIFIED — /app/backend/trust_extractor.py:251 `text = await asyncio.to_thread(_extract_pdf_text, pdf_bytes)`. Real multi-article extraction still completes successfully (test_status_transitions_to_terminal PASS).",
+    "FIX 2 (extract-status try/except envelope) VERIFIED — /app/backend/server.py:2592-2634. Returns {status:'error', error, sections_count:0} on unexpected exception; 404 preserved for unknown cases; idle/pending/completed/failed all still work.",
+    "FIX 3 (watchdog mark_failed_if_stuck) VERIFIED — Seeded a job with started_at 10 min ago -> GET returned status='failed' with 'stalled' in error, job persisted to DB. Fresh 30s-old pending job stayed pending. progress_cb also stamps last_progress_at (code-verified).",
+    "FIX 4 (sweep_stuck_jobs_on_startup) VERIFIED — Seeded orphan pending job on a case, restarted backend via supervisorctl, confirmed job flipped to status='failed' with error='Server restarted while extraction was in progress...'. Completed job left untouched. Log line 'sweep_stuck_jobs_on_startup' present in backend logs."
+  ],
+  "critical_code_review_comments": [
+    "extract_jobs.py:202 correctly prefers last_progress_at over started_at when computing stall age — good for long-running batches with visible progress.",
+    "extract_jobs.py:230 startup sweep filter `trust_extract_job.status: pending, finished_at: None` correctly ignores completed/failed jobs and jobs that were terminated mid-flight (finished_at set). Verified via test_sweep_leaves_completed_alone.",
+    "server.py:2626-2634 broad try/except returns HTTP 200 with error envelope — good for frontend polling resilience. HTTPException (e.g. 404) re-raised so real not-found still returns 404. Correct.",
+    "Nice-to-have: watchdog only fires when someone polls extract-status; a stuck job on an idle case will never be flipped until admin looks at it again. Not a blocker (startup sweep catches worst case)."
+  ],
+  "updated_files": ["/app/backend/tests/test_watchdog_and_sweep.py"],
+  "success_rate": {"backend": "100% (21/21 across watchdog_sweep + auto_extract_bg)", "frontend": "skipped per request"},
+  "test_credentials": "admin support@igcfirm.com / Wllorenzo03! (per /app/memory/test_credentials.md)",
+  "seed_data_creation": "Ephemeral test users + cases created per test run; jobs seeded directly via motor into trust_cases collection; no persistent side effects.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 4 iteration-13 fixes verified. Rerun with `REACT_APP_BACKEND_URL=<url> pytest /app/backend/tests/test_watchdog_and_sweep.py /app/backend/tests/test_auto_extract_bg.py -v` (~3min). The sweep test restarts the backend twice — subsequent test files run after this may briefly encounter cold-start latency. If you need to test again quickly and want to avoid restarts, comment out TestStartupSweep temporarily."
+}

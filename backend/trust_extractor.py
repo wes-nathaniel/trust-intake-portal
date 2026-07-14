@@ -248,7 +248,7 @@ async def extract_trust_sections(pdf_bytes: bytes, filename: str,
         logger.warning("extract_trust_sections: EMERGENT_LLM_KEY missing")
         return []
 
-    text = _extract_pdf_text(pdf_bytes)
+    text = await asyncio.to_thread(_extract_pdf_text, pdf_bytes)
     if not text or len(text) < 200:
         logger.info(f"extract_trust_sections: PDF text too short ({len(text)} chars)")
         return []

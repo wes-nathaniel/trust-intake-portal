@@ -2584,33 +2584,54 @@ async def admin_auto_extract_trust_sections(case_id: str, response: Response,
 @api_router.get("/admin/trust-cases/{case_id}/trust-sections/extract-status")
 async def admin_auto_extract_status(case_id: str, _: dict = Depends(require_admin)):
     """Poll this every 5-10 seconds after firing auto-extract. Returns the
-    current job state — one of `pending`, `completed`, or `failed`."""
-    case = await db.trust_cases.find_one(
-        {"id": case_id},
-        {"_id": 0, "id": 1, "trust_extract_job": 1, "trust_sections_draft": 1},
-    )
-    if case is None:
-        raise HTTPException(status_code=404, detail="Case not found")
-    job = await extract_jobs.get_status(case_id, db)
-    if not job:
+    current job state — one of `pending`, `completed`, `failed`, or `error`.
+
+    Wrapped in a broad try/except so a transient DB or module fault still
+    returns a valid JSON envelope instead of a 5xx (the frontend polls this
+    every few seconds and can't cope with hard failures)."""
+    try:
+        case = await db.trust_cases.find_one(
+            {"id": case_id},
+            {"_id": 0, "id": 1, "trust_extract_job": 1, "trust_sections_draft": 1},
+        )
+        if case is None:
+            raise HTTPException(status_code=404, detail="Case not found")
+        job = await extract_jobs.get_status(case_id, db)
+        # Watchdog: if a job has been pending >5 minutes with no progress,
+        # treat it as failed here (defensive — the runner should also cover this).
+        if job and job.get("status") == "pending":
+            job = await extract_jobs.mark_failed_if_stuck(
+                case_id=case_id,
+                db=db,
+                update_case_fn=update_case,
+                max_age_seconds=300,
+            ) or job
+        if not job:
+            return {
+                "status": "idle",
+                "sections_count": 0,
+                "message": "No extraction has been run for this case yet.",
+            }
+        draft_len = len(case.get("trust_sections_draft") or [])
         return {
-            "status": "idle",
-            "sections_count": 0,
-            "message": "No extraction has been run for this case yet.",
+            "task_id": job.get("task_id"),
+            "status": job.get("status"),
+            "sections_count": max(int(job.get("sections_count") or 0), draft_len),
+            "batches_done": job.get("batches_done") or 0,
+            "batches_total": job.get("batches_total") or 0,
+            "started_at": job.get("started_at"),
+            "finished_at": job.get("finished_at"),
+            "error": job.get("error"),
         }
-    # Merge in a live count from the draft field so the caller always sees the
-    # actual number written to the DB, not just whatever the job dict remembered.
-    draft_len = len(case.get("trust_sections_draft") or [])
-    return {
-        "task_id": job.get("task_id"),
-        "status": job.get("status"),
-        "sections_count": max(int(job.get("sections_count") or 0), draft_len),
-        "batches_done": job.get("batches_done") or 0,
-        "batches_total": job.get("batches_total") or 0,
-        "started_at": job.get("started_at"),
-        "finished_at": job.get("finished_at"),
-        "error": job.get("error"),
-    }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"extract-status endpoint failed for {case_id}: {e}")
+        return {
+            "status": "error",
+            "error": str(e)[:300],
+            "sections_count": 0,
+        }
 
 
 @api_router.put("/admin/trust-cases/{case_id}/trust-sections/draft")
@@ -4801,6 +4822,13 @@ async def startup():
     await db.questions.create_index([("case_id", 1), ("created_at", 1)])
     await db.questions.create_index("status")
     await db.monthly_summaries.create_index("period", unique=True)
+
+    # Sweep any trust_extract_jobs left in `pending` from a prior worker so
+    # their runners (which no longer exist) don't leave the UI polling forever.
+    try:
+        await extract_jobs.sweep_stuck_jobs_on_startup(db, update_case)
+    except Exception as e:
+        logger.warning(f"extract_jobs sweep on startup failed: {e}")
 
     # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
