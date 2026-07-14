@@ -136,6 +136,66 @@ class TestAutoExtractEndpoint:
         assert data["status"] == "idle"
         assert data["sections_count"] == 0
 
+    def test_status_fresh_case_no_draft_field_returns_idle_200(self, admin_session, client_session):
+        """BUG FIX 1 regression: fresh case with NO trust_sections_draft field at all
+        must return 200 idle, not 404. Previously failed because projection returned
+        an empty dict which was treated as falsy."""
+        # Create a brand-new case (guaranteed to have no trust_extract_job and no
+        # trust_sections_draft fields on the document).
+        cr = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        assert cr.status_code == 200
+        cid = cr.json()["id"]
+        r = admin_session.get(
+            f"{API}/admin/trust-cases/{cid}/trust-sections/extract-status"
+        )
+        assert r.status_code == 200, f"Expected 200 idle, got {r.status_code}: {r.text}"
+        data = r.json()
+        assert data["status"] == "idle"
+        assert data["sections_count"] == 0
+        assert "message" in data
+
+    def test_status_unknown_case_still_404(self, admin_session):
+        """BUG FIX 1: ensure the fix didn't accidentally make truly-unknown cases
+        return 200 idle."""
+        fake = uuid.uuid4().hex
+        r = admin_session.get(
+            f"{API}/admin/trust-cases/{fake}/trust-sections/extract-status"
+        )
+        assert r.status_code == 404
+
+
+class TestUploadPerf:
+    """BUG FIX 2: upload should return in <3s (previously ~30s due to blocking email)."""
+
+    def test_upload_returns_under_3s(self, admin_session, client_session, multi_article_pdf):
+        cr = client_session.post(f"{API}/trust-cases", json={"trust_type": "single"})
+        assert cr.status_code == 200
+        cid = cr.json()["id"]
+
+        t0 = time.time()
+        up = admin_session.post(
+            f"{API}/admin/trust-cases/{cid}/trust-draft",
+            files={"file": ("trust_perf.pdf", multi_article_pdf, "application/pdf")},
+        )
+        dt = time.time() - t0
+        assert up.status_code == 200, up.text
+        assert dt < 3.0, f"Upload took {dt:.2f}s — must be < 3s after fix"
+        print(f"Upload completed in {dt:.2f}s")
+
+        # trust_draft persisted
+        case_r = admin_session.get(f"{API}/admin/trust-cases/{cid}")
+        assert case_r.status_code == 200
+        case = case_r.json()
+        assert case.get("trust_draft") or case.get("trust_draft_filename"), \
+            "trust_draft not persisted"
+
+        # Background extract job kicked off
+        st = admin_session.get(
+            f"{API}/admin/trust-cases/{cid}/trust-sections/extract-status"
+        ).json()
+        assert st.get("status") in ("pending", "completed", "failed"), \
+            f"Background job not kicked off: {st}"
+
 
 class TestAutoExtractBackground:
     """End-to-end: upload multi-article PDF, verify 202-fast, poll status."""

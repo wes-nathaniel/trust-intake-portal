@@ -2587,9 +2587,9 @@ async def admin_auto_extract_status(case_id: str, _: dict = Depends(require_admi
     current job state — one of `pending`, `completed`, or `failed`."""
     case = await db.trust_cases.find_one(
         {"id": case_id},
-        {"_id": 0, "trust_extract_job": 1, "trust_sections_draft": 1},
+        {"_id": 0, "id": 1, "trust_extract_job": 1, "trust_sections_draft": 1},
     )
-    if not case:
+    if case is None:
         raise HTTPException(status_code=404, detail="Case not found")
     job = await extract_jobs.get_status(case_id, db)
     if not job:
@@ -2727,27 +2727,32 @@ async def admin_upload_trust_draft(case_id: str,
         except Exception as e:
             logger.error(f"Failed to schedule background extract for case {case_id}: {e}")
 
-    # Notify client: trust ready for review
-    try:
-        branding = await _branding_doc()
-        biz = branding.get("business_name", "Trust Portal")
-        accent = branding.get("accent_color", "#C5A880")
-        primary = branding.get("primary_color", "#1C252E")
-        link = f"{FRONTEND_URL}/portal/trust-preview/{case_id}"
-        inner = f"""
+    # Notify client: trust ready for review — fired as a background task so
+    # the upload response returns immediately (Resend can take 20-30s from
+    # some networks; that latency should not block the admin's UI).
+    async def _send_trust_ready_email():
+        try:
+            branding = await _branding_doc()
+            biz = branding.get("business_name", "Trust Portal")
+            accent = branding.get("accent_color", "#C5A880")
+            primary = branding.get("primary_color", "#1C252E")
+            link = f"{FRONTEND_URL}/portal/trust-preview/{case_id}"
+            inner = f"""
 <p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Your trust is ready for review.</p>
 <p>Your draft trust for <b>{case.get('trust_name') or 'your case'}</b> is ready to review in the secure portal.</p>
 <p style="color:#64748B;font-size:13px;">The draft is watermarked and cannot be printed or downloaded until payment is received. You can schedule a Zoom review call or complete your review inside the portal.</p>
 {_cta(link, "Review your trust", accent)}
 """
-        html = _email_shell(biz, primary, accent, inner)
-        await send_email_notification(
-            case.get("client_email"),
-            f"Your trust is ready for review — {biz}",
-            html,
-        )
-    except Exception as e:
-        logger.error(f"Trust-ready email failed: {e}")
+            html = _email_shell(biz, primary, accent, inner)
+            await send_email_notification(
+                case.get("client_email"),
+                f"Your trust is ready for review — {biz}",
+                html,
+            )
+        except Exception as e:
+            logger.error(f"Trust-ready email failed: {e}")
+
+    asyncio.create_task(_send_trust_ready_email())
 
     return {"ok": True, **draft}
 
