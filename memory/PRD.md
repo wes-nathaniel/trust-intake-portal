@@ -9,6 +9,17 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **3rd-party**: Resend (email), Emergent LLM key (AI Q&A — Claude Sonnet), Dropbox Sign (dormant), Square (invoices + webhooks — live production), Twilio SMS + **Twilio WhatsApp** (fan-out admin notifications, per-case outbound + inbound thread).
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
+## Changelog — 2026-07-14 (unified explainer enrichment)
+- ✅ **Explainer enrichment now merges 9 educational sections into the SAME scroll flow** as the extracted article explanations — no second page, no separate scroll area, one continuous client experience.
+- New `/app/backend/trust_enrichment.py`: single Claude Sonnet 4.5 call after `trust_extractor.extract_trust_sections()` produces 9 sections in canonical order (Grantor Overview, Trustee Overview, Successor Trustee Overview, Incapacity Procedures, Death Procedures, Asset Protection Basics, Distribution Logic, Trust Fundamentals, and "What happens if…" scenarios). Every section personalized to the actual grantor/trustee/beneficiary names when present in the extracted articles.
+- Hardcoded `_FALLBACK` template guarantees all 9 sections always render even if the LLM call fails or times out.
+- Wired into `extract_jobs._runner()` — enrichment runs after extraction, results are appended to `trust_sections_draft[]` so the full 6+9=15 pattern flows through the existing publish-draft workflow untouched.
+- `TrustViewerTwoPanel.jsx` updated to detect `kind==="educational"` and render:
+  - LEFT: gold-tinted "Client Education" card with eyebrow, title, and italic guidance note
+  - RIGHT: distinctive "📘 <Title> — Plain English" label + full HTML content
+  - Both in the SAME two-column scroll (existing sync logic works unchanged)
+- Tests: 5/5 new pytest in `/app/backend/tests/test_trust_enrichment.py` (fallback, timeout, live LLM, E2E) + frontend Playwright confirms single-scroll rendering. Iteration 14.
+
 ## Changelog — 2026-07-14 (post-Support hotfix pass)
 - ✅ **Event loop no longer blocks on PDF text extraction.** `trust_extractor._extract_pdf_text()` (sync pypdfium2 call) now runs via `await asyncio.to_thread(...)`, so a large PDF can't freeze the FastAPI worker.
 - ✅ **`GET /trust-sections/extract-status` wrapped in try/except.** Any unexpected exception now returns `{status:"error", error, sections_count:0}` with HTTP 200 so the frontend poll can't crash on a bad server response. Genuine 404 is preserved.
