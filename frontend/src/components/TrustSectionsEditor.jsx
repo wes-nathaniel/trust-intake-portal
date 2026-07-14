@@ -47,6 +47,7 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
   const [publishing, setPublishing] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   const [autoExtracting, setAutoExtracting] = useState(false);
+  const [extractProgress, setExtractProgress] = useState(null); // {batches_done, batches_total, sections_count}
   const [open, setOpen] = useState(editingDraft || initialSections.length === 0);
   const [dirty, setDirty] = useState(false);
   const [previewOpen, setPreviewOpen] = useState({});
@@ -118,6 +119,7 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
   const autoExtract = async () => {
     if (sections.length > 0 && !window.confirm("This will REPLACE all existing articles with AI-extracted ones from the uploaded PDF. Continue?")) return;
     setAutoExtracting(true);
+    setExtractProgress({ batches_done: 0, batches_total: 0, sections_count: 0 });
     let pollTimer = null;
     let elapsedMs = 0;
     const POLL_INTERVAL_MS = 6000;
@@ -134,6 +136,11 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
             const { data } = await api.get(
               `/admin/trust-cases/${caseId}/trust-sections/extract-status`
             );
+            setExtractProgress({
+              batches_done: data.batches_done || 0,
+              batches_total: data.batches_total || 0,
+              sections_count: data.sections_count || 0,
+            });
             if (data.status === "completed") {
               const n = data.sections_count || 0;
               toast.success(
@@ -147,10 +154,6 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
               toast.error(data.error || "AI extraction failed. Please try again.");
               resolve();
               return;
-            }
-            // Still pending — surface incremental progress if available.
-            if (data.batches_total > 0) {
-              // Silent — the button label already conveys "working"; extra toasts would spam.
             }
             elapsedMs += POLL_INTERVAL_MS;
             if (elapsedMs >= MAX_POLL_MS) {
@@ -172,6 +175,7 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
     } finally {
       if (pollTimer) clearTimeout(pollTimer);
       setAutoExtracting(false);
+      setExtractProgress(null);
     }
   };
 
@@ -325,6 +329,43 @@ export default function TrustSectionsEditor({ caseId, initialSections = [], onSa
                     <span className="text-xs text-[#94A3B8]">or</span>
                     <span className="text-xs">click <b>Add article</b> below to type manually</span>
                   </div>
+                  {autoExtracting && extractProgress && (
+                    <div className="mt-5 max-w-md mx-auto" data-testid="trust-sections-extract-progress">
+                      {(() => {
+                        const done = extractProgress.batches_done || 0;
+                        const total = extractProgress.batches_total || 0;
+                        const count = extractProgress.sections_count || 0;
+                        const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+                        const currentArticle = count > 0 ? count + 1 : (done * 3 + 1);
+                        return (
+                          <>
+                            <div className="flex items-baseline justify-between text-xs text-navy mb-2">
+                              <span className="font-semibold uppercase tracking-wide text-bronze" data-testid="trust-sections-progress-label">
+                                {total > 0
+                                  ? `Extracting article ${currentArticle} · batch ${done + (done < total ? 1 : 0)} of ${total}`
+                                  : "Reading PDF & splitting into articles…"}
+                              </span>
+                              <span className="text-[#64748B]" data-testid="trust-sections-progress-count">
+                                {count > 0 ? `${count} drafted` : ""}
+                              </span>
+                            </div>
+                            <div className="h-2 w-full rounded-full bg-sand-200/60 overflow-hidden border border-bronze/20">
+                              <div
+                                className={`h-full bg-bronze transition-all duration-700 ease-out ${total === 0 ? "animate-pulse" : ""}`}
+                                style={{ width: total > 0 ? `${pct}%` : "20%" }}
+                                data-testid="trust-sections-progress-bar"
+                              />
+                            </div>
+                            <p className="mt-2 text-[11px] text-[#94A3B8] italic">
+                              {total > 0
+                                ? `~${Math.max(1, Math.round(((total - done) * 25) / 60))} min remaining · Claude Sonnet 4.5`
+                                : "Splitting your trust into articles — this only takes a few seconds."}
+                            </p>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
                 </>
               ) : (
                 <>No articles yet. Click <b>Add article</b> below to start, or upload a trust draft PDF first for auto-extraction.</>
