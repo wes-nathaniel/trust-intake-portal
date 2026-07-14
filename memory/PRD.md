@@ -9,6 +9,19 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **3rd-party**: Resend (email), Emergent LLM key (AI Q&A — Claude Sonnet), Dropbox Sign (dormant), Square (invoices + webhooks — live production), Twilio SMS + **Twilio WhatsApp** (fan-out admin notifications, per-case outbound + inbound thread).
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
+## Changelog — 2026-07-14 (production RCA — clean exit fix)
+- 🔴 **ROOT CAUSE FOUND — production FastAPI process was cleanly exiting (exit 0) on every startup, causing infinite Kubernetes restart loops with zero request logs.** Culprit: an **`IndexOptionsConflict` (MongoDB error code 85)** on the `invites.expires_at` TTL index. When a previous deploy created it with different `expireAfterSeconds` options, every subsequent boot's `db.invites.create_index("expires_at", expireAfterSeconds=0)` raised inside `@app.on_event("startup")` — uvicorn treats an unhandled lifespan exception as a clean shutdown → exit 0 → K8s restart → infinite loop.
+- ✅ **Fix**: `@app.on_event("startup")` in `/app/backend/server.py:4810` fully rewritten. Every step now individually try/except-wrapped:
+  - Each `create_index` call in its own try/except loop (per-index isolation)
+  - `sweep_stuck_jobs_on_startup` wrapped
+  - Admin seed block wrapped, with nested try/except around `verify_password` for malformed bcrypt hashes AND `.get()` for missing `password_hash` field (both were also uncaught before)
+  - `init_storage()` wrapped
+  - `asyncio.create_task(_monthly_summary_scheduler())` wrapped
+  - Two bracketing INFO logs: "Lifespan startup begin" / "Lifespan startup complete"
+- **Reproduced locally**: forced the exact IndexOptionsConflict on `invites.expires_at` (expireAfterSeconds=999 vs code's 0), restarted backend. Old code: crash + clean exit. New code: WARNING log "Index create skipped on invites(expires_at): ...IndexOptionsConflict..." + startup completes + login responds in 0.5s.
+- **Also verified**: no `sys.exit`, `os._exit`, `SystemExit`, or `signal` handlers anywhere in the backend (Support's other suspects, cleared).
+- Tests: 5/5 new pytest cases in `/app/backend/tests/test_startup_guards.py` (index conflict, malformed bcrypt, missing password_hash, missing admin doc, clean startup). Iteration 16.
+
 ## Changelog — 2026-07-14 (unified explainer enrichment)
 - ✅ **Explainer enrichment now merges 9 educational sections into the SAME scroll flow** as the extracted article explanations — no second page, no separate scroll area, one continuous client experience.
 - New `/app/backend/trust_enrichment.py`: single Claude Sonnet 4.5 call after `trust_extractor.extract_trust_sections()` produces 9 sections in canonical order (Grantor Overview, Trustee Overview, Successor Trustee Overview, Incapacity Procedures, Death Procedures, Asset Protection Basics, Distribution Logic, Trust Fundamentals, and "What happens if…" scenarios). Every section personalized to the actual grantor/trustee/beneficiary names when present in the extracted articles.
