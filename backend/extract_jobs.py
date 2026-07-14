@@ -108,6 +108,25 @@ async def start_extract_job(
                     await _persist(db, case_id, job, update_case_fn)
                     return
 
+                # Enrichment pass — appends 9 educational sections after the
+                # article-by-article explainers so the client scrolls through
+                # a single continuous explainer (no second page). Failure here
+                # is non-fatal: enrichment falls back to a template so the
+                # client never sees a broken explainer.
+                try:
+                    import trust_enrichment
+                    edu = await trust_enrichment.enrich_sections(sections, filename)
+                    if edu:
+                        sections = sections + edu
+                        job["sections_count"] = len(sections)
+                        job["last_progress_at"] = _now_iso()
+                        await _persist(db, case_id, job, update_case_fn)
+                        logger.info(
+                            f"trust_extract_job {task_id}: appended {len(edu)} educational sections"
+                        )
+                except Exception as e:
+                    logger.warning(f"trust_extract_job {task_id}: enrichment skipped ({e})")
+
                 # Persist the sections onto the case (draft slot)
                 updates = {
                     "trust_sections_draft": sections,

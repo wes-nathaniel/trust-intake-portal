@@ -125,20 +125,34 @@ export default function TrustViewerTwoPanel({ sections = [], caseShortId, client
           {sections.map((s, n) => {
             const num = (s.article_number || "").trim();
             const tt = (s.article_title || "").trim();
-            const prefix = !num || num.toLowerCase() === "preamble" ? "" : `Article ${num} — `;
+            const isEdu = s.kind === "educational";
+            const prefix = !num || num.toLowerCase() === "preamble" || isEdu ? "" : `Article ${num} — `;
             const displayTitle = (prefix + tt).trim(" —") || s.title || "";
             const trustBody = s.article_text || s.trust_html || "";
             return (
               <div
                 key={s.id || n}
                 id={`igc-trust-${n}`}
-                className={`igc-trust-section${activeIdx === n ? " active" : ""}`}
+                className={`igc-trust-section${activeIdx === n ? " active" : ""}${isEdu ? " igc-edu" : ""}`}
                 onClick={() => clickTo(n)}
                 data-testid={`trust-section-${n}`}>
-                {displayTitle && (
-                  <h2 className="igc-trust-title"><span>{displayTitle}</span></h2>
+                {isEdu ? (
+                  <div className="igc-edu-card">
+                    <div className="igc-edu-eyebrow">Client Education</div>
+                    <h2 className="igc-edu-title">{tt}</h2>
+                    <p className="igc-edu-note">
+                      This section walks you through the plain-English explanation on the right —
+                      no matching legal text here, just guidance to help you understand your trust.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    {displayTitle && (
+                      <h2 className="igc-trust-title"><span>{displayTitle}</span></h2>
+                    )}
+                    <div className="igc-trust-body" dangerouslySetInnerHTML={{ __html: trustBody }} />
+                  </>
                 )}
-                <div className="igc-trust-body" dangerouslySetInnerHTML={{ __html: trustBody }} />
               </div>
             );
           })}
@@ -149,16 +163,21 @@ export default function TrustViewerTwoPanel({ sections = [], caseShortId, client
           {sections.map((s, n) => {
             const num = (s.article_number || "").trim();
             const tt = (s.article_title || "").trim();
-            const prefix = !num || num.toLowerCase() === "preamble" ? "" : `Article ${num} — `;
+            const isEdu = s.kind === "educational";
+            const prefix = !num || num.toLowerCase() === "preamble" || isEdu ? "" : `Article ${num} — `;
             const displayTitle = (prefix + tt).trim(" —") || s.title || "";
             const explainBody = s.explainer_text || s.explainer_html || "";
             return (
               <div
                 key={s.id || n}
                 id={`igc-explain-${n}`}
-                className={`igc-explain-section${activeIdx === n ? " active" : ""}`}
+                className={`igc-explain-section${activeIdx === n ? " active" : ""}${isEdu ? " igc-explain-edu" : ""}`}
                 data-testid={`explain-section-${n}`}>
-                {displayTitle && <div className="igc-explain-label">{displayTitle} — Plain English</div>}
+                {isEdu ? (
+                  <div className="igc-explain-label igc-explain-label-edu">📘 {tt} — Plain English</div>
+                ) : (
+                  displayTitle && <div className="igc-explain-label">{displayTitle} — Plain English</div>
+                )}
                 <div className="igc-explain-body" dangerouslySetInnerHTML={{ __html: explainBody }} />
               </div>
             );
@@ -201,6 +220,16 @@ const styles = `
 .igc-explain-body p { margin-bottom: 7px; }
 .igc-explain-body h3 { font-size: 14px; color: var(--igc-dark); margin: 0 0 9px 0; }
 .igc-explain-body .tip { margin-top: 9px; padding: 8px 12px; background: rgba(197,168,128,0.10); border-left: 3px solid var(--igc-gold); font-size: 12px; color: #555; font-style: italic; border-radius: 2px; }
+
+/* --- Educational overview sections (appended after articles) --- */
+.igc-trust-section.igc-edu { background: linear-gradient(180deg, #FBF6EA 0%, #F5EBD3 100%); border-left: 4px solid var(--igc-gold); }
+.igc-trust-section.igc-edu.active { background: linear-gradient(180deg, #F9EDCB 0%, #F2DFA6 100%); }
+.igc-edu-card { padding: 10px 4px; }
+.igc-edu-eyebrow { font-family: Arial, sans-serif; font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: #8B6F3A; font-weight: bold; margin-bottom: 6px; }
+.igc-edu-title { font-family: Georgia, serif; font-size: 16px; color: var(--igc-dark); margin: 0 0 8px 0; }
+.igc-edu-note { font-size: 11px; color: #8B6F3A; font-style: italic; margin: 0; line-height: 1.55; }
+.igc-explain-label-edu { background: linear-gradient(90deg, rgba(197,168,128,0.15) 0%, rgba(197,168,128,0.02) 100%); color: #7B3F00; padding: 6px 12px; border-left: 3px solid var(--igc-gold); border-bottom: none; margin-bottom: 8px; font-family: Arial, sans-serif; font-size: 11px; font-weight: bold; letter-spacing: 0.5px; text-transform: none; border-radius: 2px 6px 6px 2px; }
+
 @media (max-width: 768px) {
   .igc-panels { grid-template-columns: 1fr; }
   .igc-collabels { grid-template-columns: 1fr; }

@@ -1,0 +1,26 @@
+{
+  "summary": "Verified new trust_enrichment.py module + extract_jobs integration + TrustViewerTwoPanel educational-section rendering. Wrote /app/backend/tests/test_trust_enrichment.py with 5 tests: (a) no-LLM-key fallback returns 9 canonical sections, (b) LLM-exception fallback, (c) LLM-timeout fallback, (d) live LLM path with real EMERGENT_LLM_KEY produces substantive personalized content, (e) seeded case 8eb42bd3 E2E has exactly 6 article + 9 educational = 15 sections in order with canonical titles. All 5 PASS (108s incl. live LLM). Frontend Playwright verified: 15 sections rendered (data-testid trust-section-0..14), last 9 carry class 'igc-edu', 9 '.igc-edu-eyebrow' cards showing 'Client Education', 9 '.igc-explain-label-edu' right-panel labels with '📘 <Title> — Plain English', NO tabs / NO load-more / single continuous scroll flow, gold-tinted sand→cream gradient differentiates edu cards.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_trust_enrichment.py",
+    "/app/test_reports/pytest/trust_enrichment.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "trust_enrichment.py: fallback path is well-designed — always returns exactly 9 sections keyed by canonical SECTION_SPECS ordering even if LLM returns fewer/none. Good defensive coding.",
+    "trust_enrichment.py:163-166 catches asyncio.TimeoutError separately from generic Exception — good logging separation.",
+    "extract_jobs.py:116-128 correctly wraps enrichment in try/except so an LLM failure does NOT fail the whole extract job. Verified by the fallback tests which would have crashed the job otherwise.",
+    "Minor: `_parse_json_lenient` uses non-greedy `.*` inside `{.*}` — if Claude ever returns two JSON blocks this regex could pick up nested braces incorrectly. Not a bug in practice but worth a follow-up.",
+    "TrustViewerTwoPanel.jsx correctly renders left + right educational cards in the SAME map/render loop — no separate scroll container, confirmed by absence of tabs and single continuous DOM order."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_trust_enrichment.py"
+  ],
+  "success_rate": {"backend": "100% (5/5 trust_enrichment tests)", "frontend": "100% (all viewer assertions)"},
+  "test_credentials": "admin support@igcfirm.com / Wllorenzo03! (per /app/memory/test_credentials.md)",
+  "seed_data_creation": "None — reused already-published seeded case 8eb42bd3-5d43-43f2-b765-b98a144bd931.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Re-run: `export REACT_APP_BACKEND_URL=https://trust-intake-portal.preview.emergentagent.com EMERGENT_LLM_KEY=<key> && pytest /app/backend/tests/test_trust_enrichment.py -v` (~2 min incl. live Claude call). Note the auto_extract_bg regression file hit a transient Cloudflare 502 during client-register fixture; retry when infra is stable — it is unrelated to this feature. The E2E test in test_trust_enrichment.py::TestSeededCaseE2E depends on case 8eb42bd3 remaining in DB with its published 15 sections; do not delete."
+}
