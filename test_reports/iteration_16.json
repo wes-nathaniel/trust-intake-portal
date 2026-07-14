@@ -1,0 +1,34 @@
+{
+  "summary": "Independently reproduced and verified all 4 startup guard scenarios from the production RCA. Created /app/backend/tests/test_startup_guards.py (5 tests, all pass). Also re-ran watchdog+sweep and trust_enrichment regression suites (12 passed, 1 skipped due to no LLM key). The critical STARTUP GUARD 1 (IndexOptionsConflict on invites.expires_at TTL) is confirmed fixed: backend logs 'Lifespan startup begin' -> WARNING 'Index create skipped on invites(expires_at): ...IndexOptionsConflict...' -> 'Lifespan startup complete', supervisor stays RUNNING (not restart-looping), and admin login returns 200 in <1s.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "backend/tests/test_watchdog_and_sweep.py & test_trust_enrichment.py", "issue": "Both fail at import time if REACT_APP_BACKEND_URL env is not exported to the shell where pytest runs (they read os.environ directly at module scope). Workaround: `export REACT_APP_BACKEND_URL=...` before pytest, or move URL load into a fixture. Not a code regression from this iteration."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_startup_guards.py",
+    "/app/test_reports/pytest/startup_guards.xml",
+    "/app/test_reports/pytest/iter16_regression.xml"
+  ],
+  "action_items": [
+    "None blocking. Optional cleanup: load REACT_APP_BACKEND_URL from backend/.env or via a conftest fixture in test_watchdog_and_sweep.py and test_trust_enrichment.py so pytest works without explicit shell export.",
+    "test_auto_extract_bg.py run timed out during this iteration (>2min tool budget); prior iteration accepted Cloudflare 502 transients — not re-run here. Main agent can spot-check via manual auto-extract poll if needed."
+  ],
+  "critical_code_review_comments": [
+    "server.py L4810-4900 startup handler: fully guarded per-step (indexes loop with per-index try/except, sweep, admin seed with nested verify_password try/except, init_storage, scheduler). Matches Support's RCA prescription and iteration 16 request. Nothing to change.",
+    "Admin seed uses os.environ.get('ADMIN_EMAIL', 'admin@example.com') / ADMIN_PASSWORD with defaults. Fine for dev, but production should ensure ADMIN_EMAIL/ADMIN_PASSWORD are set explicitly to avoid seeding a default admin account.",
+    "verify_password refresh path correctly handles both malformed bcrypt (ValueError) AND missing password_hash field (empty string branch). Verified both paths at runtime."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_startup_guards.py (new)"
+  ],
+  "success_rate": {"backend": "100% (5/5 startup guards + 12/12 executed regression)", "frontend": "N/A (backend-only per request)"},
+  "test_credentials": "support@igcfirm.com / Wllorenzo03! — confirmed re-seeded on every startup via the guarded admin refresh path. Login latency after conflicting-index restart measured at ~0.5s.",
+  "seed_data_creation": "None. Test transiently mutates: (a) invites.expires_at TTL index (restored to expireAfterSeconds=0), (b) admin user's password_hash (auto-refreshed by handler), (c) admin doc deletion (auto re-seeded by handler). All state fully restored at test end.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Startup guard production fix is verified end-to-end. If iteration_17 needs to re-verify, just run: `export REACT_APP_BACKEND_URL=https://trust-intake-portal.preview.emergentagent.com && pytest /app/backend/tests/test_startup_guards.py -v`. Full suite of prior regression tests must be run with REACT_APP_BACKEND_URL exported.",
+  "rca of the issue": "Confirms Support's RCA: an IndexOptionsConflict on invites.expires_at TTL (expireAfterSeconds mismatch across deploys) raised inside @app.on_event('startup') caused uvicorn to shut down with exit 0. Fix wraps each create_index call, sweep, admin seed (with nested verify_password guard), init_storage, and scheduler kickoff in independent try/except blocks, logging warnings and letting startup complete. Reproduced locally by deliberately creating a TTL index with expireAfterSeconds=999 — backend booted cleanly with the expected warning, and admin login succeeded in <1s. Fix verified working."
+}

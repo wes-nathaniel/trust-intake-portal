@@ -4809,51 +4809,95 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
-    # Indexes
-    await db.users.create_index("email", unique=True)
-    await db.users.create_index("id", unique=True)
-    await db.trust_cases.create_index("id", unique=True)
-    await db.trust_cases.create_index("client_id")
-    await db.messages.create_index([("case_id", 1), ("created_at", 1)])
-    await db.login_attempts.create_index("identifier")
-    await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=3600)
-    await db.invites.create_index("token", unique=True)
-    await db.invites.create_index("expires_at", expireAfterSeconds=0)
-    await db.questions.create_index([("case_id", 1), ("created_at", 1)])
-    await db.questions.create_index("status")
-    await db.monthly_summaries.create_index("period", unique=True)
+    """FastAPI lifespan startup. EVERY step is individually guarded because
+    an unhandled exception here causes uvicorn to shut down cleanly (exit 0),
+    which manifests as constant pod restarts on Kubernetes with no request
+    logs. Individual failures are logged and the app keeps running so at
+    least the API surface stays up while an admin investigates."""
+    logger.info("Lifespan startup begin")
 
-    # Sweep any trust_extract_jobs left in `pending` from a prior worker so
-    # their runners (which no longer exist) don't leave the UI polling forever.
+    # --- Indexes --- MongoDB raises OperationFailure if a previously-created
+    # index has different options (VERY common with TTL indexes across deploys).
+    # Wrap each one individually so a single conflict cannot brick the app.
+    def _idx(coll, spec, **kwargs):
+        return coll, spec, kwargs
+
+    _index_defs = [
+        _idx(db.users, "email", unique=True),
+        _idx(db.users, "id", unique=True),
+        _idx(db.trust_cases, "id", unique=True),
+        _idx(db.trust_cases, "client_id"),
+        _idx(db.messages, [("case_id", 1), ("created_at", 1)]),
+        _idx(db.login_attempts, "identifier"),
+        _idx(db.password_reset_tokens, "expires_at", expireAfterSeconds=3600),
+        _idx(db.invites, "token", unique=True),
+        _idx(db.invites, "expires_at", expireAfterSeconds=0),
+        _idx(db.questions, [("case_id", 1), ("created_at", 1)]),
+        _idx(db.questions, "status"),
+        _idx(db.monthly_summaries, "period", unique=True),
+    ]
+    for coll, spec, kwargs in _index_defs:
+        try:
+            await coll.create_index(spec, **kwargs)
+        except Exception as e:
+            logger.warning(f"Index create skipped on {coll.name}({spec}): {e}")
+
+    # --- Stuck-job sweep ---
     try:
         await extract_jobs.sweep_stuck_jobs_on_startup(db, update_case)
     except Exception as e:
         logger.warning(f"extract_jobs sweep on startup failed: {e}")
 
-    # Seed admin
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
-    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
-    existing = await db.users.find_one({"email": admin_email})
-    if existing is None:
-        await db.users.insert_one({
-            "id": new_id(),
-            "email": admin_email,
-            "name": "Administrator",
-            "password_hash": hash_password(admin_password),
-            "role": "admin",
-            "created_at": now_iso(),
-        })
-        logger.info(f"Admin seeded: {admin_email}")
-    elif not verify_password(admin_password, existing["password_hash"]):
-        await db.users.update_one({"email": admin_email},
-                                  {"$set": {"password_hash": hash_password(admin_password), "role": "admin"}})
-        logger.info(f"Admin password refreshed: {admin_email}")
+    # --- Seed admin --- bcrypt raises ValueError on malformed hashes, and the
+    # password_hash key may be missing on legacy admin docs. Both must be caught.
+    try:
+        admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
+        admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+        existing = await db.users.find_one({"email": admin_email})
+        if existing is None:
+            await db.users.insert_one({
+                "id": new_id(),
+                "email": admin_email,
+                "name": "Administrator",
+                "password_hash": hash_password(admin_password),
+                "role": "admin",
+                "created_at": now_iso(),
+            })
+            logger.info(f"Admin seeded: {admin_email}")
+        else:
+            stored_hash = existing.get("password_hash") or ""
+            needs_refresh = False
+            if not stored_hash:
+                needs_refresh = True
+            else:
+                try:
+                    needs_refresh = not verify_password(admin_password, stored_hash)
+                except Exception as ve:
+                    # Malformed bcrypt hash on prod admin doc — refresh it.
+                    logger.warning(f"Admin password_hash verify failed ({ve}); refreshing")
+                    needs_refresh = True
+            if needs_refresh:
+                await db.users.update_one(
+                    {"email": admin_email},
+                    {"$set": {"password_hash": hash_password(admin_password), "role": "admin"}},
+                )
+                logger.info(f"Admin password refreshed: {admin_email}")
+    except Exception as e:
+        logger.error(f"Admin seed step failed (non-fatal): {e}")
 
-    # Init storage
-    init_storage()
+    # --- Init object storage (already defensively wrapped internally) ---
+    try:
+        init_storage()
+    except Exception as e:
+        logger.error(f"init_storage failed (non-fatal): {e}")
 
-    # Kick off the monthly-summary scheduler as a background task
-    asyncio.create_task(_monthly_summary_scheduler())
+    # --- Background schedulers ---
+    try:
+        asyncio.create_task(_monthly_summary_scheduler())
+    except Exception as e:
+        logger.error(f"Monthly summary scheduler failed to start: {e}")
+
+    logger.info("Lifespan startup complete")
 
 
 # ---------- MONTHLY SUMMARY EMAIL (fires on the 1st of every month) ----------
