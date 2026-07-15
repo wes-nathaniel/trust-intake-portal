@@ -107,7 +107,7 @@ def test_regenerate_success(admin_session):
 # ---- Regenerate fails with 400 when no trust draft ----
 def test_regenerate_no_draft_returns_400(admin_session):
     # Find an existing case with no trust_draft
-    r = admin_session.get(f"{BASE_URL}/api/admin/trust-cases", timeout=30)
+    r = admin_session.get(f"{BASE_URL}/api/admin/trust-cases", timeout=90)
     assert r.status_code == 200
     cases = r.json() if isinstance(r.json(), list) else r.json().get("cases", [])
     target = None

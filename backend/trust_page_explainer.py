@@ -65,11 +65,54 @@ SYSTEM_PROMPT = (
     "so they can read their trust and understand every page. You are NOT giving "
     "legal advice — you are simply describing what THIS page of THEIR trust says, "
     "using their family's names, exact share percentages, real asset descriptions, "
-    "and everyday words. Write so a curious 12-year-old could follow it. NEVER use "
-    "'settlor', 'corpus', 'per stirpes', 'in terrorem', 'spendthrift', 'hereinafter', "
-    "'aforementioned', 'fiduciary' — define any needed legal term inline in plain "
-    "words. Warm, first-name direct address. Return VALID JSON only, no code fences."
+    "and everyday words. Write so a curious 12-year-old could follow it.\n\n"
+    "ABSOLUTELY FORBIDDEN WORDS — never write, quote, mention, or reference these "
+    "even to define them: 'settlor', 'corpus', 'per stirpes', 'in terrorem', "
+    "'spendthrift', 'hereinafter', 'aforementioned', 'fiduciary'. Do NOT put them "
+    "in quotes. Do NOT say 'the term X means…'. Describe the underlying concept "
+    "with everyday words only. Approved plain-English substitutes: "
+    "settlor→'the person creating the trust' / use the client's first name; "
+    "corpus→'the trust's property'; per stirpes→'by family branch — if a child "
+    "isn't living, their share passes down to their kids'; in terrorem→'a "
+    "no-contest rule that says anyone who challenges the trust loses their share'; "
+    "spendthrift→'protects the money so creditors can't take it'; hereinafter/"
+    "aforementioned→omit; fiduciary→'the person in charge (like a manager)'.\n\n"
+    "Warm, first-name direct address. Return VALID JSON only, no code fences."
 )
+
+# Post-generation safety net — even with strict prompting, the LLM will
+# occasionally quote a banned term verbatim from the source PDF. We replace
+# any leak with a plain-English alias before the client ever sees it.
+_JARGON_REPLACEMENTS = [
+    (re.compile(r"\bin\s+terrorem(?:\s+clause)?\b", re.IGNORECASE), "no-contest rule"),
+    (re.compile(r"\bper\s+stirpes\b", re.IGNORECASE), "by family branch"),
+    (re.compile(r"\bper\s+capita\b", re.IGNORECASE), "share and share alike"),
+    (re.compile(r"\bspendthrift(?:\s+clause)?\b", re.IGNORECASE), "creditor-protection safeguard"),
+    (re.compile(r"\bsettlor\b", re.IGNORECASE), "the person creating this trust"),
+    (re.compile(r"\bcorpus\b", re.IGNORECASE), "the trust's property"),
+    (re.compile(r"\bfiduciary\b", re.IGNORECASE), "trusted manager"),
+    (re.compile(r"\bhereinafter\b", re.IGNORECASE), ""),
+    (re.compile(r"\baforementioned\b", re.IGNORECASE), "above"),
+]
+
+
+def _scrub_jargon(text: str) -> str:
+    """Replace any banned legal jargon with plain-English aliases. Also
+    collapses the common leak pattern of quoting the term (e.g., '"per stirpes,"
+    which means…') so the client never sees the original phrase."""
+    if not text:
+        return text
+    out = text
+    # Strip surrounding quotes when the term appears in quotes (e.g., "per stirpes")
+    for pat, repl in _JARGON_REPLACEMENTS:
+        # Handle both quoted ("per stirpes") and unquoted forms
+        quoted = re.compile(r'["\u201c\u201d\u2018\u2019]\s*' + pat.pattern + r'\s*["\u201c\u201d\u2018\u2019]', re.IGNORECASE)
+        out = quoted.sub(repl, out)
+        out = pat.sub(repl, out)
+    # Collapse doubled spaces and stray commas left by removed words
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"\s+([,.;:])", r"\1", out)
+    return out
 
 
 def _fmt_people(rows) -> str:
@@ -173,6 +216,8 @@ async def _run_batch(api_key: str, ctx_brief: str, batch: List[Dict]) -> List[Di
 
 TASK: Write ONE plain-English walk-through per page for the pages below. Reference the client by first name, cite exact beneficiary shares by name where relevant, describe assets in plain words, and NEVER use legal jargon. If a page is blank, contains only headers/footers/signature blocks, or is a notary certificate, say so briefly and warmly (2-3 sentences).
 
+CRITICAL: Do NOT write, quote, or mention any of these Latin/legal terms — not even to define them: settlor, corpus, per stirpes, per capita, in terrorem, spendthrift, hereinafter, aforementioned, fiduciary. If the source PDF uses one of these words, describe the concept without ever naming it. Example: instead of 'the term "per stirpes" means by branch', write 'if a beneficiary passes away before receiving their share, that share flows down to their own children'. Instead of 'an "in terrorem" clause', write 'a no-contest rule that says anyone who tries to fight the trust loses their share'.
+
 Return ONLY this JSON (no markdown fences):
 {{"pages":[{{"page":1,"text":"<p>...</p>"}}, ...]}}
 
@@ -212,6 +257,7 @@ PAGES:
         txt = str(p.get("text") or "").strip()
         if not txt:
             continue
+        txt = _scrub_jargon(txt)
         out.append({"page": n, "text": txt})
     return out
 

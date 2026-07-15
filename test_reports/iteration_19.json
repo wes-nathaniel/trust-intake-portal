@@ -1,0 +1,35 @@
+{
+  "summary": "Re-verified the page-by-page trust explanation feature after the banned-jargon fix from iteration_18. All 7 pytest cases in /app/backend/tests/test_page_explanations.py now PASS (previously 6/7). The critical test test_get_page_explanations_schema_and_personalization now passes — 0 banned words across all 6 explanation pages for the seeded Michael Thompson case. Manual curl verification also confirms: status=completed, pages_total=6, explanations=6, banned hits=[], and every page mentions Michael/Sarah/James. Regenerate endpoint returns 200 with task_id. Regression on /trust-draft-explanation and /extract-status still passes. Server alive.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_page_explanations.py",
+    "/app/test_reports/pytest/iter19_page_expl.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "trust_page_explainer._scrub_jargon is a clean, minimal post-generation safety net — regex list is comprehensive and covers both quoted and unquoted forms. Good defense-in-depth alongside the strengthened SYSTEM_PROMPT.",
+    "Consider adding a metric/log line when _scrub_jargon actually mutates output, so drift in the LLM's compliance can be observed over time.",
+    "test_regenerate_no_draft_returns_400 needed timeout bumped from 30s to 90s for /api/admin/trust-cases listing — the endpoint appears slow for large case lists; may warrant pagination or an admin index."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_page_explanations.py (bumped listing timeout 30→90s to reduce flakiness)"
+  ],
+  "success_rate": {
+    "backend": "100% (7/7 pytest)",
+    "frontend": "not tested (backend-only per review_request)"
+  },
+  "test_credentials": "support@igcfirm.com / Wllorenzo03! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None. Used pre-seeded Michael Thompson case 8eb42bd3-5d43-43f2-b765-b98a144bd931.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Banned-jargon issue from iteration_18 is fully resolved. Both the strengthened SYSTEM_PROMPT and the _scrub_jargon() regex post-processor work as designed. 7/7 tests pass. If re-running: pytest /app/backend/tests/test_page_explanations.py -v — takes ~50s if the seeded case already has completed explanations, longer if regenerated first.",
+  "rca_of_the_issue": "Fix from iteration_18 has been verified. Root cause was the LLM quoting banned Latin terms while trying to define them in plain English. Fix layered two defenses: (1) SYSTEM_PROMPT and user_prompt both now explicitly forbid even QUOTING the banned words and provide approved plain-English substitutes; (2) _scrub_jargon() runs a regex sweep on every LLM output before persistence, replacing any leaked term (quoted or unquoted) with a plain-English alias. Verified 0 leaks across 6 pages of freshly generated explanations."
+}
