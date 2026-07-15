@@ -4950,7 +4950,38 @@ async def startup():
         logger.warning(f"extract_jobs sweep on startup failed: {e}")
 
     try:
-        await page_explanation_jobs.sweep_stuck_jobs_on_startup(db, update_case)
+        async def _resume_page_job(case_id: str, resume_from_batch: int, priors: list) -> bool:
+            """Called by page_explanation_jobs.sweep_stuck_jobs_on_startup for
+            each pending job. Reloads the source PDF from object storage and
+            re-fires the runner with the batches_done offset so the work
+            already saved on the case is not redone."""
+            try:
+                case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+                if not case:
+                    return False
+                draft = case.get("trust_draft") or {}
+                path = draft.get("storage_path")
+                if not path:
+                    return False
+                data, _ct = get_object(path)
+                await page_explanation_jobs.start_page_explain_job(
+                    case_id=case_id,
+                    pdf_bytes=data,
+                    case_context=_build_case_context(case),
+                    admin_id=(job_admin := (case.get("trust_page_job") or {}).get("admin_id") or "system"),
+                    db=db,
+                    update_case_fn=update_case,
+                    resume_from_batch=resume_from_batch,
+                    prior_explanations=priors,
+                )
+                return True
+            except Exception as e:
+                logger.warning(f"resume page-explain for {case_id} failed: {e}")
+                return False
+
+        await page_explanation_jobs.sweep_stuck_jobs_on_startup(
+            db, update_case, resume_fn=_resume_page_job
+        )
     except Exception as e:
         logger.warning(f"page_explanation_jobs sweep on startup failed: {e}")
 

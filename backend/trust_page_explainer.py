@@ -263,10 +263,21 @@ PAGES:
 
 
 async def explain_pages(pages: List[str], case_context: dict,
-                        progress_cb: Optional[Callable] = None) -> List[Dict]:
+                        progress_cb: Optional[Callable] = None,
+                        start_batch: int = 0,
+                        prior: Optional[List[Dict]] = None) -> List[Dict]:
     """Generate a plain-English explanation for each page in `pages` (list of
     strings, index 0 = page 1). Returns [{page:int, text:str}] in ascending
-    page order. Returns [] on missing API key or complete failure."""
+    page order.
+
+    Resumability: `start_batch` skips the first N batches (already done in a
+    prior run), and `prior` seeds the aggregated list with any explanations
+    already saved on the case. Progress callback signature is
+        progress_cb(done_batches:int, total_batches:int, new_rows:list[dict])
+    where `new_rows` is JUST the rows produced by the batch that just
+    finished, so the caller can incrementally persist them.
+
+    Returns [] on missing API key or complete failure."""
     api_key = os.environ.get("EMERGENT_LLM_KEY", "").strip()
     if not api_key or not pages:
         return []
@@ -282,15 +293,38 @@ async def explain_pages(pages: List[str], case_context: dict,
         })
 
     batches = [entries[i:i + PAGES_PER_BATCH] for i in range(0, len(entries), PAGES_PER_BATCH)]
-    logger.info(f"trust_page_explainer: {len(entries)} page(s) → {len(batches)} batch(es) of up to {PAGES_PER_BATCH}")
+    logger.info(
+        f"trust_page_explainer: {len(entries)} page(s) → {len(batches)} batch(es) "
+        f"of up to {PAGES_PER_BATCH} (start_batch={start_batch})"
+    )
 
-    aggregated: List[Dict] = []
+    aggregated: List[Dict] = list(prior or [])
+    seen_pages = {r.get("page") for r in aggregated if isinstance(r, dict)}
+    start_batch = max(0, int(start_batch or 0))
+
     for i, batch in enumerate(batches, start=1):
+        if i <= start_batch:
+            # Already completed in a prior run — skip the LLM call.
+            if progress_cb:
+                try:
+                    await progress_cb(i, len(batches), [])
+                except Exception as e:
+                    logger.warning(f"progress_cb (skip) failed: {e}")
+            continue
         result = await _run_batch(api_key, ctx_brief, batch)
-        aggregated.extend(result)
+        # Filter out any duplicates we already have (from prior)
+        fresh = [r for r in result if r.get("page") not in seen_pages]
+        for r in fresh:
+            seen_pages.add(r.get("page"))
+        aggregated.extend(fresh)
+        logger.info(
+            f"trust_page_explainer batch {i}/{len(batches)}: input_pages="
+            f"{[b['page'] for b in batch]} llm_returned="
+            f"{[r.get('page') for r in result]} fresh={len(fresh)}"
+        )
         if progress_cb:
             try:
-                await progress_cb(i, len(batches), len(aggregated))
+                await progress_cb(i, len(batches), fresh)
             except Exception as e:
                 logger.warning(f"progress_cb failed: {e}")
 

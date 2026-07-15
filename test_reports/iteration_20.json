@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 20 verification of resumable page-explain background job + admin-only Regenerate button on the client trust preview + supervisord.conf. All backend and frontend checks pass. The RESUME branch (not the failed-fallback branch) fired during the mid-run restart test.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_page_resume.py",
+    "/app/backend/tests/test_page_explanations.py",
+    "/app/test_reports/pytest/iter20_resume.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "page_explanation_jobs.start_page_explain_job correctly guards against duplicate work via _jobs status check, but note _jobs is per-process — with `--workers 2` in the new supervisord.conf two workers could each accept a regenerate call and race on the same case. sweep_stuck_jobs_on_startup only runs on boot, so mid-run duplication between workers is possible. Consider adding a MongoDB-level lock (unique index on {case_id, status:'pending'}) or route the regenerate endpoint through a single worker via sticky session.",
+    "server.py _resume_page_job closure uses a walrus assignment inside a kwarg (`admin_id=(job_admin := (case.get('trust_page_job') or {}).get('admin_id') or 'system')`) — the walrus var `job_admin` is never referenced afterwards, so it can be simplified to a plain expression. Minor readability nit.",
+    "Client-facing GET /trust-cases/{id}/trust-page-explanations exposes the raw `error` field from the job (e.g., 'Server restarted mid-run…'). That's helpful for admins but potentially confusing wording for end clients — consider suppressing/rephrasing for role=='client'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_page_resume.py (new file — 3 pytest cases)"
+  ],
+  "success_rate": {
+    "backend": "100% (3/3 new resumability tests + all 7 iter19 tests still pass)",
+    "frontend": "100% (admin sees + can trigger Regenerate; client role does NOT see the button; panel + SxS layout intact for both roles)"
+  },
+  "test_credentials": "Admin: support@igcfirm.com / Wllorenzo03!. Client: client.test@example.com / Client12345! (already registered from prior iterations).",
+  "seed_data_creation": "Temporarily updated case 8eb42bd3-...'s client_id to the client.test user id for the client-role UI check, then RESTORED to the original 99808647-9c00-44ef-81ab-c9415ecdae0a. No lasting data change.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend uses REACT_APP_BACKEND_URL from /app/frontend/.env — set it in env before pytest (`export REACT_APP_BACKEND_URL=...`). The resume-mid-run test uses `sudo supervisorctl restart backend` and must wait ~10-12s (batch time is ~15s per batch of 2 pages). Empirically the run finishes in ~30s not 45s, so restart earlier than 15s if you want to catch mid-run.",
+  "rca_of_the_issue": "N/A — no bug. Verification-only iteration.",
+  "evidence": {
+    "resume_branch_fired": "backend.err.log line: '2026-07-15 19:30:23,394 - INFO - page-explain sweep: RESUMED case 8eb42bd3-... from batch 3 (6 pages already saved)' and 'trust_page_explainer: 6 page(s) → 3 batch(es) of up to 2 (start_batch=3)'",
+    "partial_persistence": "test_partial_persistence_during_run observed 0 < len(explanations) < pages_total while status=='pending'",
+    "banned_jargon": "0 hits from list [settlor, per stirpes, corpus, in terrorem, spendthrift, hereinafter, aforementioned, fiduciary] across all 6 final page explanations",
+    "admin_regen_ui": "Screenshots admin_preview.png and admin_regenerating.png confirm REGENERATE → RUNNING… (disabled) transition and page-job-progress indicator visible",
+    "client_hidden": "With client.test@example.com logged in on /portal/trust-preview/{caseId}: panel renders, personalized-badge visible, explanation-page-1 rendered, side-by-side layout intact, and [data-testid=regenerate-page-explanations-btn] is NOT in the DOM",
+    "supervisord_conf": "/app/backend/supervisord.conf present with `uvicorn server:app --host 0.0.0.0 --port 8001 --workers 2` (no --reload)"
+  }
+}

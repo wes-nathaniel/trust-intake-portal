@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import api from "@/lib/api";
-import { Sparkles, AlertCircle, Loader2 } from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
+import { Sparkles, AlertCircle, Loader2, RefreshCw } from "lucide-react";
 
 /**
  * Right-hand panel on the client trust preview page. Fetches the per-page
@@ -10,43 +11,67 @@ import { Sparkles, AlertCircle, Loader2 } from "lucide-react";
  *
  * Polls every 6s while the background job is still running so pages appear
  * as soon as the LLM finishes each batch.
+ *
+ * Admin-only: shows a "Regenerate" button so an admin viewing the client
+ * preview can retry without re-uploading the PDF (e.g., if intake data was
+ * updated after the initial upload).
  */
 export default function TrustDraftExplanationPanel({ caseId, clientName, currentPage, totalPages }) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [state, setState] = useState({ loading: true, byPage: {}, status: "pending", pagesDone: 0, pagesTotal: 0, error: null });
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenError, setRegenError] = useState(null);
   const pollTimer = useRef(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const { data } = await api.get(`/trust-cases/${caseId}/trust-page-explanations`);
-        if (cancelled) return;
-        const map = {};
-        (data.explanations || []).forEach((e) => { map[e.page] = e.text; });
-        setState({
-          loading: false,
-          byPage: map,
-          status: data.status || "idle",
-          pagesDone: data.pages_done || 0,
-          pagesTotal: data.pages_total || 0,
-          error: data.error || null,
-        });
-        // Keep polling while the job is still running
-        if (data.status === "pending") {
-          pollTimer.current = setTimeout(load, 6000);
-        }
-      } catch (e) {
-        if (cancelled) return;
-        const detail = e.response?.data?.detail || "Unable to load your plain-English explanation.";
-        setState((s) => ({ ...s, loading: false, error: detail, status: "error" }));
+  const load = useCallback(async () => {
+    try {
+      const { data } = await api.get(`/trust-cases/${caseId}/trust-page-explanations`);
+      const map = {};
+      (data.explanations || []).forEach((e) => { map[e.page] = e.text; });
+      setState({
+        loading: false,
+        byPage: map,
+        status: data.status || "idle",
+        pagesDone: data.pages_done || 0,
+        pagesTotal: data.pages_total || 0,
+        error: data.error || null,
+      });
+      // Keep polling while the job is still running
+      if (data.status === "pending") {
+        pollTimer.current = setTimeout(load, 6000);
       }
-    };
+    } catch (e) {
+      const detail = e.response?.data?.detail || "Unable to load your plain-English explanation.";
+      setState((s) => ({ ...s, loading: false, error: detail, status: "error" }));
+    }
+  }, [caseId]);
+
+  useEffect(() => {
     load();
     return () => {
-      cancelled = true;
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
-  }, [caseId]);
+  }, [load]);
+
+  const handleRegenerate = async () => {
+    if (regenerating) return;
+    setRegenerating(true);
+    setRegenError(null);
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    try {
+      await api.post(`/admin/trust-cases/${caseId}/trust-page-explanations/regenerate`);
+      // Immediately reflect pending state and start polling
+      setState((s) => ({ ...s, status: "pending", error: null }));
+      // Small delay so the backend has persisted the fresh job doc
+      setTimeout(load, 800);
+    } catch (e) {
+      const detail = e.response?.data?.detail || "Could not start regeneration. Please try again.";
+      setRegenError(detail);
+    } finally {
+      setRegenerating(false);
+    }
+  };
 
   const first = (clientName || "").split(" ")[0] || "there";
   const html = state.byPage[currentPage];
@@ -58,14 +83,39 @@ export default function TrustDraftExplanationPanel({ caseId, clientName, current
       style={{ minHeight: 500 }}
       data-testid="trust-draft-explanation-panel"
     >
-      <div className="flex items-center justify-between px-4 py-3 bg-sand-200/60 border-b border-[#E2E0DA]">
+      <div className="flex items-center justify-between px-4 py-3 bg-sand-200/60 border-b border-[#E2E0DA] gap-2">
         <div className="text-xs tracking-wide uppercase text-bronze font-semibold flex items-center gap-2">
           <Sparkles className="h-3.5 w-3.5" /> Page {currentPage || "—"} — in plain English
         </div>
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-navy/70 bg-white px-2 py-0.5 rounded-full border border-[#E2E0DA]" data-testid="personalized-badge">
-          Personalized for {first}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-navy/70 bg-white px-2 py-0.5 rounded-full border border-[#E2E0DA]" data-testid="personalized-badge">
+            Personalized for {first}
+          </span>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={handleRegenerate}
+              disabled={regenerating || jobRunning}
+              data-testid="regenerate-page-explanations-btn"
+              className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-white bg-bronze hover:bg-bronze/90 disabled:opacity-50 disabled:cursor-not-allowed px-2.5 py-1 rounded-full transition-colors"
+              title="Admin: regenerate plain-English notes using the latest intake data"
+            >
+              {regenerating ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3 w-3" />
+              )}
+              {jobRunning ? "Running…" : regenerating ? "Starting…" : "Regenerate"}
+            </button>
+          )}
+        </div>
       </div>
+
+      {regenError && (
+        <div className="px-4 py-2 bg-red-50 border-b border-red-200 text-[11px] text-red-700 flex items-center gap-2" data-testid="regenerate-error">
+          <AlertCircle className="h-3 w-3" /> {regenError}
+        </div>
+      )}
 
       {jobRunning && (
         <div className="px-4 py-2 bg-bronze/10 border-b border-bronze/30 text-[11px] text-bronze font-semibold flex items-center gap-2" data-testid="page-job-progress">
