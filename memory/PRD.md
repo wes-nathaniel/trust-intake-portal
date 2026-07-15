@@ -9,6 +9,22 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **3rd-party**: Resend (email), Emergent LLM key (AI Q&A — Claude Sonnet), Dropbox Sign (dormant), Square (invoices + webhooks — live production), Twilio SMS + **Twilio WhatsApp** (fan-out admin notifications, per-case outbound + inbound thread).
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
+## Changelog — 2026-07-15 (personalized client trust preview)
+- ✅ **FIX #1** — Client trust preview page (`/portal/trust-preview/{case_id}`) now renders **watermarked PDF on the LEFT and the personalized AI plain-English explanation on the RIGHT** as a single two-column grid (`data-testid="trust-preview-side-by-side"`) when the case has a trust_draft but no manually-created trust_sections. Legacy `TrustViewerTwoPanel` path preserved for cases that already have structured sections.
+- ✅ **FIX #2** — Deeply personalized AI explanation. `doc_explainer.generate_explanation(...)` now accepts optional `case_context` and, when called from the "Import Trust Draft PDF" flow (or the regenerate flow on a trust-draft-source doc), emits 7 new personalized fields alongside the legacy 5:
+  - `greeting` — Hi <first-name> opener
+  - `grantor_intro` — powers, incapacity, death
+  - `trustee_roles` — trustee + successor by name
+  - `beneficiaries` — each by name, relationship, share%
+  - `assets_plain` — assets described in plain English (addresses, institutions, account tails)
+  - `trust_type_meaning` — what THIS trust type means for THIS grantor
+  - `next_steps` — addressed by first name
+- New `PERSONALIZED_SYSTEM_PROMPT` bans corporate/legalese jargon (settlor, corpus, per stirpes, in terrorem, spendthrift, hereinafter…) and defines legal terms inline in everyday words.
+- New helper `_build_case_context(case)` in `server.py:2841` gathers client_name, trust_type, grantors, trustees, successors, beneficiaries, assets.
+- New client-facing endpoint `GET /api/trust-cases/{case_id}/trust-draft-explanation` returns the ai_explanation from the source='trust_draft' admin_document; 404 with human-friendly detail when not yet generated.
+- New `TrustDraftExplanationPanel.jsx` component fetches + renders the personalized panel with 7 sections (with graceful empty-state amber notice).
+- Tests: 8/8 pytest in `/app/backend/tests/test_trust_draft_personalization.py` + full Playwright frontend verification. Iteration 17.
+
 ## Changelog — 2026-07-14 (production RCA — clean exit fix)
 - 🔴 **ROOT CAUSE FOUND — production FastAPI process was cleanly exiting (exit 0) on every startup, causing infinite Kubernetes restart loops with zero request logs.** Culprit: an **`IndexOptionsConflict` (MongoDB error code 85)** on the `invites.expires_at` TTL index. When a previous deploy created it with different `expireAfterSeconds` options, every subsequent boot's `db.invites.create_index("expires_at", expireAfterSeconds=0)` raised inside `@app.on_event("startup")` — uvicorn treats an unhandled lifespan exception as a clean shutdown → exit 0 → K8s restart → infinite loop.
 - ✅ **Fix**: `@app.on_event("startup")` in `/app/backend/server.py:4810` fully rewritten. Every step now individually try/except-wrapped:

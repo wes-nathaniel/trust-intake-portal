@@ -228,6 +228,7 @@ async def generate_explanation(label: str, filename: str, text: str,
         }
 
     return {
+        "personalized":  False,
         "what_is":       str(parsed.get("what_is") or "").strip(),
         "what_it_does":  str(parsed.get("what_it_does") or "").strip(),
         "why_it_matters": str(parsed.get("why_it_matters") or "").strip(),
