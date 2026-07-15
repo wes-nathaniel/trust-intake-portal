@@ -1,0 +1,36 @@
+{
+  "summary": "Iteration 21 backend testing: verified NAME rule (client_first_name from intake grantor) and IRON GATE CONSULTING rule (no outside legal counsel suggestions) both at unit + end-to-end levels. All new unit tests, full regression suite, and live regenerate against seeded Michael Thompson case pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_page_explainer_scrubs.py",
+    "/app/backend/tests/test_iteration21_e2e.py",
+    "/app/test_reports/pytest/iter21_scrubs.xml",
+    "/app/test_reports/pytest/iter21_regression.xml",
+    "/app/test_reports/pytest/iter21_e2e.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 5216 lines — well over the 700-line guideline; should be split into feature modules (trust cases, admin, auth, page-explanation jobs) for maintainability.",
+    "_ATTORNEY_SENTENCE_PATTERNS regex in trust_page_explainer.py is dense and hard to maintain; consider decomposing into named sub-patterns with comments/tests per branch.",
+    "Existing test files hard-fail at import when REACT_APP_BACKEND_URL is unset (os.environ['..']); a graceful pytest.skip would be friendlier for local dev."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_page_explainer_scrubs.py (new)",
+    "/app/backend/tests/test_iteration21_e2e.py (new)"
+  ],
+  "success_rate": {"backend": "100% (30/30)", "frontend": "n/a (skipped per request)"},
+  "test_credentials": "support@igcfirm.com / Wllorenzo03! (from review request)",
+  "seed_data_creation": "None — reused existing seeded Michael Thompson case 8eb42bd3-5d43-43f2-b765-b98a144bd931.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 21 confirmed. New unit tests in test_page_explainer_scrubs.py cover _scrub_attorney_advice (7 sentence variants incl. HTML tag preservation + single-line dedup on multi-match) and _build_case_context.client_first_name derivation (grantor wins, fallback to client_name first token, whitespace-only grantor first name falls back). test_iteration21_e2e.py hits POST /api/admin/trust-cases/{id}/trust-page-explanations/regenerate then polls to completion and asserts every page mentions 'Michael', 0 attorney phrases, 0 banned jargon, and >=1 page contains the exact IRON_GATE_ADVISOR_LINE. Regression suite (test_page_explanations 7, test_page_resume 3, test_trust_draft_personalization 8) all pass — prompt rewrite did not break prior behavior. All test runs need REACT_APP_BACKEND_URL exported from the shell.",
+  "rca of the issue": "N/A — validation-only run confirming implementation."
+}

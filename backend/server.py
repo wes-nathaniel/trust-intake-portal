@@ -2842,15 +2842,29 @@ def _find_admin_doc(case: dict, doc_id: str) -> Optional[dict]:
 def _build_case_context(case: dict) -> dict:
     """Assemble a dict of everything Claude needs to personalize the client's
     plain-English trust explanation: full names, roles, share percentages,
-    assets. Called by the import-trust-draft and regenerate paths."""
+    assets. Called by the import-trust-draft and regenerate paths.
+
+    IMPORTANT: `client_first_name` is derived from the INTAKE grantor record
+    (grantors[0].first_name) — NEVER from the PDF text. The PDF may list a
+    full legal name with a middle name that the LLM could mistake for the
+    client's preferred name. Intake is the source of truth."""
     if not case:
         return {}
+    grantors = case.get("grantors") or []
+    first_name = ""
+    if grantors and isinstance(grantors[0], dict):
+        first_name = (grantors[0].get("first_name") or "").strip()
+    if not first_name:
+        # Fallback: first token of the client_name (account holder)
+        cn = (case.get("client_name") or "").strip()
+        first_name = cn.split(" ")[0] if cn else ""
     return {
         "client_name": case.get("client_name") or case.get("client_email") or "",
+        "client_first_name": first_name,
         "client_email": case.get("client_email") or "",
         "trust_name": case.get("trust_name") or "",
         "trust_type": case.get("trust_type") or "",
-        "grantors": case.get("grantors") or [],
+        "grantors": grantors,
         "trustees": case.get("trustees") or [],
         "successor_trustees": case.get("successor_trustees") or [],
         "beneficiaries": case.get("beneficiaries") or [],

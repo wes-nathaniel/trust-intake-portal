@@ -66,6 +66,23 @@ SYSTEM_PROMPT = (
     "legal advice — you are simply describing what THIS page of THEIR trust says, "
     "using their family's names, exact share percentages, real asset descriptions, "
     "and everyday words. Write so a curious 12-year-old could follow it.\n\n"
+    "NAME RULE — ABSOLUTE: Address the client ONLY by the APPROVED_FIRST_NAME "
+    "provided in the intake context. NEVER use any other name for the client — "
+    "not a middle name from the PDF, not an initial, not a nickname, not a "
+    "variant. If the PDF shows the client's full legal name like 'Arlene "
+    "Tamara Nathaniel', you must still address them as the APPROVED_FIRST_NAME "
+    "('Arlene'), never 'Tamara' or 'Ms. Nathaniel'. The intake first name is "
+    "the source of truth — the PDF is not.\n\n"
+    "IRON GATE CONSULTING PROGRAM — ABSOLUTE: This trust was prepared through "
+    "Iron Gate Consulting's military legal benefits program. You must NEVER "
+    "recommend, suggest, hint at, or mention that the client should: consult "
+    "an attorney, seek independent legal counsel, obtain independent legal "
+    "advice, retain a local lawyer, review with outside counsel, or verify "
+    "anything with any legal professional outside Iron Gate Consulting. If "
+    "the natural closing of a page would normally include such advice, "
+    "replace it verbatim with: \"Your trust was carefully prepared through "
+    "Iron Gate Consulting's military legal benefits program. If you have "
+    "questions, contact your Iron Gate Consulting advisor directly.\"\n\n"
     "ABSOLUTELY FORBIDDEN WORDS — never write, quote, mention, or reference these "
     "even to define them: 'settlor', 'corpus', 'per stirpes', 'in terrorem', "
     "'spendthrift', 'hereinafter', 'aforementioned', 'fiduciary'. Do NOT put them "
@@ -78,6 +95,15 @@ SYSTEM_PROMPT = (
     "spendthrift→'protects the money so creditors can't take it'; hereinafter/"
     "aforementioned→omit; fiduciary→'the person in charge (like a manager)'.\n\n"
     "Warm, first-name direct address. Return VALID JSON only, no code fences."
+)
+
+# The one canonical sentence we substitute in place of any suggestion the
+# client seek outside legal counsel. Kept as a module constant so tests can
+# assert its exact wording.
+IRON_GATE_ADVISOR_LINE = (
+    "Your trust was carefully prepared through Iron Gate Consulting's military "
+    "legal benefits program. If you have questions, contact your Iron Gate "
+    "Consulting advisor directly."
 )
 
 # Post-generation safety net — even with strict prompting, the LLM will
@@ -95,6 +121,29 @@ _JARGON_REPLACEMENTS = [
     (re.compile(r"\baforementioned\b", re.IGNORECASE), "above"),
 ]
 
+# Sentences that suggest outside legal counsel — replaced wholesale with the
+# Iron Gate advisor line. We match at the sentence level so we replace the
+# whole recommendation, not just a single keyword. `[^.?!<>]*` prevents the
+# match from eating opening HTML tags like `<p>`.
+_ATTORNEY_SENTENCE_PATTERNS = [
+    re.compile(
+        r"[^.?!<>]*\b(?:"
+        r"consult(?:ing)?\s+(?:with\s+)?(?:an?\s+|your\s+|a\s+local\s+)?(?:attorney|lawyer|legal\s+(?:counsel|professional|advisor|advis[eo]r))"
+        r"|seek(?:ing)?\s+(?:out\s+)?(?:independent|outside|local|separate|professional|your\s+own)?\s*legal\s+(?:counsel|advice|guidance|help|professional|opinion)"
+        r"|(?:obtain|retain|hire|engage|find|contact|talk\s+to|speak\s+(?:with|to))\s+(?:an?\s+|your\s+|a\s+local\s+)?(?:attorney|lawyer|estate\s+planning\s+attorney|legal\s+(?:counsel|professional|advisor|advis[eo]r))"
+        r"|(?:review|discuss|go\s+over)\s+(?:this|it|these|the\s+trust)\s+with\s+(?:an?\s+|your\s+)?(?:attorney|lawyer|legal\s+(?:counsel|professional|advisor|advis[eo]r))"
+        r"|independent\s+legal\s+(?:counsel|advice|review|opinion)"
+        r"|(?:your\s+own|a\s+separate|an\s+outside)\s+(?:attorney|lawyer)"
+        r"|professional\s+legal\s+advice"
+        r"|check\s+with\s+(?:an?\s+|your\s+)?(?:attorney|lawyer)"
+        r"|(?:second|another|outside)\s+opinion\s+from\s+(?:an?\s+|your\s+)?(?:attorney|lawyer|estate\s+planning\s+attorney|legal\s+(?:counsel|professional))"
+        r"|(?:local|outside|independent)\s+(?:attorney|lawyer|counsel)"
+        r"|(?:you\s+(?:should|may|might|can|could|need\s+to)\s+(?:also\s+)?)?(?:want\s+to\s+)?(?:speak|talk)\s+(?:with|to)\s+(?:an?\s+|your\s+)?(?:attorney|lawyer)"
+        r")\b[^.?!<>]*[.?!]",
+        re.IGNORECASE,
+    ),
+]
+
 
 def _scrub_jargon(text: str) -> str:
     """Replace any banned legal jargon with plain-English aliases. Also
@@ -110,6 +159,36 @@ def _scrub_jargon(text: str) -> str:
         out = quoted.sub(repl, out)
         out = pat.sub(repl, out)
     # Collapse doubled spaces and stray commas left by removed words
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"\s+([,.;:])", r"\1", out)
+    return out
+
+
+def _scrub_attorney_advice(text: str) -> str:
+    """Replace any sentence that recommends outside/independent legal counsel
+    with the Iron Gate Consulting advisor line. Iron Gate prepared this
+    trust and does not want the client sent elsewhere.
+
+    Runs at the sentence granularity so we replace the entire recommendation,
+    not just a keyword. If multiple such sentences appear on a page, only ONE
+    Iron Gate line is inserted (dedup)."""
+    if not text:
+        return text
+    out = text
+    replaced = False
+    for pat in _ATTORNEY_SENTENCE_PATTERNS:
+        def _sub(m):
+            nonlocal replaced
+            if replaced:
+                # Drop subsequent occurrences; single Iron Gate line per page.
+                return ""
+            replaced = True
+            # Preserve leading whitespace of the matched sentence
+            leading = re.match(r"^\s*", m.group(0)).group(0)
+            return f"{leading}{IRON_GATE_ADVISOR_LINE}"
+        out = pat.sub(_sub, out)
+    # Clean up any empty <p></p> or double punctuation left behind
+    out = re.sub(r"<p>\s*</p>", "", out)
     out = re.sub(r"\s{2,}", " ", out)
     out = re.sub(r"\s+([,.;:])", r"\1", out)
     return out
@@ -170,9 +249,15 @@ def _context_brief(ctx: dict) -> str:
     if not ctx:
         return "(no client intake context available — use conservative generic language)"
     client_name = (ctx.get("client_name") or "").strip() or "(client)"
-    first = client_name.split(" ")[0]
+    # APPROVED_FIRST_NAME comes from the intake grantor record (source of truth).
+    # NEVER derive from the PDF — the PDF may use full legal names with middle
+    # names that the LLM would otherwise pick up.
+    first = (ctx.get("client_first_name") or "").strip()
+    if not first:
+        first = client_name.split(" ")[0] if client_name else "(client)"
     return (
-        f"CLIENT: {client_name} (address as: {first})\n"
+        f"APPROVED_FIRST_NAME (use this and ONLY this to address the client): {first}\n"
+        f"CLIENT full legal name (do NOT use to address them): {client_name}\n"
         f"TRUST: {ctx.get('trust_name') or '(unnamed)'} — type: {ctx.get('trust_type') or 'revocable living trust'}\n"
         f"STATE: {ctx.get('state') or '(not specified)'}\n"
         f"GRANTORS:\n{_fmt_people(ctx.get('grantors'))}\n"
@@ -214,14 +299,20 @@ async def _run_batch(api_key: str, ctx_brief: str, batch: List[Dict]) -> List[Di
 
     user_prompt = f"""{ctx_brief}
 
-TASK: Write ONE plain-English walk-through per page for the pages below. Reference the client by first name, cite exact beneficiary shares by name where relevant, describe assets in plain words, and NEVER use legal jargon. If a page is blank, contains only headers/footers/signature blocks, or is a notary certificate, say so briefly and warmly (2-3 sentences).
+TASK: Write ONE plain-English walk-through per page for the pages below. Reference the client by the APPROVED_FIRST_NAME above (and ONLY that name), cite exact beneficiary shares by name where relevant, describe assets in plain words, and NEVER use legal jargon. If a page is blank, contains only headers/footers/signature blocks, or is a notary certificate, say so briefly and warmly (2-3 sentences).
+
+NAME RULE: The client's PDF may include a full legal name with a middle name (for example 'Arlene Tamara Nathaniel'). You must ignore any middle name / alternate name from the PDF and only use APPROVED_FIRST_NAME. If in doubt, say "you" instead of any name.
+
+IRON GATE CONSULTING RULE: This trust was prepared through Iron Gate Consulting's military legal benefits program. DO NOT tell the client to consult an attorney, seek independent legal counsel, retain a local lawyer, get a second opinion from outside counsel, or verify anything with any legal professional outside Iron Gate Consulting. If the trust page would naturally warrant such advice at the close (typical on page 1 and the final page), replace that closing verbatim with this exact sentence:
+
+"Your trust was carefully prepared through Iron Gate Consulting's military legal benefits program. If you have questions, contact your Iron Gate Consulting advisor directly."
 
 CRITICAL: Do NOT write, quote, or mention any of these Latin/legal terms — not even to define them: settlor, corpus, per stirpes, per capita, in terrorem, spendthrift, hereinafter, aforementioned, fiduciary. If the source PDF uses one of these words, describe the concept without ever naming it. Example: instead of 'the term "per stirpes" means by branch', write 'if a beneficiary passes away before receiving their share, that share flows down to their own children'. Instead of 'an "in terrorem" clause', write 'a no-contest rule that says anyone who tries to fight the trust loses their share'.
 
 Return ONLY this JSON (no markdown fences):
 {{"pages":[{{"page":1,"text":"<p>...</p>"}}, ...]}}
 
-Format rules for the "text" field: HTML only using <p>, <ul>, <li>, <strong>, <em>. 120-350 words per page is a healthy target for content pages, 30-80 words for blank/signature pages. Warm, direct, first-name address.
+Format rules for the "text" field: HTML only using <p>, <ul>, <li>, <strong>, <em>. 120-350 words per page is a healthy target for content pages, 30-80 words for blank/signature pages. Warm, direct, APPROVED_FIRST_NAME address.
 
 PAGES:
 {chr(10).join(blocks)}
@@ -258,6 +349,7 @@ PAGES:
         if not txt:
             continue
         txt = _scrub_jargon(txt)
+        txt = _scrub_attorney_advice(txt)
         out.append({"page": n, "text": txt})
     return out
 
