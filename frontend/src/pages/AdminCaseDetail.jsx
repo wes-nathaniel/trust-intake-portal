@@ -832,7 +832,6 @@ export default function AdminCaseDetail() {
         <AdminDocumentsManager
           caseId={caseId}
           docs={c.admin_documents || []}
-          hasTrustDraft={!!c.trust_draft}
           onChanged={() => load()}
           className="lg:col-span-2"
         />

@@ -30,6 +30,7 @@ import whatsapp
 import notify
 import whatsapp_commands
 import extract_jobs
+import page_explanation_jobs
 from ai_assistant import answer_question as ai_answer_question
 from trust_preview import pdf_bytes_to_preview_pages, pdf_bytes_to_preview_page, page_count as pdf_page_count
 import square_service
@@ -2730,23 +2731,23 @@ async def admin_upload_trust_draft(case_id: str,
     except Exception:
         pass
 
-    # AUTO-EXTRACT trust_sections from the PDF — Claude parses every Article
-    # + generates a plain-English explainer. Runs as a BACKGROUND task so the
-    # upload response returns immediately (no more Cloudflare timeouts on a
-    # large PDF). Only kicks off when sections/draft are currently empty.
-    if not (case.get("trust_sections") or []) and not (case.get("trust_sections_draft") or []):
-        try:
-            await extract_jobs.start_extract_job(
-                case_id=case_id,
-                pdf_bytes=data,
-                filename=file.filename or "trust.pdf",
-                admin_id=admin["id"],
-                db=db,
-                update_case_fn=update_case,
-            )
-            logger.info(f"trust_extract_job kicked off (inline path) for case {case_id}")
-        except Exception as e:
-            logger.error(f"Failed to schedule background extract for case {case_id}: {e}")
+    # AUTO-GENERATE page-by-page plain-English explanations — runs as a
+    # BACKGROUND task so the upload response is instant. Personalized to the
+    # client's intake (names, share percentages, assets, state). The old
+    # article-extract path is no longer wired here — page-by-page is the
+    # canonical explainer surface now.
+    try:
+        await page_explanation_jobs.start_page_explain_job(
+            case_id=case_id,
+            pdf_bytes=data,
+            case_context=_build_case_context(case),
+            admin_id=admin["id"],
+            db=db,
+            update_case_fn=update_case,
+        )
+        logger.info(f"trust_page_job kicked off for case {case_id}")
+    except Exception as e:
+        logger.error(f"Failed to schedule page-explanation job for case {case_id}: {e}")
 
     # Notify client: trust ready for review — fired as a background task so
     # the upload response returns immediately (Resend can take 20-30s from
@@ -2855,6 +2856,55 @@ def _build_case_context(case: dict) -> dict:
         "beneficiaries": case.get("beneficiaries") or [],
         "assets": case.get("assets") or [],
     }
+
+
+@api_router.get("/trust-cases/{case_id}/trust-page-explanations")
+async def client_trust_page_explanations(case_id: str, user: dict = Depends(get_current_user)):
+    """Client-facing endpoint the trust preview page reads to display the
+    per-page plain-English explanations alongside the watermarked PDF.
+
+    Returns an ORDERED list of {page:int, text:html} plus job status so the UI
+    can show a spinner while pages are still being generated."""
+    case = await get_case(case_id, user)
+    explanations = case.get("trust_page_explanations") or []
+    job = case.get("trust_page_job") or {}
+    return {
+        "ok": True,
+        "explanations": explanations,
+        "status": job.get("status") or ("completed" if explanations else "idle"),
+        "pages_done": job.get("pages_done") or len(explanations),
+        "pages_total": job.get("pages_total") or 0,
+        "batches_done": job.get("batches_done") or 0,
+        "batches_total": job.get("batches_total") or 0,
+        "error": job.get("error"),
+    }
+
+
+@api_router.post("/admin/trust-cases/{case_id}/trust-page-explanations/regenerate")
+async def admin_regenerate_trust_page_explanations(case_id: str,
+                                                   admin: dict = Depends(require_admin)):
+    """Manually re-fire the page-by-page explanation job. Useful when the
+    admin has updated intake data (names, beneficiary shares, assets) and
+    wants the plain-English notes refreshed without re-uploading the PDF."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    draft = case.get("trust_draft") or {}
+    if not draft.get("storage_path"):
+        raise HTTPException(status_code=400, detail="No trust draft PDF uploaded yet.")
+    try:
+        data, _ct = get_object(draft["storage_path"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not read PDF from storage: {e}")
+    job = await page_explanation_jobs.start_page_explain_job(
+        case_id=case_id,
+        pdf_bytes=data,
+        case_context=_build_case_context(case),
+        admin_id=admin["id"],
+        db=db,
+        update_case_fn=update_case,
+    )
+    return {"ok": True, **job}
 
 
 @api_router.get("/trust-cases/{case_id}/trust-draft-explanation")
@@ -4898,6 +4948,11 @@ async def startup():
         await extract_jobs.sweep_stuck_jobs_on_startup(db, update_case)
     except Exception as e:
         logger.warning(f"extract_jobs sweep on startup failed: {e}")
+
+    try:
+        await page_explanation_jobs.sweep_stuck_jobs_on_startup(db, update_case)
+    except Exception as e:
+        logger.warning(f"page_explanation_jobs sweep on startup failed: {e}")
 
     # --- Seed admin --- bcrypt raises ValueError on malformed hashes, and the
     # password_hash key may be missing on legacy admin docs. Both must be caught.

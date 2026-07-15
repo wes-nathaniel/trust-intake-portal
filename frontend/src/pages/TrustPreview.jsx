@@ -381,7 +381,7 @@ export default function TrustPreview() {
         </div>
         </div>
 
-        <TrustDraftExplanationPanel caseId={caseId} clientName={trustCase?.client_name} />
+        <TrustDraftExplanationPanel caseId={caseId} clientName={trustCase?.client_name} currentPage={pageIdx} totalPages={totalPages} />
       </div>
       )}
 

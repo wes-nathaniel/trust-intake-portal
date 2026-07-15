@@ -1,0 +1,53 @@
+{
+  "summary": "Verified the new page-by-page auto trust explanation feature end-to-end for the Michael Thompson seeded case. Backend: 6/7 pytest cases pass. All schema/status/auth/regenerate/regression criteria pass. ONE REAL PRODUCT BUG: banned legal jargon appears in LLM output — page 4 contains 'per stirpes' and page 5 contains 'in terrorem' (the model quotes the term while defining it in plain English). The system prompt explicitly forbids these words per the review_request. Frontend: /portal/trust-preview/8eb42bd3 renders trust-preview-side-by-side + preview-viewer (LEFT) + trust-draft-explanation-panel (RIGHT); personalized-badge shows 'Personalized for Michael'; explanation-page-1 and explanation-page-2 both render personalized content with Michael/Sarah/James/60-40; Next paging updates the right panel to match currentPage; page-job-progress shows 'notes ready for 6/6 pages'. AdminCaseDetail no longer contains an 'Import Trust Draft PDF' button (grep + browser body-text check both pass). Backend startup sweep runs cleanly — uvicorn is up (200 on /api/), and backend logs show 'Lifespan startup complete' with no crash.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/trust-cases/{id}/trust-page-explanations (LLM content)",
+        "issue": "Banned legal jargon leaks into explanations. Page 4 contains 'per stirpes' (\"uses the term \\\"per stirpes,\\\" which is a legal phrase meaning \\\"by branch.\\\"\"). Page 5 contains 'in terrorem' (\"There's also something mentioned here called an \\\"in terrorem\\\" clause. In everyday language, that's a no-contest rule.\"). The review_request explicitly forbids these words: 'ANY page must NOT contain banned jargon'. Root cause: the LLM is *quoting* the source-document term in order to define it. Fix likely requires: (a) strengthen the SYSTEM_PROMPT in /app/backend/trust_page_explainer.py to say 'never even mention or quote the banned words — describe the concept without naming it, or use a euphemism like a \"no-contest rule\" without the Latin', and/or (b) post-process the LLM output to strip/replace the banned words before persisting.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "AdminCaseDetail",
+        "issue": "React warning: 'Each child in a list should have a unique \"key\" prop' emitted from a <section> render on the case-detail page. Cosmetic dev-console warning only.",
+        "selector": "n/a",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_page_explanations.py",
+    "/app/test_reports/pytest/iter18_page_expl.xml"
+  ],
+  "action_items": [
+    "HIGH: Prevent banned jargon from leaking into trust_page_explainer output. Strengthen SYSTEM_PROMPT to forbid even quoting the banned words (currently the model quotes them to define them). Consider a post-generation regex sweep in trust_page_explainer._run_batch or explain_pages that either (a) rejects the batch and retries with a stricter reminder, or (b) hot-swaps the banned tokens for plain-English aliases (e.g., 'in terrorem' -> 'no-contest'; 'per stirpes' -> 'by family branch'). After fix, regenerate the seeded case and re-run test_get_page_explanations_schema_and_personalization.",
+    "LOW: Fix missing React 'key' prop in the section render of AdminCaseDetail (surfaced as a console.error)."
+  ],
+  "critical_code_review_comments": [
+    "page_explanation_jobs.start_page_explain_job is idempotent per-case via _jobs cache + lock — good. However, `_jobs`/`_locks` are process-local dicts; on multi-worker deployments a duplicate in-flight job could occur. Consider a DB-level running-flag check.",
+    "trust_page_explainer._run_batch times out at 85s per 2-page batch — sensible. Failures return [] silently and are skipped; consider marking the specific batch as failed on the job so the UI can indicate partial pages.",
+    "sweep_stuck_jobs_on_startup only sweeps DB-persisted pending jobs; in-memory jobs on the OLD worker are already dead. This is correct.",
+    "GET /trust-page-explanations returns pages_total=0 when job is 'idle' (no draft ever uploaded) — frontend must not divide by pages_total; verified TrustDraftExplanationPanel guards this.",
+    "trust_page_explainer sends banned-word list in SYSTEM_PROMPT but does not enforce/scrub after generation — this is the root cause of the leak. Recommend a small post-processing pass."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_page_explanations.py (new)"
+  ],
+  "success_rate": {
+    "backend": "86% (6/7 pytest — the 1 failure is a real product bug, not a test defect)",
+    "frontend": "100% (all data-testids present, personalization + paging + progress indicator verified)"
+  },
+  "test_credentials": "support@igcfirm.com / Wllorenzo03! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None. Used pre-seeded Michael Thompson case 8eb42bd3-5d43-43f2-b765-b98a144bd931 (already had trust_draft + explanations from prior iteration).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Re-run: `REACT_APP_BACKEND_URL=https://trust-intake-portal.preview.emergentagent.com pytest /app/backend/tests/test_page_explanations.py -v`. To reproduce the jargon bug outside pytest, GET /api/trust-cases/8eb42bd3-5d43-43f2-b765-b98a144bd931/trust-page-explanations (with admin cookie) and grep each explanation.text for the banned words listed in the review_request. After fix, admin can trigger a fresh run via POST /api/admin/trust-cases/{id}/trust-page-explanations/regenerate — LLM run for 6-page PDF takes ~50s (3 batches of 2 pages @ ~15s each).",
+  "rca_of_the_issue": "Banned jargon leak: /app/backend/trust_page_explainer.py:63 SYSTEM_PROMPT tells Claude to 'NEVER use' the banned terms, but the model still QUOTES the terms verbatim from the source PDF text in order to define them in plain English (a natural-language teacher behavior). The prompt says 'define any needed legal term inline in plain words' — the model interpreted this as license to quote-then-define. Mitigation: (1) tighten prompt to say 'do not quote or repeat the banned words even when defining them — describe the concept without ever naming it', and (2) add a post-generation scrub in trust_page_explainer.explain_pages that regex-strips banned tokens (or replaces them with 'a no-contest rule' / 'by family branch' etc.) before returning."
+}
