@@ -10,6 +10,13 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
 
+## Changelog — 2026-07-15 (resumable jobs + admin Regenerate + workers=2)
+- ✅ **Uvicorn workers 1 → 2** in production. New `/app/backend/supervisord.conf` (deploy image) runs `uvicorn server:app --host 0.0.0.0 --port 8001 --workers 2` without `--reload`. Preview supervisord.conf is platform-managed and untouched. Rationale: prevent event-loop starvation on production (Emergent Support guidance after Cloudflare 524).
+- ✅ **Resumable page-explain background job**. `page_explanation_jobs.start_page_explain_job` now accepts `resume_from_batch: int` and `prior_explanations: list`. Partial explanations are persisted to `case.trust_page_explanations` after EVERY batch (not only at end). On startup, `sweep_stuck_jobs_on_startup(db, update_case_fn, resume_fn)` calls the injected `resume_fn` (defined in `server.py` lifespan) which reloads the source PDF from object storage and re-fires the runner from the last completed batch. Falls back to `failed` only if the PDF can't be reloaded. `trust_page_explainer.explain_pages` now accepts `start_batch` and `prior` params and skips batches ≤ start_batch.
+- ✅ **Admin-only Regenerate button** on the client trust preview page. `TrustDraftExplanationPanel.jsx` now imports `useAuth()`, shows a `Regenerate` pill in the top-right of the right panel when `user.role === 'admin'`. Clicking POSTs to `/api/admin/trust-cases/{id}/trust-page-explanations/regenerate` and re-starts polling. Client-role users NEVER see the button. Disabled state shows `Starting…` (during API call) or `Running…` (while jobRunning).
+- Tests: 3 new pytest cases in `/app/backend/tests/test_page_resume.py` (resume branch fires, partial persistence during run, banned-jargon regression). All prior tests still pass. Iteration 20 — 100% backend + 100% frontend.
+
+
 ## Changelog — 2026-07-16 (auto page-by-page trust explainer + jargon scrub)
 - ✅ **Removed "Import Trust Draft PDF" button** — page-by-page auto explainer replaces the manual import flow.
 - ✅ **Auto-fires background job on every Trust Draft PDF upload** (`POST /api/admin/trust-cases/{id}/trust-draft`). Returns instantly (202-style) while `page_explanation_jobs.start_page_explain_job` generates plain-English notes per PDF page on a worker thread.
