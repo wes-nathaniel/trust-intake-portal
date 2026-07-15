@@ -2838,6 +2838,51 @@ def _find_admin_doc(case: dict, doc_id: str) -> Optional[dict]:
     return None
 
 
+def _build_case_context(case: dict) -> dict:
+    """Assemble a dict of everything Claude needs to personalize the client's
+    plain-English trust explanation: full names, roles, share percentages,
+    assets. Called by the import-trust-draft and regenerate paths."""
+    if not case:
+        return {}
+    return {
+        "client_name": case.get("client_name") or case.get("client_email") or "",
+        "client_email": case.get("client_email") or "",
+        "trust_name": case.get("trust_name") or "",
+        "trust_type": case.get("trust_type") or "",
+        "grantors": case.get("grantors") or [],
+        "trustees": case.get("trustees") or [],
+        "successor_trustees": case.get("successor_trustees") or [],
+        "beneficiaries": case.get("beneficiaries") or [],
+        "assets": case.get("assets") or [],
+    }
+
+
+@api_router.get("/trust-cases/{case_id}/trust-draft-explanation")
+async def client_trust_draft_explanation(case_id: str, user: dict = Depends(get_current_user)):
+    """Client-facing endpoint the trust preview page reads to display the
+    personalized plain-English explanation alongside the watermarked PDF.
+
+    Returns the AI explanation from the admin_documents entry whose
+    `source == 'trust_draft'` (i.e., the one produced by "Import Trust Draft
+    PDF"). Returns 404 if no such explanation has been generated yet."""
+    case = await get_case(case_id, user)
+    for d in (case.get("admin_documents") or []):
+        if d.get("source") == "trust_draft" and not d.get("is_deleted"):
+            ai = d.get("ai_explanation") or {}
+            return {
+                "ok": True,
+                "explanation": ai,
+                "label": d.get("label") or "",
+                "generated_at": ai.get("generated_at") or d.get("uploaded_at") or "",
+                "personalized": bool(ai.get("personalized")),
+            }
+    raise HTTPException(
+        status_code=404,
+        detail="Plain-English explanation has not been generated yet for this trust.",
+    )
+
+
+
 @api_router.post("/admin/trust-cases/{case_id}/admin-documents/from-trust-draft")
 async def admin_import_trust_draft_to_explainer(case_id: str,
                                                 admin: dict = Depends(require_admin)):
@@ -2876,7 +2921,8 @@ async def admin_import_trust_draft_to_explainer(case_id: str,
 
     label = f"Trust Draft — {draft.get('filename') or 'v' + str(draft.get('version') or 1)}"[:160]
     text = doc_explainer.extract_text(data, src_filename, ct or "application/pdf")
-    ai = await doc_explainer.generate_explanation(label, src_filename, text)
+    case_ctx = _build_case_context(case)
+    ai = await doc_explainer.generate_explanation(label, src_filename, text, case_context=case_ctx)
 
     doc = {
         "id": new_id(),
@@ -2994,7 +3040,12 @@ async def admin_regenerate_explainer(case_id: str, doc_id: str, admin: dict = De
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not read file from storage: {e}")
     text = doc_explainer.extract_text(data, doc.get("filename", ""), ct or doc.get("content_type", ""))
-    ai = await doc_explainer.generate_explanation(doc.get("label", ""), doc.get("filename", ""), text)
+    # Personalize when this doc is the imported Trust Draft — clients see it in
+    # the trust preview and need names, shares, and next steps.
+    case_ctx = _build_case_context(case) if doc.get("source") == "trust_draft" else None
+    ai = await doc_explainer.generate_explanation(
+        doc.get("label", ""), doc.get("filename", ""), text, case_context=case_ctx,
+    )
     # Update in place
     admin_docs = [dict(d) for d in (case.get("admin_documents") or [])]
     for d in admin_docs:

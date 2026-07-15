@@ -1,0 +1,37 @@
+{
+  "summary": "Verified the deeply-personalized trust-draft AI explanation feature end-to-end for Michael Thompson case (8eb42bd3). Backend: 8/8 pytest cases passed in /app/backend/tests/test_trust_draft_personalization.py — from-trust-draft returns personalized=true with all 7 personal fields (greeting/grantor_intro/trustee_roles/beneficiaries/assets_plain/trust_type_meaning/next_steps) plus all 5 legacy compat fields; content contains 'Michael', 'Sarah', 'James', '60%', '40%', 'Fort Lauderdale', 'Fidelity' and none of the banned jargon ('per stirpes','settlor','corpus','in terrorem'); import is idempotent (already_imported=true on repeat); regenerate on trust_draft source stays personalized; regular non-trust-draft admin doc upload still produces legacy explanation (personalized is not true); client GET /trust-cases/{id}/trust-draft-explanation requires auth (401 anon) and returns 404 with 'not been generated' when no draft doc. Frontend: /portal/trust-preview/8eb42bd3 renders trust-preview-side-by-side=1 with preview-viewer=1 (LEFT watermarked PDF) + trust-draft-explanation-panel=1 (RIGHT), personalized-badge shows 'Personalized for Michael', all 7 expl-* data-testids present, body text contains all expected names/percentages/address/institution.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/admin/trust-cases/{id}/admin-documents (non-trust-draft)", "issue": "Legacy branch of doc_explainer.generate_explanation omits the 'personalized' key from the response rather than setting it to False. Frontend guards on truthy so no user-visible impact, but the doc string in doc_explainer.py implies both branches return the flag. Cosmetic only."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_trust_draft_personalization.py",
+    "/app/test_reports/pytest/iter17_personalization.xml"
+  ],
+  "action_items": [
+    "Optional: in doc_explainer.generate_explanation legacy branch, add 'personalized': False to the returned dict for consistency with the personalized branch."
+  ],
+  "critical_code_review_comments": [
+    "_build_case_context (server.py:2841) reads case fields safely with `or []`/`or ''` defaults — good defensive default so LLM prompt never crashes on partial intakes.",
+    "GET /trust-cases/{id}/trust-draft-explanation (server.py:2860) correctly filters is_deleted docs and uses source=='trust_draft' as the marker; 404 detail string is user-friendly.",
+    "from-trust-draft idempotency key is (source=='trust_draft' AND source_storage_path==draft.storage_path AND not is_deleted). Works, but if the admin re-uploads a new trust_draft version the OLD explanation stays; regenerate endpoint is the intended path — worth documenting in the admin UI.",
+    "Personalized generation takes ~30s per call and blocks the request thread — acceptable for admin action but if this is ever called from a client-facing path it should be moved to a background task."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_trust_draft_personalization.py (new)"
+  ],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100% (all data-testids + personalization content verified via Playwright)"},
+  "test_credentials": "support@igcfirm.com / Wllorenzo03! — used for both API and browser flow.",
+  "seed_data_creation": "None. Case 8eb42bd3-5d43-43f2-b765-b98a144bd931 was already seeded by main agent. Tests transiently create+delete a TEST_NoDraft case for the 404 assertion (fully cleaned up) and a TEST_OpAgreement admin doc for the legacy-branch assertion (fully cleaned up).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "To re-run: `export REACT_APP_BACKEND_URL=https://trust-intake-portal.preview.emergentagent.com && pytest /app/backend/tests/test_trust_draft_personalization.py -v`. Frontend visual check: log in as support@igcfirm.com and open /portal/trust-preview/8eb42bd3-5d43-43f2-b765-b98a144bd931 — should see PDF on left and 'Personalized for Michael' panel on right with all 7 sections. Personalized LLM call takes ~30s so bump timeouts if adding new content tests.",
+  "rca of the issue": "Not a bug — feature verification. All acceptance criteria from the review_request met."
+}

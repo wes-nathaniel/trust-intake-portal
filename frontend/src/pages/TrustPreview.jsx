@@ -10,6 +10,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import PaymentMethodPicker from "@/components/PaymentMethodPicker";
 import TrustViewerTwoPanel from "@/components/TrustViewerTwoPanel";
+import TrustDraftExplanationPanel from "@/components/TrustDraftExplanationPanel";
 
 // Anti-copy / anti-print helpers
 function useNoCopyAndBlurOnLeave(containerRef, setDimmed) {
@@ -294,13 +295,14 @@ export default function TrustPreview() {
           trustName={trustCase.trust_name}
         />
       ) : (
-      <div
-        ref={containerRef}
-        className={`relative bg-navy rounded-xl overflow-hidden select-none transition-opacity duration-200 ${dimmed ? "opacity-10 blur-md" : "opacity-100"}`}
-        style={{ userSelect: "none", WebkitUserSelect: "none" }}
-        onCopy={(e) => e.preventDefault()}
-        onContextMenu={(e) => e.preventDefault()}
-        data-testid="preview-viewer">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" data-testid="trust-preview-side-by-side">
+        <div
+          ref={containerRef}
+          className={`relative bg-navy rounded-xl overflow-hidden select-none transition-opacity duration-200 ${dimmed ? "opacity-10 blur-md" : "opacity-100"}`}
+          style={{ userSelect: "none", WebkitUserSelect: "none" }}
+          onCopy={(e) => e.preventDefault()}
+          onContextMenu={(e) => e.preventDefault()}
+          data-testid="preview-viewer">
 
         <div className="flex items-center justify-between px-4 py-3 bg-navy/90 text-white border-b border-white/10">
           <div className="text-xs tracking-wide uppercase text-white/70 flex items-center gap-2">
@@ -377,6 +379,9 @@ export default function TrustPreview() {
             Next <ChevronRight className="h-4 w-4" />
           </button>
         </div>
+        </div>
+
+        <TrustDraftExplanationPanel caseId={caseId} clientName={trustCase?.client_name} />
       </div>
       )}
 
