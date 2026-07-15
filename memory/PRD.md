@@ -9,6 +9,17 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **3rd-party**: Resend (email), Emergent LLM key (AI Q&A — Claude Sonnet), Dropbox Sign (dormant), Square (invoices + webhooks — live production), Twilio SMS + **Twilio WhatsApp** (fan-out admin notifications, per-case outbound + inbound thread).
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
+
+## Changelog — 2026-07-16 (auto page-by-page trust explainer + jargon scrub)
+- ✅ **Removed "Import Trust Draft PDF" button** — page-by-page auto explainer replaces the manual import flow.
+- ✅ **Auto-fires background job on every Trust Draft PDF upload** (`POST /api/admin/trust-cases/{id}/trust-draft`). Returns instantly (202-style) while `page_explanation_jobs.start_page_explain_job` generates plain-English notes per PDF page on a worker thread.
+- ✅ New endpoint `GET /api/trust-cases/{id}/trust-page-explanations` → ordered `[{page, text}]` + job status/progress; `POST /api/admin/trust-cases/{id}/trust-page-explanations/regenerate` re-fires the job.
+- ✅ **Client trust preview** renders the watermarked PDF on the LEFT and `TrustDraftExplanationPanel` on the RIGHT with polling (6s cadence). Panel content updates as the client pages through; shows "Writing plain-English notes… X of N pages ready" while the job runs.
+- ✅ **Deep personalization**: each page's explanation cites Michael/Sarah/James (or the case's actual names), exact beneficiary %, real asset addresses/institutions.
+- ✅ **Banned legal jargon scrub** — two layers: (1) `SYSTEM_PROMPT` + user_prompt in `/app/backend/trust_page_explainer.py` now forbid even QUOTING banned Latin/legal terms and provide plain-English substitutes; (2) `_scrub_jargon()` regex post-processor replaces any leaked term (quoted or unquoted): `per stirpes`→`by family branch`, `in terrorem`→`no-contest rule`, `settlor`→`the person creating this trust`, `corpus`→`the trust's property`, `spendthrift`→`creditor-protection safeguard`, `fiduciary`→`trusted manager`, plus `hereinafter`/`aforementioned` collapse.
+- ✅ Startup sweep `page_explanation_jobs.sweep_stuck_jobs_on_startup` marks orphaned pending jobs as failed after a pod restart.
+- Tests: 7/7 pytest in `/app/backend/tests/test_page_explanations.py` + Playwright frontend verification. Iteration 18 (found jargon leak) → Iteration 19 (verified fix, 0 leaks across 6 pages).
+
 ## Changelog — 2026-07-15 (personalized client trust preview)
 - ✅ **FIX #1** — Client trust preview page (`/portal/trust-preview/{case_id}`) now renders **watermarked PDF on the LEFT and the personalized AI plain-English explanation on the RIGHT** as a single two-column grid (`data-testid="trust-preview-side-by-side"`) when the case has a trust_draft but no manually-created trust_sections. Legacy `TrustViewerTwoPanel` path preserved for cases that already have structured sections.
 - ✅ **FIX #2** — Deeply personalized AI explanation. `doc_explainer.generate_explanation(...)` now accepts optional `case_context` and, when called from the "Import Trust Draft PDF" flow (or the regenerate flow on a trust-draft-source doc), emits 7 new personalized fields alongside the legacy 5:
