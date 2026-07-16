@@ -10,6 +10,24 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
 
+## Changelog — 2026-07-16 (security audit + hardening + admin SSN reveal)
+- ✅ **SSN encryption at rest (AES-256-GCM)** — new `/app/backend/crypto.py` module encrypts every SSN before it reaches Mongo (`enc:v1:<nonce_b64>:<ct_b64>` format). Key from new `SSN_ENCRYPTION_KEY` env (base64-urlsafe, 32 bytes). Legacy plaintext SSNs are passthrough-readable and encrypted lazily on next write.
+- ✅ **SSN masking on every API response** — new `_response_case()` helper masks every grantor + EIN SSN to `XXX-XX-####` on every case response (`/trust-cases/mine`, `/trust-cases/{id}`, `/admin/trust-cases`, `add_grantor`, `update_grantor`). Plaintext SSN never travels over the wire outside the explicit reveal endpoint.
+- ✅ **Admin SSN reveal + audit** — new `POST /api/admin/trust-cases/{case_id}/grantors/{grantor_id}/reveal-ssn` (admin-only). Returns full plaintext SSN. Every reveal is written to `ssn_reveal_log` collection (`admin_id`, `admin_email`, `case_id`, `grantor_id`, `grantor_name`, `ip`, `user_agent`, `at`). Client role always gets 403.
+- ✅ **Idle session timeout** — `get_current_user` now enforces `IDLE_TIMEOUT_MINUTES` (default 60). `last_seen_at` refreshed on every authenticated request, on `/auth/login`, and on `/auth/refresh`. 401 with `"Session expired after 60 minutes of inactivity"` when exceeded.
+- ✅ **Security headers middleware** — HSTS (`max-age=31536000; includeSubDomains; preload`), X-Content-Type-Options `nosniff`, X-Frame-Options `SAMEORIGIN`, Referrer-Policy `strict-origin-when-cross-origin`, Permissions-Policy locks down camera/mic/geo/payment.
+- ✅ **Frontend admin `SSNReveal` component** — `/app/frontend/src/components/SSNReveal.jsx` shows masked by default, has a `Reveal SSN` button that fetches from the audited endpoint and auto-hides after 30s. Only rendered on admin pages.
+- ✅ **Data-loss guard** — `update_grantor` preserves the existing ciphertext when the incoming SSN is masked (`XXX-XX-####`, our own display form) so client round-trips can't destroy the stored value. Defense-in-depth in `_encrypt_grantor_ssns` clears masked writes and logs a warning.
+- 🔒 **Audit results at end of iteration**:
+  1. SSN at-rest encryption: ✅ AES-256-GCM
+  2. Password hashing: ✅ bcrypt gensalt() cost=12 (unchanged)
+  3. Login rate limiting: ✅ 5 attempts → 15 min lockout (unchanged)
+  4. Session inactivity: ✅ 60-min server-tracked idle timeout
+  5. HTTPS: ✅ HSTS preload + cookie `secure=True`
+  6. Admin SSN reveal: ✅ endpoint + audit log + frontend button
+- Tests: `/app/backend/tests/test_iteration22_security.py` — **19/19 backend tests pass**, all critical bugs (SSN data-loss on masked-round-trip, idle-lock login recovery) resolved. Frontend admin reveal + client hidden verified via Playwright. Iterations 22 → 23.
+
+
 ## Changelog — 2026-07-16 (branding assets + email deliverability hardening)
 - ✅ **Iron Gate branding assets** shipped as static frontend files:
   - `/app/frontend/public/favicon.png` (512×512, from IronGate Favicon ver.png)
