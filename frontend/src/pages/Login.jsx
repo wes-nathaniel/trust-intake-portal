@@ -49,7 +49,7 @@ export default function Login() {
             <span className="text-xs uppercase tracking-[0.2em]">Secure Sign In</span>
           </div>
           <div>
-            <img src="/irongate-logo.png" alt="Iron Gate Consulting" data-testid="login-logo" className="h-16 w-16 mb-3" />
+            <img src="/irongate-logo.png" alt="Iron Gate Consulting" data-testid="login-logo" className="h-24 w-24 mt-4 mb-5" />
             <h2 className="font-serif text-4xl text-navy mb-1">IGC Trust Portal</h2>
             <p className="text-[#64748B]">Sign in to your {branding.business_name} account.</p>
           </div>
