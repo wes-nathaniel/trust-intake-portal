@@ -13,6 +13,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
 
 import bcrypt
+import crypto as ssn_crypto
 import jwt
 import requests
 import resend
@@ -78,6 +79,11 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "support@igcfirm.com").strip().lower()
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+# Idle-session timeout: an authenticated user who makes no requests for this
+# many minutes is forced to re-log-in even if their access token is still
+# within its absolute TTL. Complies with the security audit "sessions must
+# expire after inactivity" requirement.
+IDLE_TIMEOUT_MINUTES = int(os.environ.get("IDLE_TIMEOUT_MINUTES", "60"))
 
 if RESEND_API_KEY:
     resend.api_key = RESEND_API_KEY
@@ -152,11 +158,32 @@ async def get_current_user(request: Request) -> dict:
         user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
-        return user
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Idle-timeout enforcement: if the user has been inactive for
+    # IDLE_TIMEOUT_MINUTES minutes, require them to log in again — even if
+    # the JWT is still within its absolute TTL. Best-effort: any DB error
+    # here degrades gracefully to "allow" so a hiccup does not lock users
+    # out of a live session.
+    now = datetime.now(timezone.utc)
+    try:
+        last_seen_iso = user.get("last_seen_at")
+        if last_seen_iso:
+            last_seen = datetime.fromisoformat(last_seen_iso)
+            if (now - last_seen).total_seconds() > IDLE_TIMEOUT_MINUTES * 60:
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"Session expired after {IDLE_TIMEOUT_MINUTES} minutes of inactivity. Please sign in again.",
+                )
+        await db.users.update_one({"id": user["id"]}, {"$set": {"last_seen_at": now.isoformat()}})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"idle-timeout check DB error (allowing request): {e}")
+    return user
 
 async def require_admin(user: dict = Depends(get_current_user)) -> dict:
     if user.get("role") != "admin":
@@ -1085,7 +1112,45 @@ async def accept_invite(body: AcceptInviteReq, request: Request, response: Respo
     return body_resp
 
 # ---------- TRUST CASES ----------
+def _encrypt_grantor_ssns(grantors: list) -> list:
+    """Encrypt every grantor.ssn field in place before persisting to Mongo.
+    Idempotent — already-encrypted values are returned unchanged. Masked
+    values (starting with 'XXX-XX-') are treated as pass-through and NOT
+    encrypted (defensive against accidental re-write of a masked response)."""
+    if not grantors:
+        return grantors
+    for g in grantors:
+        if isinstance(g, dict):
+            v = g.get("ssn") or ""
+            if v and not v.upper().startswith("XXX-XX-"):
+                g["ssn"] = ssn_crypto.encrypt_ssn(v)
+    return grantors
+
+
+def _response_case(case: dict) -> dict:
+    """Return a shallow copy of the case suitable for API response — every
+    SSN masked to 'XXX-XX-####'. Plaintext SSNs are never sent over the wire
+    except via the explicit admin reveal endpoint. Called by every endpoint
+    that returns a case object to the client."""
+    if not case:
+        return case
+    grantors = case.get("grantors") or []
+    if grantors:
+        case["grantors"] = [
+            {**g, "ssn": ssn_crypto.mask_ssn(g.get("ssn", ""))} if isinstance(g, dict) else g
+            for g in grantors
+        ]
+    for key in ("ein_info", "ein"):
+        v = case.get(key)
+        if isinstance(v, dict) and v.get("ssn"):
+            case[key] = {**v, "ssn": ssn_crypto.mask_ssn(v["ssn"])}
+    return case
+
+
 async def get_case(case_id: str, user: dict) -> dict:
+    """Internal fetch — returns the case with ENCRYPTED SSN values intact so
+    callers can safely re-persist the doc without losing data. Callers that
+    return the case to a client MUST wrap the result in `_response_case()`."""
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Trust case not found")
@@ -1093,8 +1158,25 @@ async def get_case(case_id: str, user: dict) -> dict:
         raise HTTPException(status_code=403, detail="Not authorized")
     return case
 
+
+async def get_case_raw(case_id: str) -> Optional[dict]:
+    """Internal-only fetch that preserves encrypted SSNs. Used by the admin
+    reveal endpoint. NEVER return the raw doc directly in an API response."""
+    return await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+
+
 async def update_case(case_id: str, updates: dict):
     updates["updated_at"] = now_iso()
+    # Ensure any grantors written via update_case are encrypted at rest.
+    if "grantors" in updates and isinstance(updates["grantors"], list):
+        updates["grantors"] = _encrypt_grantor_ssns(updates["grantors"])
+    # EIN info may carry an SSN — encrypt it too.
+    for key in ("ein_info", "ein"):
+        v = updates.get(key)
+        if isinstance(v, dict) and v.get("ssn"):
+            ssn_val = v["ssn"]
+            if not ssn_val.upper().startswith("XXX-XX-"):
+                v["ssn"] = ssn_crypto.encrypt_ssn(ssn_val)
     await db.trust_cases.update_one({"id": case_id}, {"$set": updates})
     # Intake-phase auto-advance. Safe to call unconditionally: helper is a no-op
     # for cases past the intake phase, and refuses to roll status backward.
@@ -1198,7 +1280,9 @@ async def add_grantor(case_id: str, g: Grantor, user: dict = Depends(get_current
         raise HTTPException(status_code=400, detail=f"Max {max_grantors} grantor(s) allowed")
     grantors.append(g.model_dump())
     await update_case(case_id, {"grantors": grantors, "status": "Intake In Progress"})
-    return g.model_dump()
+    # Return the masked form — plaintext SSN never travels back over the wire.
+    saved = {**g.model_dump(), "ssn": ssn_crypto.mask_ssn(g.model_dump().get("ssn", ""))}
+    return saved
 
 @api_router.put("/trust-cases/{case_id}/grantors/{grantor_id}")
 async def update_grantor(case_id: str, grantor_id: str, g: Grantor, user: dict = Depends(get_current_user)):
@@ -1215,7 +1299,8 @@ async def update_grantor(case_id: str, grantor_id: str, g: Grantor, user: dict =
     if not found:
         raise HTTPException(status_code=404, detail="Grantor not found")
     await update_case(case_id, {"grantors": grantors})
-    return grantors[i]
+    # Return masked — plaintext SSN never travels back to any client.
+    return {**grantors[i], "ssn": ssn_crypto.mask_ssn(grantors[i].get("ssn", ""))}
 
 @api_router.delete("/trust-cases/{case_id}/grantors/{grantor_id}")
 async def delete_grantor(case_id: str, grantor_id: str, user: dict = Depends(get_current_user)):
@@ -1223,6 +1308,47 @@ async def delete_grantor(case_id: str, grantor_id: str, user: dict = Depends(get
     grantors = [x for x in case.get("grantors", []) if x["id"] != grantor_id]
     await update_case(case_id, {"grantors": grantors})
     return {"ok": True}
+
+
+# --- Admin-only SSN reveal ---
+@api_router.post("/admin/trust-cases/{case_id}/grantors/{grantor_id}/reveal-ssn")
+async def admin_reveal_grantor_ssn(case_id: str, grantor_id: str, request: Request,
+                                   admin: dict = Depends(require_admin)):
+    """Return the FULL plaintext SSN for a single grantor. Admin-only. Every
+    reveal is written to an audit log (`ssn_reveal_log` collection) so the
+    firm can prove which admin looked at which SSN and when — important for
+    IRS EIN filings and general compliance."""
+    raw = await get_case_raw(case_id)
+    if not raw:
+        raise HTTPException(status_code=404, detail="Trust case not found")
+    grantor = next((g for g in raw.get("grantors") or [] if g.get("id") == grantor_id), None)
+    if not grantor:
+        raise HTTPException(status_code=404, detail="Grantor not found")
+    ssn_stored = grantor.get("ssn") or ""
+    if not ssn_stored:
+        raise HTTPException(status_code=404, detail="No SSN on file for this grantor")
+    plaintext = ssn_crypto.decrypt_ssn(ssn_stored)
+    if not plaintext:
+        raise HTTPException(status_code=500, detail="SSN could not be decrypted. Contact support.")
+    # Audit log
+    try:
+        await db.ssn_reveal_log.insert_one({
+            "id": new_id(),
+            "admin_id": admin["id"],
+            "admin_email": admin.get("email"),
+            "case_id": case_id,
+            "grantor_id": grantor_id,
+            "grantor_name": grantor.get("full_legal_name") or "",
+            "ip": (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+                   or (request.client.host if request.client else "")),
+            "user_agent": request.headers.get("user-agent", "")[:200],
+            "at": now_iso(),
+        })
+    except Exception as e:
+        logger.warning(f"ssn_reveal_log write failed (non-fatal): {e}")
+    return {"ok": True, "ssn": plaintext,
+            "grantor_name": grantor.get("full_legal_name") or ""}
+
 
 # --- Trustee (one) ---
 @api_router.put("/trust-cases/{case_id}/trustee")
@@ -1624,7 +1750,10 @@ def _compute_pending(case: dict) -> list:
 
 def _attach_pending(case: dict) -> dict:
     case["pending_items"] = _compute_pending(case)
-    return case
+    # SSN security boundary: never send plaintext SSNs to the client. Mask
+    # every SSN on every case response. Admins can reveal via the dedicated
+    # endpoint POST /admin/trust-cases/{id}/grantors/{gid}/reveal-ssn.
+    return _response_case(case)
 
 
 
@@ -2063,7 +2192,7 @@ async def admin_list_cases(
             {"trust_name": {"$regex": q, "$options": "i"}},
         ]
     cases = await db.trust_cases.find(flt, {"_id": 0}).sort("updated_at", -1).to_list(500)
-    return cases
+    return [_response_case(c) for c in cases]
 
 
 @api_router.get("/admin/trust-cases.csv")
@@ -4993,6 +5122,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Attach hardened security headers to every response.
+
+    - Strict-Transport-Security: forces browsers to use HTTPS for 1 year and
+      to include subdomains. Complements Cloudflare's edge HTTPS redirect
+      by making the enforcement client-side sticky (HSTS).
+    - X-Content-Type-Options: blocks MIME sniffing.
+    - X-Frame-Options: prevents clickjacking via iframe embedding.
+    - Referrer-Policy: leaks less URL info to third parties on outbound clicks.
+    - Permissions-Policy: shuts off browser features we do not use so a
+      compromised third-party script cannot silently ask for the mic/camera.
+    """
+    response = await call_next(request)
+    response.headers.setdefault(
+        "Strict-Transport-Security",
+        "max-age=31536000; includeSubDomains; preload",
+    )
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(), payment=()",
+    )
+    return response
 
 @app.on_event("startup")
 async def startup():

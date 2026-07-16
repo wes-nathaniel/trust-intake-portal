@@ -1,0 +1,67 @@
+{
+  "summary": "Iteration 22 security audit testing. 16/17 backend tests PASS; 1 xfail marks a CRITICAL data-loss bug. Admin SSNReveal component wired correctly in the frontend; client portal contains no reveal button. Idle timeout returns 401 correctly, but a related recovery bug was found: fresh login does not clear last_seen_at, so a user idle-locked cannot recover by re-logging-in.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "PUT /api/trust-cases/{case_id}/grantors/{grantor_id}",
+        "issue": "DATA LOSS: When the client submits the masked SSN 'XXX-XX-####' (which is what our own GET responses return), _encrypt_grantor_ssns() skips values starting with 'XXX-XX-' and update_case writes the mask literally into Mongo. The original encrypted SSN is destroyed permanently. Any user editing an unrelated field on a grantor triggers this. Verified: after PUT with 'XXX-XX-6789', Mongo stored the literal 'XXX-XX-6789' and reveal-ssn returned 'XXX-XX-6789' instead of '123-45-6789'.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "IDLE-LOCK RECOVERY BUG: login handler does not reset user.last_seen_at. If a user is idle-timed-out (last_seen_at > 60 min ago), fresh re-login still returns 401 'Session expired' on the very next authenticated request, because get_current_user reads the stale marker before overwriting it. Login must $set last_seen_at=now (or $unset it) as part of the login response so the very next request is accepted.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "GET /api/admin/trust-cases/{id} (seeded Michael Thompson case)",
+        "issue": "Admin case detail page renders 'undefined' as grantor NAME and clicking Reveal SSN returns 404 'Grantor not found' for at least one seeded grantor row. Suggests the seeded doc has an extra empty/malformed grantor entry or a UI display bug in AdminCaseDetail — worth investigating separately from security work."
+      },
+      {
+        "endpoint": "AdminCaseDetail render",
+        "issue": "React warning: 'Each child in a list should have a unique key prop' from AdminCaseDetail — points to a missing key= on a grantors/beneficiaries map()."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Admin SSN reveal on seeded case",
+        "issue": "Clicking Reveal SSN on the seeded Michael Thompson case returned 404 'Grantor not found' — likely because the grantor listed under 'Grantor 1' has a mismatched id (name is displayed as 'undefined'). SSNReveal component itself is wired correctly (data-testid ssn-reveal-btn / ssn-value / ssn-reveal-<id> all present).",
+        "affected_selectors": ["[data-testid=ssn-reveal-btn]", "[data-testid=ssn-value]"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration22_security.py",
+    "/app/test_reports/pytest/iter22_security.xml"
+  ],
+  "action_items": [
+    "FIX (CRITICAL DATA LOSS): In server.py update_grantor / _encrypt_grantor_ssns, when incoming ssn starts with 'XXX-XX-' (i.e., it's the masked round-trip value), do NOT overwrite the existing stored value — preserve the current DB grantor.ssn instead. Recommended: in update_grantor, if g_data['ssn'].upper().startswith('XXX-XX-'), copy the existing grantor's ssn field over before persisting.",
+    "FIX (CRITICAL AUTH UX): In /api/auth/login (server.py line ~892), after successful password verification, $set users.last_seen_at = now_iso() (or $unset it) so a previously idle-locked user can log back in without being blocked by their own stale marker.",
+    "INVESTIGATE (MINOR): AdminCaseDetail.jsx shows 'undefined' for grantor NAME on the seeded Michael Thompson case and produces 404 on reveal — audit the seeded doc's grantors array shape / missing full_legal_name / duplicate id, and add the missing React `key` prop on that grantors list.",
+    "CODE HEALTH: /app/backend/server.py is 5445 lines — split into modules (auth, trust_cases, admin, ssn_crypto usage, page_explanations) for maintainability (also flagged in iteration_21)."
+  ],
+  "critical_code_review_comments": [
+    "Data-loss risk in _encrypt_grantor_ssns / update_grantor: rejecting masked values by 'skip encryption' but still persisting them is worse than either encrypting them or rejecting the write. Should treat 'XXX-XX-####' as a sentinel meaning 'no change' and preserve existing stored ciphertext.",
+    "Auth idle-timeout enforcement in get_current_user runs BEFORE last_seen_at is refreshed, so any endpoint that does not go through login is subject to the stale marker even for a freshly authenticated session. Login (and refresh) should proactively reset last_seen_at.",
+    "SSN_ENCRYPTION_KEY is committed in /app/backend/.env in plaintext; acceptable for dev, but production must inject this via a secret store — the current setup means the AES key sits next to the encrypted data.",
+    "add_security_headers only adjusts response headers; there is no server-side enforcement that requests arrived via HTTPS. That's fine behind the K8s ingress / Cloudflare, but worth documenting.",
+    "reveal-ssn endpoint audit log write is inside a try/except that logs a warning on failure — a failed audit write should arguably fail the reveal, not silently proceed, for compliance (IRS EIN filings).",
+    "server.py: 5445 lines — well over the 700-line guideline; split into feature modules.",
+    "AdminCaseDetail.jsx: missing React `key` on grantors list (console warning)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration22_security.py (new)"
+  ],
+  "success_rate": {"backend": "94% (16/17 passing, 1 xfail documenting critical bug)", "frontend": "80% (SSNReveal wired correctly; seeded case has a separate grantor-id issue)"},
+  "test_credentials": "support@igcfirm.com / Wllorenzo03! (admin); client.test@example.com / Client12345! (client, auto-registered)",
+  "seed_data_creation": "Test creates a fresh trust case + grantor per run and cleans up. Also inserts a legacy plaintext grantor via motor to simulate pre-encryption data; the legacy_case fixture teardown deletes it. Manual cleanup of orphaned test cases run at end.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_iteration22_security.py covers all 10 review cases: security headers, encryption-at-rest, masking on client + admin GETs, /admin/trust-cases and /trust-cases/mine, reveal endpoint (401/403/404/200 + audit log write), legacy plaintext passthrough + lazy encrypt-on-write, idle timeout returning 401, seeded case masking, and rate limit regression. The xfail'd test_no_double_encryption is the DATA LOSS bug — once main agent fixes update_grantor to preserve existing ssn when incoming value starts with 'XXX-XX-', remove the xfail mark and it must pass. Frontend test confirmed: [data-testid=ssn-reveal-btn], [data-testid=ssn-value], [data-testid=ssn-reveal-<gid>] present on /admin/cases/... and absent on /portal. Idle-timeout re-login bug is asserted with a positive 401 assertion so a future fix will (correctly) break that assertion and flag the test for update.",
+  "rca of the issue": "1) DATA-LOSS BUG — root cause: _encrypt_grantor_ssns skips 'XXX-XX-*' inputs so masked values propagate straight to Mongo, and update_grantor unconditionally replaces grantors[i] with the incoming payload. Repro: POST grantor with ssn=123-45-6789 -> GET returns XXX-XX-6789 -> PUT full grantor payload back (masked ssn) -> Mongo stores 'XXX-XX-6789' -> reveal now returns 'XXX-XX-6789' (plaintext lost). Fix: treat 'XXX-XX-####' as sentinel meaning 'ssn unchanged' — in update_grantor, if incoming ssn starts with XXX-XX-, copy grantors[i]['ssn'] from the existing doc before write. 2) IDLE-LOCK RE-LOGIN BUG — root cause: /auth/login handler creates JWTs and cookies but never touches last_seen_at, and get_current_user checks last_seen_at before updating it. Repro: force user.last_seen_at 65 min ago in Mongo -> login -> next request 401 'Session expired'. Fix: in /auth/login, after clear_failures, add `await db.users.update_one({'id': user['id']}, {'$set': {'last_seen_at': now_iso()}})` (or $unset)."
+}

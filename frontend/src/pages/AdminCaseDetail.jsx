@@ -11,6 +11,7 @@ import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, Refr
 import { Textarea } from "@/components/ui/textarea";
 import { displaySSN } from "@/pages/intake/_shared";
 import DocRequestsPanel from "@/components/DocRequestsPanel";
+import SSNReveal from "@/components/SSNReveal";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
                   "Drafting Trust", "Ready for Client Review", "Ready for Payment", "Pending Payment Verification", "Payment Verified", "Completed"];
@@ -581,7 +582,7 @@ export default function AdminCaseDetail() {
               <p className="text-xs uppercase text-bronze font-semibold mb-2">Grantor {i + 1}</p>
               <KV k="Name" v={`${g.full_legal_name}${g.middle_name ? " (" + g.middle_name + ")" : ""}`} />
               <KV k="DOB" v={g.date_of_birth} />
-              <KV k="SSN" v={displaySSN(g.ssn)} />
+              <KV k="SSN" v={<SSNReveal caseId={c.id} grantorId={g.id} masked={g.ssn} />} />
               <KV k="Email" v={g.email} />
               <KV k="Phone" v={g.phone} />
               <KV k="Marital" v={g.marital_status} />
