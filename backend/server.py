@@ -223,18 +223,32 @@ async def _branding_doc() -> dict:
 
 
 def _email_shell(business, primary, accent, inner_html):
+    # Absolute URL for the logo so email clients can render it (relative
+    # paths do not work in email). Falls back to the CDN copy if FRONTEND_URL
+    # is unset for any reason.
+    logo_url = f"{FRONTEND_URL.rstrip('/')}/irongate-logo.png" if FRONTEND_URL else \
+        "https://customer-assets-agu9un31.emergentagent.net/job_trust-intake-portal/artifacts/8pbx640y_IronGate%20Logo.png"
     return f"""
 <table width="100%" cellpadding="0" cellspacing="0" style="font-family:Georgia,serif;background:#F6F4F0;padding:24px 0;">
   <tr><td align="center">
     <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #EBE7DF;border-radius:10px;overflow:hidden;">
       <tr><td style="background:{primary};padding:24px;color:#F6F4F0;">
-        <div style="font-size:11px;letter-spacing:3px;color:{accent};text-transform:uppercase;margin-bottom:6px;">Trust & Estate Portal</div>
-        <div style="font-size:24px;font-family:Georgia,serif;">{business}</div>
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+          <tr>
+            <td width="60" valign="middle" style="padding-right:14px;">
+              <img src="{logo_url}" alt="Iron Gate Consulting" width="52" height="52" style="display:block;border:0;outline:none;text-decoration:none;border-radius:6px;" />
+            </td>
+            <td valign="middle">
+              <div style="font-size:11px;letter-spacing:3px;color:{accent};text-transform:uppercase;margin-bottom:6px;">Trust &amp; Estate Portal</div>
+              <div style="font-size:24px;font-family:Georgia,serif;">{business}</div>
+            </td>
+          </tr>
+        </table>
       </td></tr>
       <tr><td style="padding:28px;color:#1C252E;font-size:15px;line-height:1.55;">{inner_html}</td></tr>
       <tr><td style="background:#F6F4F0;padding:16px 20px;text-align:center;color:#64748B;font-size:11px;border-top:1px solid #EBE7DF;">
-        <div style="margin-bottom:6px;font-family:Georgia,serif;font-size:12px;color:#1C252E;">Prepared by Iron Gate Consulting · Reviewed through military legal benefits</div>
-        <div style="color:#94A3B8;font-size:10px;line-height:1.5;">This trust has been reviewed for accuracy and completeness through my military legal benefits. All documents are prepared using standardized trust templates that are commonly reviewed by military legal professionals. I am not an attorney and do not provide legal advice. Clients may seek independent legal counsel at any time. Trust laws vary by state.</div>
+        <div style="margin-bottom:6px;font-family:Georgia,serif;font-size:12px;color:#1C252E;">Prepared by Iron Gate Consulting &middot; Reviewed through military legal benefits</div>
+        <div style="color:#94A3B8;font-size:10px;line-height:1.5;">This trust has been reviewed for accuracy and completeness through my military legal benefits. All documents are prepared using standardized trust templates that are commonly reviewed by military legal professionals. I am not an attorney and do not provide legal advice. Trust laws vary by state.</div>
         <div style="margin-top:8px;">&copy; {business} &middot; Secure Trust Intake Portal</div>
       </td></tr>
     </table>
@@ -321,12 +335,61 @@ def _status_change_email_html(business, accent, primary, client_name, status, ca
     return _email_shell(business, primary, accent, inner)
 
 
+# Deliverability config — a proper "From" with display name + reply_to helps
+# Gmail/Outlook place the message in the inbox instead of Promotions/Spam.
+# SENDER_EMAIL is the address whose DNS domain must have SPF / DKIM / DMARC
+# records configured (see /app/memory/EMAIL_DELIVERABILITY.md).
+SENDER_DISPLAY = os.environ.get("SENDER_DISPLAY", "Iron Gate Consulting")
+REPLY_TO_EMAIL = os.environ.get("REPLY_TO_EMAIL", ADMIN_NOTIFY_EMAIL)
+
+
+def _from_header() -> str:
+    """Return a properly formatted RFC-5322 `From` header string with a
+    display name — 'Iron Gate Consulting <support@igcfirm.com>'."""
+    if not SENDER_EMAIL:
+        return ""
+    if "<" in SENDER_EMAIL:  # already formatted
+        return SENDER_EMAIL
+    return f"{SENDER_DISPLAY} <{SENDER_EMAIL}>"
+
+
+def _html_to_text(html: str) -> str:
+    """Very small HTML-to-text converter for the multipart plain-text
+    fallback. Not perfect but massively improves deliverability at Gmail
+    (missing text/plain is a spam signal)."""
+    if not html:
+        return ""
+    import re as _re
+    text = _re.sub(r"<br\s*/?>", "\n", html, flags=_re.IGNORECASE)
+    text = _re.sub(r"</p>", "\n\n", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"</li>", "\n", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"<[^>]+>", "", text)
+    text = _re.sub(r"\n{3,}", "\n\n", text)
+    # Unescape common entities
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&middot;", "·").replace("&copy;", "©")
+    return text.strip()
+
+
 async def send_email_notification(to_email: str, subject: str, html_body: str):
     if not RESEND_API_KEY:
         logger.info(f"[email-mock] to={to_email} subject={subject}")
         return
     try:
-        params = {"from": SENDER_EMAIL, "to": [to_email], "subject": subject, "html": html_body}
+        params = {
+            "from": _from_header(),
+            "to": [to_email],
+            "subject": subject,
+            "html": html_body,
+            "text": _html_to_text(html_body),
+            "reply_to": REPLY_TO_EMAIL,
+            "headers": {
+                # RFC 8058 one-click list-unsubscribe hint improves inbox rate
+                # at Gmail/Yahoo/Outlook. Points to the reply-to address as a
+                # mailto: unsubscribe target so a human can act on it.
+                "List-Unsubscribe": f"<mailto:{REPLY_TO_EMAIL}?subject=Unsubscribe>",
+                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+            },
+        }
         await asyncio.to_thread(resend.Emails.send, params)
     except Exception as e:
         logger.error(f"Resend send failed: {e}")
@@ -341,7 +404,16 @@ async def send_email_notification_with_attachment(to_email: str, subject: str, h
     try:
         import base64
         params = {
-            "from": SENDER_EMAIL, "to": [to_email], "subject": subject, "html": html_body,
+            "from": _from_header(),
+            "to": [to_email],
+            "subject": subject,
+            "html": html_body,
+            "text": _html_to_text(html_body),
+            "reply_to": REPLY_TO_EMAIL,
+            "headers": {
+                "List-Unsubscribe": f"<mailto:{REPLY_TO_EMAIL}?subject=Unsubscribe>",
+                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+            },
             "attachments": [{
                 "filename": attachment_name,
                 "content": base64.b64encode(attachment_bytes).decode("utf-8"),

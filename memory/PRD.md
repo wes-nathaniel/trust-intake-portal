@@ -10,6 +10,22 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
 
+## Changelog — 2026-07-16 (branding assets + email deliverability hardening)
+- ✅ **Iron Gate branding assets** shipped as static frontend files:
+  - `/app/frontend/public/favicon.png` (512×512, from IronGate Favicon ver.png)
+  - `/app/frontend/public/apple-touch-icon.png` (180×180)
+  - `/app/frontend/public/irongate-logo.png` (400×400, downscaled from IronGate Logo.png for email + header use)
+  - `index.html` updated to load the PNG favicon + apple-touch-icon (old inline base64 shield removed)
+  - `Login.jsx` renders the shield above "IGC Trust Portal" (`data-testid="login-logo"`)
+- ✅ **Email deliverability upgrades** (code-side, complete):
+  - `From` header now `Iron Gate Consulting <support@igcfirm.com>` (display name via new `SENDER_DISPLAY` env, default 'Iron Gate Consulting')
+  - `Reply-To: support@igcfirm.com` on every send
+  - Every email is now sent as **HTML + plain-text multipart** via a new `_html_to_text()` helper (Gmail penalizes HTML-only mail)
+  - `List-Unsubscribe: <mailto:support@igcfirm.com?subject=Unsubscribe>` + `List-Unsubscribe-Post: One-Click` headers per RFC 8058
+  - `_email_shell()` rewritten to include the Iron Gate shield PNG at the top of every email (absolute URL from `FRONTEND_URL`)
+- 📄 **DNS setup guide** written to `/app/memory/EMAIL_DELIVERABILITY.md` — user must add the 4 Resend-provided DNS records (SPF, DKIM, DMARC, MX) at their domain registrar to complete deliverability. Code side is done.
+
+
 ## Changelog — 2026-07-15 (name rule + Iron Gate advisor rule for page-by-page explainer)
 - ✅ **NAME RULE — intake first name is the only truth**. `_build_case_context` (server.py) now derives `client_first_name` from `grantors[0].first_name` (intake), falling back to first token of client_name. `_context_brief` writes an explicit `APPROVED_FIRST_NAME:` line, and both SYSTEM_PROMPT and user_prompt hammer the rule ("ignore any middle name from the PDF"). Verified: for a client 'Arlene Tamara Nathaniel' with intake first_name='Arlene', every page addresses her as 'Arlene', never 'Tamara' or 'Ms. Nathaniel'.
 - ✅ **IRON GATE CONSULTING RULE — no outside counsel language**. New `IRON_GATE_ADVISOR_LINE` module constant with the exact copy: *"Your trust was carefully prepared through Iron Gate Consulting's military legal benefits program. If you have questions, contact your Iron Gate Consulting advisor directly."* Prompt now forbids all suggestions to consult attorneys / seek independent legal counsel / obtain a second opinion, and instructs the model to substitute the Iron Gate line at natural closings. Two-layer defense: `_scrub_attorney_advice()` regex post-processor replaces any residual attorney-advice sentence with the Iron Gate line (dedupes to a single line per page, preserves surrounding HTML tags).
