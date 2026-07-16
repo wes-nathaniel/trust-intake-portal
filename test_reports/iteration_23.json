@@ -1,0 +1,38 @@
+{
+  "summary": "Re-verified iteration 22 security fixes. Both CRITICAL bugs are RESOLVED. Backend: 19/19 tests pass (up from 16/17 with 1 xfail). SSN masked-round-trip on PUT /grantors now preserves the encrypted value AND applies other field changes; _encrypt_grantor_ssns defense-in-depth clears masked SSNs instead of persisting the literal mask; /auth/login and /auth/refresh both $set last_seen_at=now, so idle-locked users recover cleanly on re-login and /auth/refresh. Frontend: AdminCaseDetail grantors list now filters entries with no id and falls back to '—' for missing name — seeded Michael Thompson case renders 'Grantors (0)' with no orphan/'undefined' rows.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "AdminCaseDetail (beneficiaries or successor list)", "issue": "React warning 'Each child in a list should have a unique key prop' still emitted from AdminCaseDetail — grantors list is fixed (uses key={g.id}), but another list (likely beneficiaries or successor_trustees) is missing a key. Not blocking, cosmetic.", "selector": "[data-testid^=admin-beneficiary-], [data-testid^=admin-successor-]", "priority": "LOW"},
+      {"component": "AdminCaseDetail Beneficiaries (seeded case)", "issue": "Two occurrences of 'undefined%' rendered in a SPAN.text-navy — beneficiary distribution percentage field is undefined for some seeded beneficiaries and is being concatenated with '%'. Grantor 'undefined' bug is FIXED, this is a separate residual bug in the beneficiary/distribution rendering.", "selector": ".text-navy.break-words", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration22_security.py",
+    "/app/test_reports/pytest/iter23_security.xml"
+  ],
+  "action_items": [
+    "OPTIONAL (LOW): Fix residual React key warning in AdminCaseDetail — audit non-grantor list maps (beneficiaries / successor_trustees) for missing key= props.",
+    "OPTIONAL (LOW): Fix 'undefined%' rendering in the seeded case Beneficiaries section — guard the distribution percentage rendering with `${b.distribution ?? '—'}%` or similar."
+  ],
+  "critical_code_review_comments": [
+    "SSN preservation guard in update_grantor is correct: preserves existing ciphertext when incoming ssn is masked or empty. Defense-in-depth in _encrypt_grantor_ssns (clears mask + warns) is a strong belt-and-suspenders pattern.",
+    "/auth/login and /auth/refresh both now $set last_seen_at=now — the two write paths that (re)establish liveness. Good coverage.",
+    "server.py remains 5477 lines — modularization recommendation from iteration_21/22 still open; not blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration22_security.py"
+  ],
+  "success_rate": {"backend": "100% (19/19 passing, no xfail)", "frontend": "95% (grantor fix verified; separate cosmetic issues remain in beneficiaries section)"},
+  "test_credentials": "support@igcfirm.com / Wllorenzo03! (admin); client.test@example.com / Client12345! (client)",
+  "seed_data_creation": "Test creates a fresh trust case + grantor per run and cleans up. Legacy plaintext grantor inserted via motor and cleaned up in fixture teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "test_iteration22_security.py now has 19 passing tests including: test_masked_roundtrip_preserves_ssn (verifies SSN preservation on masked PUT with phone change), test_encrypt_helper_clears_mask_when_no_prior (defense-in-depth), test_refresh_updates_last_seen_at (refresh touches liveness), and the flipped test_idle_timeout_returns_401 (login now recovers 200 on next /auth/me). The two remaining LOW frontend issues (undefined% + key warning) are in the Beneficiaries area, not grantors, and were out of scope for the iteration 22 security fixes.",
+  "rca of the issue": "N/A — both critical bugs fixed and verified. Fixes are located at server.py:896 (login $set last_seen_at), server.py:941 (refresh $set last_seen_at), server.py:1123-1150 (_encrypt_grantor_ssns clears mask), server.py:1310-1335 (update_grantor preserves existing ssn on masked round-trip), AdminCaseDetail.jsx:579-580 (filter g && g.id, fallback name to '—')."
+}

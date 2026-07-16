@@ -576,11 +576,11 @@ export default function AdminCaseDetail() {
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
-        <Section title={`Grantors (${c.grantors?.length || 0})`}>
-          {(c.grantors || []).map((g, i) => (
+        <Section title={`Grantors (${(c.grantors || []).filter(g => g && g.id).length || 0})`}>
+          {(c.grantors || []).filter(g => g && g.id).map((g, i) => (
             <div key={g.id} className="mb-4" data-testid={`admin-grantor-${i}`}>
               <p className="text-xs uppercase text-bronze font-semibold mb-2">Grantor {i + 1}</p>
-              <KV k="Name" v={`${g.full_legal_name}${g.middle_name ? " (" + g.middle_name + ")" : ""}`} />
+              <KV k="Name" v={`${g.full_legal_name || "—"}${g.middle_name ? " (" + g.middle_name + ")" : ""}`} />
               <KV k="DOB" v={g.date_of_birth} />
               <KV k="SSN" v={<SSNReveal caseId={c.id} grantorId={g.id} masked={g.ssn} />} />
               <KV k="Email" v={g.email} />

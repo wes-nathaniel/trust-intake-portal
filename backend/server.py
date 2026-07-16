@@ -889,6 +889,11 @@ async def login(body: LoginReq, request: Request, response: Response):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     await clear_failures(identifier)
     await clear_failures(email_identifier)
+    # Reset the idle-timeout marker on successful login so a previously
+    # idle-locked user can recover by re-authenticating. Without this the
+    # next authenticated request would trip the stale last_seen_at check
+    # in get_current_user and return 401 immediately after login.
+    await db.users.update_one({"id": user["id"]}, {"$set": {"last_seen_at": now_iso()}})
     access = create_access_token(user["id"], email, user.get("role", "client"))
     refresh = create_refresh_token(user["id"])
     set_auth_cookies(response, access, refresh)
@@ -931,6 +936,9 @@ async def refresh(request: Request, response: Response):
         user = await db.users.find_one({"id": payload["sub"]})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
+        # Refresh also touches last_seen_at — the client is proving liveness
+        # by exercising the refresh token, so treat this as activity.
+        await db.users.update_one({"id": user["id"]}, {"$set": {"last_seen_at": now_iso()}})
         access = create_access_token(user["id"], user["email"], user.get("role", "client"))
         response.set_cookie("access_token", access, httponly=True, secure=True, samesite="none",
                             max_age=ACCESS_TTL_MIN * 60, path="/")
@@ -1115,15 +1123,30 @@ async def accept_invite(body: AcceptInviteReq, request: Request, response: Respo
 def _encrypt_grantor_ssns(grantors: list) -> list:
     """Encrypt every grantor.ssn field in place before persisting to Mongo.
     Idempotent — already-encrypted values are returned unchanged. Masked
-    values (starting with 'XXX-XX-') are treated as pass-through and NOT
-    encrypted (defensive against accidental re-write of a masked response)."""
+    values ('XXX-XX-####') are a display-only sentinel that indicates 'this
+    is a UI round-trip, not a real SSN'; encountering one here means a
+    caller forgot to preserve the existing ciphertext, so we clear the
+    field rather than write the mask literally into Mongo. Callers that
+    edit an existing grantor MUST preserve the prior stored SSN when the
+    incoming payload contains a masked value (see update_grantor)."""
     if not grantors:
         return grantors
     for g in grantors:
-        if isinstance(g, dict):
-            v = g.get("ssn") or ""
-            if v and not v.upper().startswith("XXX-XX-"):
-                g["ssn"] = ssn_crypto.encrypt_ssn(v)
+        if not isinstance(g, dict):
+            continue
+        v = (g.get("ssn") or "").strip()
+        if not v:
+            continue
+        if v.upper().startswith("XXX-XX-"):
+            logger.warning(
+                "_encrypt_grantor_ssns: masked SSN reached the write path — clearing "
+                "field to avoid persisting the mask. Caller must preserve prior ssn."
+            )
+            g["ssn"] = ""
+            continue
+        if ssn_crypto.is_encrypted(v):
+            continue  # already ciphertext
+        g["ssn"] = ssn_crypto.encrypt_ssn(v)
     return grantors
 
 
@@ -1293,6 +1316,15 @@ async def update_grantor(case_id: str, grantor_id: str, g: Grantor, user: dict =
         if x["id"] == grantor_id:
             g_data = g.model_dump()
             g_data["id"] = grantor_id
+            # SSN-preservation guard. Our own GET responses mask SSNs to
+            # 'XXX-XX-####'. If the client round-trips that value on a PUT
+            # (which happens whenever they edit any other field), we must
+            # NOT overwrite the encrypted value in Mongo — the masked form
+            # is a display sentinel, not a real SSN. Preserve the existing
+            # stored value; otherwise encrypt the fresh input.
+            incoming_ssn = (g_data.get("ssn") or "").strip()
+            if incoming_ssn.upper().startswith("XXX-XX-") or not incoming_ssn:
+                g_data["ssn"] = x.get("ssn", "")
             grantors[i] = g_data
             found = True
             break

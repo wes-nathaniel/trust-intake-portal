@@ -300,25 +300,20 @@ def test_legacy_plaintext_upgraded_on_put(client, admin, legacy_case, db):
     assert r2.json()["ssn"] == "999-88-7777"
 
 
-# ---------- 6. No double encryption ----------
-@pytest.mark.xfail(
-    reason="CRITICAL BUG: PUT /grantors accepts the masked SSN 'XXX-XX-####' and "
-           "the update path stores that mask verbatim, destroying the original "
-           "encrypted SSN. Frontend GETs mask -> user edits any field -> PUT "
-           "with mask -> plaintext SSN is permanently lost."
-)
-def test_no_double_encryption(admin, client, new_case, db):
-    # PUT the grantor unchanged (send masked value which should NOT be re-encrypted)
+# ---------- 6. SSN preservation on masked round-trip (was CRITICAL BUG, now fixed) ----------
+def test_masked_roundtrip_preserves_ssn(admin, client, new_case, db):
+    """PUT /grantors/{id} with masked SSN 'XXX-XX-####' must preserve the
+    original encrypted SSN and still apply other field changes."""
     doc_before = _run(db.trust_cases.find_one({"id": new_case["case_id"]}))
     g_before = next(g for g in doc_before["grantors"] if g["id"] == new_case["grantor_id"])
     stored_before = g_before["ssn"]
+    assert stored_before.startswith("enc:v1:")
 
-    # simulate frontend sending back the current record (with masked value)
     payload = {
         "full_legal_name": "Enc Test Grantor",
         "date_of_birth": "1970-01-01",
-        "ssn": "XXX-XX-6789",
-        "phone": "555-0100",
+        "ssn": "XXX-XX-6789",  # masked round-trip
+        "phone": "555-0199",   # <-- changed field
         "email": "enc.test@example.com",
         "address": {"line1": "1 Test St", "city": "Miami", "state": "FL", "postal_code": "33101"},
         "marital_status": "single",
@@ -328,14 +323,35 @@ def test_no_double_encryption(admin, client, new_case, db):
         f"{API}/trust-cases/{new_case['case_id']}/grantors/{new_case['grantor_id']}",
         json=payload, timeout=15,
     )
-    assert r.status_code == 200
-    # Reveal should still return original plaintext
+    assert r.status_code == 200, r.text
+
+    # Mongo doc: stored ssn still ciphertext (may be same or re-encrypted, but MUST start with enc:v1:)
+    doc_after = _run(db.trust_cases.find_one({"id": new_case["case_id"]}))
+    g_after = next(g for g in doc_after["grantors"] if g["id"] == new_case["grantor_id"])
+    assert g_after["ssn"].startswith("enc:v1:"), f"stored ssn corrupted: {g_after['ssn']!r}"
+    assert g_after["ssn"] != "XXX-XX-6789"
+    # Other field was actually updated
+    assert g_after.get("phone") == "555-0199"
+
+    # Reveal returns the original plaintext
     r2 = admin.post(
         f"{API}/admin/trust-cases/{new_case['case_id']}/grantors/{new_case['grantor_id']}/reveal-ssn",
         timeout=15,
     )
     assert r2.status_code == 200
-    assert r2.json()["ssn"] == "123-45-6789", "double-encryption or lost original plaintext"
+    assert r2.json()["ssn"] == "123-45-6789", "plaintext SSN lost across masked round-trip"
+
+
+def test_encrypt_helper_clears_mask_when_no_prior(db):
+    """Defense in depth: if a masked SSN sneaks past the guard into
+    _encrypt_grantor_ssns directly, the helper must clear the field (not
+    persist the mask literally)."""
+    import sys
+    sys.path.insert(0, "/app/backend")
+    from server import _encrypt_grantor_ssns
+    grantors = [{"id": "test-g", "full_legal_name": "X", "ssn": "XXX-XX-1234"}]
+    out = _encrypt_grantor_ssns(grantors)
+    assert out[0]["ssn"] == "", f"masked SSN was persisted: {out[0]['ssn']!r}"
 
 
 # ---------- 7. Idle session timeout ----------
@@ -353,19 +369,42 @@ def test_idle_timeout_returns_401(db):
         r2 = s.get(f"{API}/auth/me", timeout=10)
         assert r2.status_code == 401
         assert "60 minutes" in r2.text or "inactivity" in r2.text.lower()
-        # BUG: login endpoint does NOT reset last_seen_at, so a user idle-locked
-        # cannot recover via re-login without the stale marker being cleared
-        # server-side. This is reported as an action item. Verify by attempting.
+        # After the FIX: /auth/login must $set last_seen_at=now so a
+        # previously idle-locked user recovers cleanly. Very next
+        # authenticated request should succeed with 200.
         s2 = _login(CLIENT_EMAIL, CLIENT_PASSWORD)
         me_after_login = s2.get(f"{API}/auth/me", timeout=10)
-        # Assert the CURRENT (buggy) behavior explicitly so future regressions
-        # (or a fix) surface clearly:
-        assert me_after_login.status_code == 401, (
-            "If this now returns 200, login is (correctly) clearing "
-            "last_seen_at on re-authentication — update this test."
+        assert me_after_login.status_code == 200, (
+            f"Idle-lock recovery bug: /auth/me returned {me_after_login.status_code} "
+            f"after fresh login; expected 200. Response: {me_after_login.text[:200]}"
         )
     finally:
         # cleanup so other tests / follow-up runs are not affected
+        _run(db.users.update_one({"id": uid}, {"$unset": {"last_seen_at": ""}}))
+
+
+# ---------- 7b. Refresh endpoint touches last_seen_at ----------
+def test_refresh_updates_last_seen_at(db):
+    _run(db.users.update_one({"email": CLIENT_EMAIL}, {"$unset": {"last_seen_at": ""}}))
+    s = _login(CLIENT_EMAIL, CLIENT_PASSWORD)
+    uid = s.get(f"{API}/auth/me", timeout=10).json()["id"]
+    try:
+        # Backdate last_seen_at to well past the 60-min idle window
+        past = (datetime.now(timezone.utc) - timedelta(minutes=90)).isoformat()
+        _run(db.users.update_one({"id": uid}, {"$set": {"last_seen_at": past}}))
+        # Drop the access_token cookie so the next auth check falls back to
+        # refresh (or hits 401 for /me, which is fine — we hit /auth/refresh
+        # first anyway).
+        s.cookies.pop("access_token", None)
+        rr = s.post(f"{API}/auth/refresh", timeout=10)
+        assert rr.status_code == 200, f"refresh failed: {rr.status_code} {rr.text}"
+        # Following authenticated request must succeed even though pre-refresh
+        # last_seen_at was 90 min old.
+        me = s.get(f"{API}/auth/me", timeout=10)
+        assert me.status_code == 200, (
+            f"After /auth/refresh, /auth/me returned {me.status_code}: {me.text[:200]}"
+        )
+    finally:
         _run(db.users.update_one({"id": uid}, {"$unset": {"last_seen_at": ""}}))
 
 
