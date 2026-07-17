@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Shield, AlertCircle, ArrowLeft, CheckCircle2 } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
+import PasswordInput from "@/components/PasswordInput";
 
 export default function ResetPassword() {
   const { branding } = useAuth();
@@ -115,9 +116,8 @@ export default function ResetPassword() {
               <div className="space-y-4">
                 <div>
                   <Label htmlFor="pw" className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">New password</Label>
-                  <Input
+                  <PasswordInput
                     id="pw"
-                    type="password"
                     autoComplete="new-password"
                     required
                     minLength={8}
@@ -129,9 +129,8 @@ export default function ResetPassword() {
                 </div>
                 <div>
                   <Label htmlFor="confirm" className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Confirm new password</Label>
-                  <Input
+                  <PasswordInput
                     id="confirm"
-                    type="password"
                     autoComplete="new-password"
                     required
                     minLength={8}

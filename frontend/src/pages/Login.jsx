@@ -4,6 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AlertCircle, Shield } from "lucide-react";
+import PasswordInput from "@/components/PasswordInput";
 
 export default function Login() {
   const { login, branding } = useAuth();
@@ -69,7 +70,7 @@ export default function Login() {
             </div>
             <div>
               <Label htmlFor="password" className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Password</Label>
-              <Input id="password" type="password" autoComplete="current-password" required
+              <PasswordInput id="password" autoComplete="current-password" required
                 value={form.password}
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
                 className="mt-1 bg-white" data-testid="login-password-input" />
