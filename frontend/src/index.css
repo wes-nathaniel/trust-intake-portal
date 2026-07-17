@@ -190,3 +190,16 @@ html { scroll-behavior: smooth; }
   to { opacity: 1; transform: translateY(0); }
 }
 .fade-in-up { animation: fadeInUp 0.4s ease-out both; }
+
+/* PDF viewer — anti-exfiltration protections (client trust preview page)
+   Applied only to the LEFT panel showing the watermarked trust draft PDF.
+   The AI explainer panel on the right is intentionally NOT covered. */
+.pdf-viewer-container {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+@media print {
+  .pdf-viewer-container { display: none !important; }
+}

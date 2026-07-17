@@ -298,7 +298,7 @@ export default function TrustPreview() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" data-testid="trust-preview-side-by-side">
         <div
           ref={containerRef}
-          className={`relative bg-navy rounded-xl overflow-hidden select-none transition-opacity duration-200 ${dimmed ? "opacity-10 blur-md" : "opacity-100"}`}
+          className={`pdf-viewer-container relative bg-navy rounded-xl overflow-hidden select-none transition-opacity duration-200 ${dimmed ? "opacity-10 blur-md" : "opacity-100"}`}
           style={{ userSelect: "none", WebkitUserSelect: "none" }}
           onCopy={(e) => e.preventDefault()}
           onContextMenu={(e) => e.preventDefault()}
