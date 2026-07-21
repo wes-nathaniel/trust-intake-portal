@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 25 — acknowledgments guard fix verified. 9/9 backend tests PASS against the public REACT_APP_BACKEND_URL. The bug where intake-time disclosure checkboxes were flipping review_completed_ack (and thus rendering the 'Ready for Payment' admin banner prematurely) is fully guarded on the backend. All four combinations of (has_draft x status) enforce the correct policy: only (has_draft=True AND status='Ready for Client Review') permits a client to set review_completed_ack=True; the other three combos return 400 with the expected message. Disclosure ticks (disclosure_ack/state_laws_ack/notarization_ack) never mutate review_completed_ack. Intake wizard's intake_submitted_ack correctly advances status Intake* -> In Review while keeping review_completed_ack=False. New trust-draft uploads auto-reset any lingering review_completed_ack to False. Admin bypasses the guard as designed. Legacy review_completed_ack still recognized by _auto_intake_status.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration25_acks_guard.py",
+    "/app/test_reports/pytest/iter25_acks.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:1569 guard correctly checks `user.get('role') != 'admin'` so admin override works; the check uses exact string match on status 'Ready for Client Review' (case-sensitive) — matches the status constant used in _set_status and CLIENT_AUTO_EMAIL_STATUSES elsewhere, so consistent.",
+    "server.py:3023-3026 auto-reset on new draft upload only clears review_completed_ack if truthy — good, avoids unnecessary write. Other acks (disclosure_ack etc.) intentionally preserved.",
+    "server.py:659 _auto_intake_status accepts either intake_submitted_ack OR review_completed_ack — legacy passthrough working as documented.",
+    "server.py:1598 client-completing-intake path only triggers when now_intake_ack transitions False->True; idempotent re-submissions won't spam admin notifications. LGTM.",
+    "server.py still 5600 lines — modularization remains a standing recommendation from prior iterations; not blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration25_acks_guard.py (NEW)"
+  ],
+  "success_rate": {"backend": "100% (9/9 passing)", "frontend": "not tested (backend-only per request)"},
+  "test_credentials": "support@igcfirm.com / Wllorenzo03! (admin); ephemeral acks_client_<random>@example.com registered per module run.",
+  "seed_data_creation": "Each test creates its own trust case (trust_type='single', intake_path='new') via POST /api/trust-cases as the fresh test client, and admin cleans it up via DELETE /admin/trust-cases/{id} in the fixture teardown. Trust drafts are uploaded as tiny 1-page PDFs generated via PyMuPDF at test time.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_iteration25_acks_guard.py has 9 passing tests covering: (1-4) the 2x2 grid of has_draft x status for client review_completed_ack guard, (5) disclosure ticks don't pollute review flag, (6) intake_submitted_ack advances to In Review, (7) new draft upload auto-resets review_completed_ack, (8) admin can set review_completed_ack via override, (9) admin can set even without draft. Fresh client account per module (uuid tag) avoids brute-force lockout carryover. PDF generator uses PyMuPDF with fallback minimal PDF. Note: admin PUT /acknowledgments does NOT trigger status transition (guard uses role != admin), which is correct per requirement 7.",
+  "rca of the issue": "Root cause: intake wizard's ReviewStep previously sent {review_completed_ack: true} on the same button that clients pressed after ticking the 3 disclosure boxes; the backend blindly set the flag and the admin dashboard interpreted it as 'client approved drafted trust'. Fix (verified): (a) new AcknowledgmentsUpdate.intake_submitted_ack field for intake-done, (b) backend guard rejects client-role review_completed_ack=True unless has_draft AND status=='Ready for Client Review' (server.py:1569-1578), (c) status transitions split — intake_submitted_ack -> 'In Review', review_completed_ack -> stays at 'Ready for Client Review' for admin to advance manually (server.py:1598-1604), (d) trust-draft upload auto-clears any stale review_completed_ack (server.py:3023-3026), (e) _auto_intake_status still honors legacy review_completed_ack for pre-fix cases (server.py:659). All 5 layers verified."
+}

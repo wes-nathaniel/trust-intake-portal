@@ -82,11 +82,16 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
       toast.error("Please enter and save your trust name before completing review.");
       return;
     }
-    await saveAcks({ review_completed_ack: true });
-    toast.success("Thank you for reviewing your trust. Your agent will contact you shortly.");
+    // Sends `intake_submitted_ack: true` (NOT `review_completed_ack`) so the
+    // backend can distinguish "client finished providing intake" from
+    // "client approved the drafted trust". The latter is only settable
+    // AFTER the admin uploads a trust draft and moves the case status to
+    // "Ready for Client Review".
+    await saveAcks({ intake_submitted_ack: true });
+    toast.success("Thank you for submitting your intake. Your agent will review and contact you shortly.");
   };
 
-  const reviewCompleted = !!acks.review_completed_ack;
+  const reviewCompleted = !!acks.intake_submitted_ack || !!acks.review_completed_ack;
   const isReviewPath = (trustCase.intake_path || "new") === "review";
 
   return (
@@ -299,18 +304,18 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
             className="w-full py-5 sm:py-6 rounded-xl text-white text-xl sm:text-2xl font-bold shadow-lg transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ backgroundColor: "#28a745", minHeight: 64 }}
             data-testid="review-completed-btn">
-            {saving ? "Submitting…" : "✓  Complete Review"}
+            {saving ? "Submitting…" : "✓  Submit for Review"}
           </button>
           <p className="mt-3 text-center text-xs text-[#64748B]">
-            Pressing this button notifies your agent. They will review and send your next steps shortly.
+            Pressing this button notifies your agent. They will review your intake and prepare your trust draft — you'll get a portal notification when it's ready to review.
           </p>
         </div>
       ) : (
         <div className="mt-10 rounded-xl bg-green-50 border border-green-300 p-6 sm:p-8 text-center" data-testid="review-completed-badge">
           <CheckCircle2 className="h-10 w-10 text-green-700 mx-auto mb-2" />
-          <p className="font-serif text-2xl text-navy mb-1">Review complete</p>
+          <p className="font-serif text-2xl text-navy mb-1">Intake submitted</p>
           <p className="text-sm text-[#334155] max-w-lg mx-auto">
-            Thank you — your agent has been notified. Next steps will be shown on your portal.
+            Thank you — your agent has been notified. You'll be alerted here when your drafted trust is ready to review.
           </p>
           <div className="mt-5 flex flex-col sm:flex-row gap-3 justify-center">
             <a href="/portal" className="btn-primary inline-flex items-center justify-center gap-1" data-testid="review-back-to-portal">

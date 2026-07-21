@@ -539,6 +539,10 @@ class AcknowledgmentsUpdate(BaseModel):
     review_completed_ack: Optional[bool] = None
     business_sos_ack: Optional[bool] = None
     disclosure_ack: Optional[bool] = None
+    # Set by the intake wizard's final step. Signals "client is done providing
+    # intake info, ready for admin review". Distinct from `review_completed_ack`
+    # which is ONLY for approving the drafted trust after admin has uploaded it.
+    intake_submitted_ack: Optional[bool] = None
 
 class Address(BaseModel):
     line1: str = ""
@@ -649,7 +653,10 @@ def _auto_intake_status(case: dict) -> Optional[str]:
     if cur not in _INTAKE_PHASE_ORDER:
         return None  # Case is past intake; admin owns the status.
 
-    if (case.get("acknowledgments") or {}).get("review_completed_ack"):
+    acks = case.get("acknowledgments") or {}
+    # Either signal marks intake as done — legacy `review_completed_ack` is
+    # still respected in case any case predates the intake_submitted_ack split.
+    if acks.get("intake_submitted_ack") or acks.get("review_completed_ack"):
         target = "In Review"
     elif _has_required_intake_docs(case):
         target = "In Review" if (case.get("intake_path") or "new") == "review" else "Waiting on Documents"
@@ -1072,6 +1079,7 @@ async def admin_invite_client(body: InviteReq, admin: dict = Depends(require_adm
             "review_completed_ack": False,
             "business_sos_ack": False,
             "disclosure_ack": False,
+            "intake_submitted_ack": False,
         },
         "payment": {"status": "none"},
         "trust_unlocked": False,
@@ -1546,32 +1554,58 @@ async def set_trust_name(case_id: str, body: TrustNameUpdate, user: dict = Depen
 async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: dict = Depends(get_current_user)):
     case = await get_case(case_id, user)
     current = dict(case.get("acknowledgments") or {})
-    for k, v in body.model_dump(exclude_none=True).items():
+    incoming = body.model_dump(exclude_none=True)
+    cur_status = case.get("status") or ""
+    has_draft = bool((case.get("trust_draft") or {}).get("storage_path"))
+
+    # CRITICAL: `review_completed_ack=True` semantically means "client has
+    # reviewed the drafted trust and approves it — advance to Ready for
+    # Payment." It must NEVER be settable during intake when the client is
+    # just checking disclosure boxes. Two conditions must both hold:
+    #   1. Admin has uploaded a trust_draft PDF for this case, AND
+    #   2. Case status is exactly "Ready for Client Review".
+    # If either check fails, silently drop the flag from the update and
+    # return a 400 so the client UI can surface a helpful message.
+    if incoming.get("review_completed_ack") is True and user.get("role") != "admin":
+        if not (has_draft and cur_status == "Ready for Client Review"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "You cannot mark the trust review complete yet. Your trust "
+                    "draft must be uploaded and your case status must be "
+                    "'Ready for Client Review' before this step is available."
+                ),
+            )
+
+    for k, v in incoming.items():
         current[k] = bool(v)
     updates = {"acknowledgments": current}
 
-    # If client marks review completed:
-    #   - From intake wizard step 8 (status is intake-y) → flip status to "In Review"
-    #     (admin then manually advances to Drafting Trust, etc.)
-    #   - From drafted-trust preview (status="Ready for Client Review") → leave status alone;
-    #     admin manually advances to "Ready for Payment".
-    # Always notify admin (email + SMS) on the transition.
+    # Status transitions driven by client-completion signals:
+    #  - `intake_submitted_ack` flips intake statuses to "In Review". This is
+    #    what the intake wizard's final step now sends.
+    #  - `review_completed_ack` (only reachable via the guard above) leaves
+    #    status alone at "Ready for Client Review"; admin then manually
+    #    advances to "Ready for Payment".
     INTAKE_STATUSES = {"Intake Started", "Intake In Progress", "Waiting on Documents", "In Review"}
+    was_intake_ack = bool((case.get("acknowledgments") or {}).get("intake_submitted_ack"))
+    now_intake_ack = bool(current.get("intake_submitted_ack"))
     was_review_ack = bool((case.get("acknowledgments") or {}).get("review_completed_ack"))
     now_review_ack = bool(current.get("review_completed_ack"))
-    is_client_completing = now_review_ack and not was_review_ack and user.get("role") != "admin"
-    cur_status = case.get("status") or ""
+    is_client_completing_intake = now_intake_ack and not was_intake_ack and user.get("role") != "admin"
+    is_client_completing_review = now_review_ack and not was_review_ack and user.get("role") != "admin"
 
-    if is_client_completing and cur_status in INTAKE_STATUSES:
+    if is_client_completing_intake and cur_status in INTAKE_STATUSES:
         updates["status"] = "In Review"
         review_kind = "intake"
-    elif is_client_completing and cur_status == "Ready for Client Review":
+    elif is_client_completing_review and cur_status == "Ready for Client Review":
         review_kind = "trust_draft"
     else:
         review_kind = None
 
     await update_case(case_id, updates)
 
+    is_client_completing = is_client_completing_intake or is_client_completing_review
     if is_client_completing:
         try:
             branding = await _branding_doc()
@@ -2980,6 +3014,16 @@ async def admin_upload_trust_draft(case_id: str,
         "version": int((case.get("trust_draft") or {}).get("version", 0)) + 1,
     }
     updates = {"trust_draft": draft}
+    # A newly-uploaded draft has NOT yet been reviewed by the client. Clear
+    # any stale `review_completed_ack` (may have been set by the pre-fix
+    # intake flow OR by a client approving a previous draft version) so the
+    # admin dashboard's "Client marked review as completed. Ready for
+    # payment." banner does not appear until the client explicitly approves
+    # this new draft on the TrustPreview page.
+    existing_acks = dict(case.get("acknowledgments") or {})
+    if existing_acks.get("review_completed_ack"):
+        existing_acks["review_completed_ack"] = False
+        updates["acknowledgments"] = existing_acks
     # NOTE: Status is intentionally NOT auto-advanced here. Uploading a draft
     # is an admin action; the status must only move forward via a real client
     # action or an explicit admin status change.
