@@ -1,0 +1,47 @@
+{
+  "summary": "Iteration 25 — PDF preview performance + cache correctness fix verified. 8/8 backend tests PASS and frontend client-side page cache confirmed working. Two ORIGIN-side improvements are correct in code and behave correctly against localhost:8001. One INFRASTRUCTURE-level finding (Cloudflare/ingress rewrites Cache-Control) is documented as an action item because it partially undermines the browser HTTP cache benefit — although the React pageCacheRef in-memory blob cache still delivers the primary UX win.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/trust-cases/{id}/trust-preview/page/{n}.png (public URL only)",
+        "issue": "Backend correctly emits `Cache-Control: private, max-age=600, must-revalidate` (verified against http://localhost:8001), but the public https://trust-intake-portal.preview.emergentagent.com URL passes through Cloudflare/K8s ingress which REWRITES the header to `no-store, no-cache, must-revalidate` (cf-cache-status: DYNAMIC). Result: the browser HTTP cache benefit is lost across page reloads. The React pageCacheRef (memory blob cache) still provides the primary scroll-back UX so the user-facing 10-15s bug remains fixed, but full reload / new tab will re-download all pages. Fix requires ingress/Cloudflare Page Rule/Transform Rule adjustment — not a backend code change."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Trust preview initial load",
+        "issue": "Observed 4 duplicate GET /trust-preview/page/1.png requests on first render of the preview (likely React 18 StrictMode double-effects + the aggressive full-prefetch loop overlapping the primary render effect). Not a bug — cache dedupes on subsequent nav — but wastes ~3 extra round-trips per fresh load.",
+        "affected_selectors": ["[data-testid=\"preview-loader\"]"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration25_pdf_perf.py",
+    "/app/test_reports/pytest/iter25_perf.xml"
+  ],
+  "action_items": [
+    "OPTIONAL (P1, infra): Investigate/adjust the Cloudflare or K8s ingress rule that rewrites Cache-Control to 'no-store, no-cache, must-revalidate' on /api/trust-cases/*/trust-preview/page/*.png. Backend correctly sends 'private, max-age=600, must-revalidate'; the browser is being told to never cache. Because the response is authenticated (private) and watermarked, allowing the browser to keep it privately for 10 min is safe and was the intent of the fix.",
+    "OPTIONAL (P3): De-dupe the initial page/1.png fetches — the primary fetchPage effect + the aggressive full-prefetch loop + StrictMode double-invoke together issue ~4 requests for page 1 on first mount. A single in-flight-request map keyed by page# would collapse these."
+  ],
+  "critical_code_review_comments": [
+    "server.py _pdf_bytes_cache (lines 52-76) — correct: reuses `_preview_cache_lock` (a single mutex covers both LRUs), bounded to 5 entries (~25MB worst-case for 5MB PDFs), and busted in both draft-upload and draft-delete paths.",
+    "trust_preview_page handler (line 3711) — correct: get_object AND pdf_bytes_to_preview_page are both dispatched via asyncio.to_thread, unblocking the event loop for other requests under --workers 2. LGTM.",
+    "_pdf_bytes_bust invoked at both server.py:2993 (upload) and :3049 (delete) alongside the existing _cache_bust_prefix — both cache tiers are busted symmetrically. Verified live: upload of a different PDF returns different bytes on the next /page/1.png fetch.",
+    "server.py still 5556 lines — modularization recommendation from prior iterations remains open; not blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration25_pdf_perf.py (NEW)"
+  ],
+  "success_rate": {"backend": "100% (8/8 passing)", "frontend": "100% for the specific fix (page cache confirmed; loader present)"},
+  "test_credentials": "support@igcfirm.com / Wllorenzo03! (admin); Perf client user is created fresh per module run.",
+  "seed_data_creation": "Two ephemeral trust cases are created (POST /api/trust-cases with trust_type='single') and a small PDF is uploaded via /admin/trust-cases/{id}/trust-draft for the bust-cache and fresh-render tests. Both cases are cleaned up in the fixture teardown via DELETE /admin/trust-cases/{id}.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_iteration25_pdf_perf.py has 8 passing tests covering: meta pages count, Cache-Control at origin, JPEG warm-cache <1s, PDF-bytes cache speeds pages 2-6 to <2s cold, anon=>401, wrong-owner-client=>403, upload busts both caches (bytes differ), 6 concurrent page fetches all-200 under 12s wall, fresh-case render. The public URL passes through a proxy that rewrites Cache-Control to no-store; the origin (localhost:8001) is verified with an access_token forwarded as a plain Cookie header (public cookies are Secure so cannot be replayed to http://localhost). Cases created with trust_type='single' | 'joint' — 'revocable' is rejected 422.",
+  "rca of the issue": "Original 10-15s slowness had three root causes per the review: (1) every page re-downloaded the ENTIRE PDF from object storage synchronously → fixed by module-level LRU _pdf_bytes_cache keyed by storage_path with LRU size 5; (2) PyMuPDF/pypdfium render blocked the event loop → fixed by asyncio.to_thread on both get_object and pdf_bytes_to_preview_page; (3) Cache-Control:no-store forced re-fetch on scroll-back → fixed at ORIGIN (private, max-age=600, must-revalidate) BUT overwritten downstream by Cloudflare/ingress to 'no-store, no-cache, must-revalidate'. Frontend pageCacheRef (memory blob URL cache) preserves the scroll-back UX regardless of the HTTP cache. My test confirms scroll page1→page2→page1 issues NO new /page/1.png request."
+}

@@ -46,6 +46,35 @@ _preview_cache_order: list = []
 _preview_cache_lock = threading.Lock()
 _PREVIEW_CACHE_MAX = 200  # ~20MB with ~100KB JPEGs
 
+# Cached PDF bytes so page-image renders don't re-download the whole PDF
+# from object storage on every request. Keyed by storage_path; bounded LRU
+# of a handful of recently-viewed trusts (a 5MB PDF × 5 slots ≈ 25MB).
+_pdf_bytes_cache: dict = {}
+_pdf_bytes_order: list = []
+_PDF_BYTES_CACHE_MAX = 5
+
+def _pdf_bytes_get(storage_path: str):
+    with _preview_cache_lock:
+        return _pdf_bytes_cache.get(storage_path)
+
+def _pdf_bytes_put(storage_path: str, data: bytes):
+    with _preview_cache_lock:
+        if storage_path in _pdf_bytes_cache:
+            return
+        _pdf_bytes_cache[storage_path] = data
+        _pdf_bytes_order.append(storage_path)
+        while len(_pdf_bytes_order) > _PDF_BYTES_CACHE_MAX:
+            old = _pdf_bytes_order.pop(0)
+            _pdf_bytes_cache.pop(old, None)
+
+def _pdf_bytes_bust(storage_path: str):
+    with _preview_cache_lock:
+        _pdf_bytes_cache.pop(storage_path, None)
+        try:
+            _pdf_bytes_order.remove(storage_path)
+        except ValueError:
+            pass
+
 def _cache_get(key):
     with _preview_cache_lock:
         return _preview_cache.get(key)
@@ -2961,6 +2990,7 @@ async def admin_upload_trust_draft(case_id: str,
         old_path = (case.get("trust_draft") or {}).get("storage_path")
         if old_path:
             _cache_bust_prefix(old_path)
+            _pdf_bytes_bust(old_path)
     except Exception:
         pass
 
@@ -3016,6 +3046,7 @@ async def admin_delete_trust_draft(case_id: str, admin: dict = Depends(require_a
             logger.warning(f"delete trust_draft object failed: {e}")
         try:
             _cache_bust_prefix(old_path)
+            _pdf_bytes_bust(old_path)
         except Exception:
             pass
 
@@ -3686,20 +3717,38 @@ async def trust_preview_page(case_id: str, page: int, user: dict = Depends(get_c
     cache_key = (storage_path, page)
     cached = _cache_get(cache_key)
     if cached is None:
+        # Performance fix (2026-07): avoid re-downloading the whole PDF from
+        # object storage on every page request. First page fetch primes an
+        # in-memory PDF cache keyed by storage_path; subsequent page renders
+        # for the same trust reuse those bytes. Also runs the blocking
+        # PyMuPDF render on a worker thread so the event loop stays free
+        # for other requests (critical with --workers 2 under load).
+        pdf_bytes = _pdf_bytes_get(storage_path)
+        if pdf_bytes is None:
+            try:
+                pdf_bytes, _ct = await asyncio.to_thread(get_object, storage_path)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"Could not read PDF from storage: {e}")
+            _pdf_bytes_put(storage_path, pdf_bytes)
         try:
-            pdf_bytes, _ct = get_object(storage_path)
-            img_bytes = pdf_bytes_to_preview_page(pdf_bytes, page - 1, fmt="JPEG")
-            _cache_put(cache_key, img_bytes)
-            cached = img_bytes
+            img_bytes = await asyncio.to_thread(
+                pdf_bytes_to_preview_page, pdf_bytes, page - 1, "JPEG"
+            )
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to render preview: {e}")
+        _cache_put(cache_key, img_bytes)
+        cached = img_bytes
 
+    # Watermarked page images are safe to hold in the BROWSER'S PRIVATE cache
+    # briefly — same page reloads become instant instead of round-tripping
+    # to origin. `private` prevents shared/CDN caching; `must-revalidate`
+    # forces a conditional re-check on the next hit. Do NOT weaken this to
+    # `public` — the URL alone is enough to identify a trust page for the
+    # caller and must never be cached beyond the authenticated user.
     headers = {
-        "Cache-Control": "private, no-store, no-cache, must-revalidate, max-age=0",
-        "Pragma": "no-cache",
-        "Expires": "0",
+        "Cache-Control": "private, max-age=600, must-revalidate",
         "X-Frame-Options": "SAMEORIGIN",
         "Content-Disposition": "inline",
         "X-Content-Type-Options": "nosniff",
