@@ -2982,32 +2982,12 @@ async def admin_upload_trust_draft(case_id: str,
     except Exception as e:
         logger.error(f"Failed to schedule page-explanation job for case {case_id}: {e}")
 
-    # Notify client: trust ready for review — fired as a background task so
-    # the upload response returns immediately (Resend can take 20-30s from
-    # some networks; that latency should not block the admin's UI).
-    async def _send_trust_ready_email():
-        try:
-            branding = await _branding_doc()
-            biz = branding.get("business_name", "Trust Portal")
-            accent = branding.get("accent_color", "#C5A880")
-            primary = branding.get("primary_color", "#1C252E")
-            link = f"{FRONTEND_URL}/portal/trust-preview/{case_id}"
-            inner = f"""
-<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Your trust is ready for review.</p>
-<p>Your draft trust for <b>{case.get('trust_name') or 'your case'}</b> is ready to review in the secure portal.</p>
-<p style="color:#64748B;font-size:13px;">The draft is watermarked and cannot be printed or downloaded until payment is received. You can schedule a Zoom review call or complete your review inside the portal.</p>
-{_cta(link, "Review your trust", accent)}
-"""
-            html = _email_shell(biz, primary, accent, inner)
-            await send_email_notification(
-                case.get("client_email"),
-                f"Your trust is ready for review — {biz}",
-                html,
-            )
-        except Exception as e:
-            logger.error(f"Trust-ready email failed: {e}")
-
-    asyncio.create_task(_send_trust_ready_email())
+    # Client is NOT notified on upload — the "Your trust is ready" email now
+    # fires only when the admin explicitly moves the case status to
+    # "Ready for Client Review" (see the CLIENT_AUTO_EMAIL_STATUSES branch in
+    # notify_status_change). This gives the admin time to review the auto-
+    # extracted content and page-by-page explanations before the client is
+    # invited into the preview.
 
     return {"ok": True, **draft}
 
