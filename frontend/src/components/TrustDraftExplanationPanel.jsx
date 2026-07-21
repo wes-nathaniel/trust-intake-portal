@@ -55,22 +55,53 @@ export default function TrustDraftExplanationPanel({ caseId, clientName, current
   }, [load]);
 
   const handleRegenerate = async () => {
-    if (regenerating) return;
+    if (regenerating || !currentPage) return;
     setRegenerating(true);
     setRegenError(null);
-    if (pollTimer.current) clearTimeout(pollTimer.current);
+    // Kick off single-page regenerate. Only the page currently being
+    // viewed will be re-generated; all other pages are left alone.
     try {
-      await api.post(`/admin/trust-cases/${caseId}/trust-page-explanations/regenerate`);
-      // Immediately reflect pending state and start polling
-      setState((s) => ({ ...s, status: "pending", error: null }));
-      // Small delay so the backend has persisted the fresh job doc
-      setTimeout(load, 800);
+      await api.post(`/admin/trust-cases/${caseId}/trust-page-explanations/${currentPage}/regenerate`);
     } catch (e) {
       const detail = e.response?.data?.detail || "Could not start regeneration. Please try again.";
       setRegenError(detail);
-    } finally {
       setRegenerating(false);
+      return;
     }
+    // Optimistically clear the current page so the pending state shows
+    setState((s) => ({ ...s, byPage: { ...s.byPage, [currentPage]: undefined } }));
+    // Poll the single-page status endpoint every 3s until completed or failed.
+    // Cap at ~3 min (60 polls) to avoid runaway loops on a bad case.
+    let polls = 0;
+    const MAX_POLLS = 60;
+    const pollOnce = async () => {
+      polls += 1;
+      try {
+        const { data } = await api.get(`/trust-cases/${caseId}/trust-page-explanations/${currentPage}/status`);
+        if (data.status === "completed") {
+          // Re-fetch the whole explanations blob so byPage picks up the fresh text
+          await load();
+          setRegenerating(false);
+          return;
+        }
+        if (data.status === "failed") {
+          setRegenError(data.error || "Regeneration failed. Please try again.");
+          await load();
+          setRegenerating(false);
+          return;
+        }
+        if (polls >= MAX_POLLS) {
+          setRegenError("Regeneration is taking longer than expected. Refresh in a moment to check.");
+          setRegenerating(false);
+          return;
+        }
+        setTimeout(pollOnce, 3000);
+      } catch (e) {
+        setRegenError(e.response?.data?.detail || "Lost connection while regenerating.");
+        setRegenerating(false);
+      }
+    };
+    setTimeout(pollOnce, 1500);
   };
 
   const first = (clientName || "").split(" ")[0] || "there";
@@ -98,7 +129,7 @@ export default function TrustDraftExplanationPanel({ caseId, clientName, current
               disabled={regenerating || jobRunning}
               data-testid="regenerate-page-explanations-btn"
               className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-white bg-bronze hover:bg-bronze/90 disabled:opacity-50 disabled:cursor-not-allowed px-2.5 py-1 rounded-full transition-colors"
-              title="Admin: regenerate plain-English notes using the latest intake data"
+              title="Admin: regenerate plain-English notes for THIS page only (audited)"
             >
               {regenerating ? (
                 <Loader2 className="h-3 w-3 animate-spin" />

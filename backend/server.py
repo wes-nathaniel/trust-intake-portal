@@ -3134,6 +3134,56 @@ async def admin_regenerate_trust_page_explanations(case_id: str,
     return {"ok": True, **job}
 
 
+@api_router.post("/admin/trust-cases/{case_id}/trust-page-explanations/{page_num}/regenerate")
+async def admin_regenerate_single_page(case_id: str, page_num: int,
+                                       admin: dict = Depends(require_admin)):
+    """Regenerate the explanation for a SINGLE page only. Runs in the
+    background so the request returns immediately (~5ms) and the admin's
+    UI stays responsive; poll GET .../{page_num}/status to know when the
+    fresh text is ready. Every other page's explanation is left untouched."""
+    import single_page_jobs
+    if page_num < 1:
+        raise HTTPException(status_code=400, detail="page_num must be >= 1")
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    draft = case.get("trust_draft") or {}
+    if not draft.get("storage_path"):
+        raise HTTPException(status_code=400, detail="No trust draft PDF uploaded yet.")
+    try:
+        data, _ct = get_object(draft["storage_path"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not read PDF from storage: {e}")
+    job = await single_page_jobs.start_single_page_regenerate(
+        case_id=case_id,
+        page_num=page_num,
+        pdf_bytes=data,
+        case_context=_build_case_context(case),
+        admin_id=admin["id"],
+        db=db,
+        update_case_fn=update_case,
+    )
+    return {"ok": True, **job}
+
+
+@api_router.get("/trust-cases/{case_id}/trust-page-explanations/{page_num}/status")
+async def get_single_page_status(case_id: str, page_num: int,
+                                 user: dict = Depends(get_current_user)):
+    """Poll the status of a single-page regenerate. Both admin and the
+    owning client may poll (client uses this to know when refreshed text
+    is ready if they happen to have the panel open during an admin fix)."""
+    import single_page_jobs
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "client_id": 1})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if user.get("role") != "admin" and case.get("client_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    status = single_page_jobs.get_status(case_id, page_num)
+    if not status:
+        return {"status": "idle", "page": page_num}
+    return {**status, "page": page_num}
+
+
 @api_router.get("/trust-cases/{case_id}/trust-draft-explanation")
 async def client_trust_draft_explanation(case_id: str, user: dict = Depends(get_current_user)):
     """Client-facing endpoint the trust preview page reads to display the

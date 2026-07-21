@@ -354,6 +354,25 @@ PAGES:
     return out
 
 
+async def explain_single_page(page_text: str, page_num: int, case_context: dict) -> str:
+    """Generate a plain-English explanation for a SINGLE page. Reuses the
+    same batch-LLM path so prompts, personalization, and scrubs stay
+    consistent with the full-run explainer. Returns HTML text (may be empty
+    if the LLM produced no usable output — callers should retry)."""
+    api_key = os.environ.get("EMERGENT_LLM_KEY", "").strip()
+    if not api_key:
+        return ""
+    ctx_brief = _context_brief(case_context or {})
+    batch = [{"page": page_num, "text": (page_text or "").strip()}]
+    result = await _run_batch(api_key, ctx_brief, batch)
+    if not result:
+        return ""
+    # _run_batch may return more than one entry if the model hallucinated
+    # extra pages — take the one that matches our page_num, else first.
+    match = next((r for r in result if r.get("page") == page_num), result[0])
+    return str(match.get("text") or "")
+
+
 async def explain_pages(pages: List[str], case_context: dict,
                         progress_cb: Optional[Callable] = None,
                         start_batch: int = 0,
