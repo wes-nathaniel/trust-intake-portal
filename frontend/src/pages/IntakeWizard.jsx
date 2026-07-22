@@ -48,7 +48,10 @@ function isStepComplete(key, trustCase) {
       const docs = (trustCase.documents || []).filter(d => !d.is_deleted);
       const ASSET_DOC_TYPES = new Set(["bank_statement","deed","title","insurance_policy","business_document"]);
       const uploaded = docs.some(d => ASSET_DOC_TYPES.has(d.doc_type));
-      return manual || uploaded;
+      // Assets are optional. Clients with nothing to add can tick "I have
+      // no assets to add" on the Assets step to signal completion instead.
+      const noAssets = !!trustCase.acknowledgments?.no_assets_ack;
+      return manual || uploaded || noAssets;
     }
     case "ein":      return trustCase.ein?.authorized === true;
     case "documents":{

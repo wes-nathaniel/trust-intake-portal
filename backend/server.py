@@ -543,6 +543,10 @@ class AcknowledgmentsUpdate(BaseModel):
     # intake info, ready for admin review". Distinct from `review_completed_ack`
     # which is ONLY for approving the drafted trust after admin has uploaded it.
     intake_submitted_ack: Optional[bool] = None
+    # Optional client acknowledgment on the Assets step — "I have no assets to
+    # add". Lets the client proceed past the Assets step without adding any.
+    # Auto-cleared elsewhere when the client actually adds an asset.
+    no_assets_ack: Optional[bool] = None
 
 class Address(BaseModel):
     line1: str = ""

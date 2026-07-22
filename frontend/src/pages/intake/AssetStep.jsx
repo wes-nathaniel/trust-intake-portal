@@ -272,8 +272,29 @@ export default function AssetStep({ caseId, trustCase, reload }) {
       )}
 
       {!hasAssets && (
-        <div className="mt-6 p-4 bg-amber-50 border border-amber-200 rounded-md text-sm text-amber-900" data-testid="asset-warning">
-          <strong>Required:</strong> Please add at least one asset (upload a document or enter manually) to continue.
+        <div className="mt-6 p-4 bg-sand-200/50 border border-bronze/30 rounded-md text-sm text-navy" data-testid="asset-optional-panel">
+          <p className="mb-3">
+            <strong>Assets are optional.</strong> If you have any bank accounts, real estate, vehicles,
+            life insurance, investments, business interests, or digital assets you'd like placed under
+            the trust, add them above. Otherwise, tick the box below to continue.
+          </p>
+          <label className="flex items-start gap-3 cursor-pointer" data-testid="asset-no-assets-label">
+            <input
+              type="checkbox"
+              checked={!!trustCase.acknowledgments?.no_assets_ack}
+              onChange={async (e) => {
+                try {
+                  await api.put(`/trust-cases/${caseId}/acknowledgments`, { no_assets_ack: e.target.checked });
+                  reload();
+                } catch (err) {
+                  toast.error(formatApiError(err.response?.data?.detail));
+                }
+              }}
+              className="mt-1 h-4 w-4 rounded border-bronze accent-bronze"
+              data-testid="asset-no-assets-checkbox"
+            />
+            <span className="text-navy">I have no assets to add at this time. My agent can help me add assets later.</span>
+          </label>
         </div>
       )}
 
