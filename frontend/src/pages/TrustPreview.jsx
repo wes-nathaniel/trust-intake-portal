@@ -8,7 +8,6 @@ import {
   AlertTriangle, Stamp, ScrollText, PhoneCall, Loader2,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
-import PaymentMethodPicker from "@/components/PaymentMethodPicker";
 import TrustViewerTwoPanel from "@/components/TrustViewerTwoPanel";
 import TrustDraftExplanationPanel from "@/components/TrustDraftExplanationPanel";
 
@@ -464,11 +463,14 @@ export default function TrustPreview() {
             </p>
           </div>
 
-          <PaymentMethodPicker
-            caseId={caseId}
-            payment={payment}
-            onClaimed={load}
-          />
+          <div
+            className="rounded-xl bg-white border border-[#E2E0DA] p-8 text-center shadow-sm"
+            data-testid="payment-notice"
+          >
+            <p className="text-lg text-navy leading-relaxed max-w-md mx-auto">
+              Your agent will send you a payment link directly. You may also request payment via Zelle.
+            </p>
+          </div>
 
           <button
             onClick={() => { setCallOpen(true); setCallMessage(null); setCallNote(""); }}
