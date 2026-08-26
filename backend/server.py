@@ -5275,6 +5275,7 @@ app.add_middleware(
     allow_origins=[
         FRONTEND_URL,
         "https://trust.igcfirm.com",
+        "https://trust.igchq.com",
         "https://trust-intake-portal.preview.emergentagent.com",  # keep preview working for QA
     ],
     allow_credentials=True,
