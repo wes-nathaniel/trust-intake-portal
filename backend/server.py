@@ -14,6 +14,7 @@ from typing import List, Optional, Literal
 
 import bcrypt
 import crypto as ssn_crypto
+import httpx
 import jwt
 import requests
 import resend
@@ -104,9 +105,9 @@ REFRESH_TTL_DAYS = 14
 APP_NAME = os.environ.get("APP_NAME", "trust-portal")
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "support@igcfirm.com").strip().lower()
-SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "").strip()
+ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "wes@igcfirm.com").strip().lower()
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "outreach@igcoutreach.com")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 # Idle-session timeout: an authenticated user who makes no requests for this
 # many minutes is forced to re-log-in even if their access token is still
@@ -114,8 +115,13 @@ FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 # expire after inactivity" requirement.
 IDLE_TIMEOUT_MINUTES = int(os.environ.get("IDLE_TIMEOUT_MINUTES", "60"))
 
-if RESEND_API_KEY:
-    resend.api_key = RESEND_API_KEY
+# Legacy Resend init kept as a no-op so importing `resend` never crashes if
+# an environment still has the old key. All send paths now go through Brevo.
+if os.environ.get("RESEND_API_KEY"):
+    try:
+        resend.api_key = os.environ["RESEND_API_KEY"]
+    except Exception:
+        pass
 
 # ---------- DATABASE ----------
 mongo_url = os.environ["MONGO_URL"]
@@ -427,58 +433,91 @@ def _html_to_text(html: str) -> str:
 
 
 async def send_email_notification(to_email: str, subject: str, html_body: str):
-    if not RESEND_API_KEY:
+    """Send an HTML+text email via Brevo transactional API. Non-fatal on
+    failure — logs the error so an outbound-email hiccup never breaks the
+    request that triggered the notification."""
+    if not BREVO_API_KEY:
         logger.info(f"[email-mock] to={to_email} subject={subject}")
         return
+    payload = {
+        "sender": {"email": SENDER_EMAIL, "name": SENDER_DISPLAY},
+        "to": [{"email": to_email}],
+        "replyTo": {"email": REPLY_TO_EMAIL},
+        "subject": subject,
+        "htmlContent": html_body,
+        "textContent": _html_to_text(html_body),
+        # Best-effort — Brevo documents standard headers as unsupported but
+        # in practice passes these through. Confirmed working in our test.
+        "headers": {
+            "List-Unsubscribe": f"<mailto:{REPLY_TO_EMAIL}?subject=Unsubscribe>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+    }
     try:
-        params = {
-            "from": _from_header(),
-            "to": [to_email],
-            "subject": subject,
-            "html": html_body,
-            "text": _html_to_text(html_body),
-            "reply_to": REPLY_TO_EMAIL,
-            "headers": {
-                # RFC 8058 one-click list-unsubscribe hint improves inbox rate
-                # at Gmail/Yahoo/Outlook. Points to the reply-to address as a
-                # mailto: unsubscribe target so a human can act on it.
-                "List-Unsubscribe": f"<mailto:{REPLY_TO_EMAIL}?subject=Unsubscribe>",
-                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-            },
-        }
-        await asyncio.to_thread(resend.Emails.send, params)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0)) as client_http:
+            r = await client_http.post(
+                "https://api.brevo.com/v3/smtp/email",
+                headers={
+                    "accept": "application/json",
+                    "content-type": "application/json",
+                    "api-key": BREVO_API_KEY,
+                },
+                json=payload,
+            )
+        r.raise_for_status()
     except Exception as e:
-        logger.error(f"Resend send failed: {e}")
+        # Include Brevo's response body for diagnosability (safe: no secrets)
+        body = getattr(e, "response", None)
+        detail = body.text[:400] if body is not None else str(e)[:400]
+        logger.error(f"Brevo send failed: {detail}")
 
 
 async def send_email_notification_with_attachment(to_email: str, subject: str, html_body: str,
                                                   attachment_name: str, attachment_bytes: bytes,
                                                   content_type: str = "application/pdf"):
-    if not RESEND_API_KEY:
-        logger.info(f"[email-mock-attach] to={to_email} subject={subject} attachment={attachment_name} ({len(attachment_bytes)} bytes)")
+    """Same as `send_email_notification` but attaches a single file (typically
+    the signed trust PDF). `content_type` is retained for backwards
+    compatibility with the old Resend signature; Brevo infers MIME from the
+    filename extension."""
+    if not BREVO_API_KEY:
+        logger.info(
+            f"[email-mock-attach] to={to_email} subject={subject} "
+            f"attachment={attachment_name} ({len(attachment_bytes)} bytes)"
+        )
         return
+    import base64
+    payload = {
+        "sender": {"email": SENDER_EMAIL, "name": SENDER_DISPLAY},
+        "to": [{"email": to_email}],
+        "replyTo": {"email": REPLY_TO_EMAIL},
+        "subject": subject,
+        "htmlContent": html_body,
+        "textContent": _html_to_text(html_body),
+        "headers": {
+            "List-Unsubscribe": f"<mailto:{REPLY_TO_EMAIL}?subject=Unsubscribe>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+        "attachment": [{
+            "name": attachment_name,
+            "content": base64.b64encode(attachment_bytes).decode("ascii"),
+        }],
+    }
     try:
-        import base64
-        params = {
-            "from": _from_header(),
-            "to": [to_email],
-            "subject": subject,
-            "html": html_body,
-            "text": _html_to_text(html_body),
-            "reply_to": REPLY_TO_EMAIL,
-            "headers": {
-                "List-Unsubscribe": f"<mailto:{REPLY_TO_EMAIL}?subject=Unsubscribe>",
-                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-            },
-            "attachments": [{
-                "filename": attachment_name,
-                "content": base64.b64encode(attachment_bytes).decode("utf-8"),
-                "content_type": content_type,
-            }],
-        }
-        await asyncio.to_thread(resend.Emails.send, params)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client_http:
+            r = await client_http.post(
+                "https://api.brevo.com/v3/smtp/email",
+                headers={
+                    "accept": "application/json",
+                    "content-type": "application/json",
+                    "api-key": BREVO_API_KEY,
+                },
+                json=payload,
+            )
+        r.raise_for_status()
     except Exception as e:
-        logger.error(f"Resend send (attachment) failed: {e}")
+        body = getattr(e, "response", None)
+        detail = body.text[:400] if body is not None else str(e)[:400]
+        logger.error(f"Brevo send (attachment) failed: {detail}")
 
 # ---------- MODELS ----------
 class RegisterReq(BaseModel):
@@ -4336,8 +4375,9 @@ async def admin_diagnostics(_: dict = Depends(require_admin)):
     twilio_ready = sms.is_enabled()
     twilio_admin_phone_set = bool((os.environ.get("ADMIN_PHONE_NUMBER") or "").strip())
 
-    # --- Resend (transactional email) ---
-    resend_ready = bool(RESEND_API_KEY)
+    # --- Brevo (transactional email) ---
+    email_ready = bool(BREVO_API_KEY)
+    resend_ready = email_ready  # backward-compat alias for existing health JSON consumers
 
     # --- Emergent LLM (AI assistant) ---
     llm_ready = bool(EMERGENT_KEY)
