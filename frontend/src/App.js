@@ -20,6 +20,10 @@ import BrandingPage from "@/pages/BrandingPage";
 import AcceptInvite from "@/pages/AcceptInvite";
 import AdminQuestions from "@/pages/AdminQuestions";
 import AdminWhatsAppInbox from "@/pages/AdminWhatsAppInbox";
+import AdminRepsPage from "@/pages/AdminRepsPage";
+import AdminCommissionsPage from "@/pages/AdminCommissionsPage";
+import PaymentSuccess from "@/pages/PaymentSuccess";
+import PaymentCancel from "@/pages/PaymentCancel";
 import Company from "@/pages/Company";
 import ProtectedRoute from "@/components/ProtectedRoute";
 
@@ -57,9 +61,15 @@ function App() {
             <Route path="/portal/trust-final/:caseId" element={<ProtectedRoute><TrustFinal /></ProtectedRoute>} />
             <Route path="/intake/:caseId" element={<ProtectedRoute><IntakeWizard /></ProtectedRoute>} />
 
+            {/* Stripe checkout landings — accessible to authenticated clients */}
+            <Route path="/payment/success" element={<ProtectedRoute><PaymentSuccess /></ProtectedRoute>} />
+            <Route path="/payment/cancel" element={<ProtectedRoute><PaymentCancel /></ProtectedRoute>} />
+
             <Route path="/admin" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
             <Route path="/admin/questions" element={<ProtectedRoute adminOnly><AdminQuestions /></ProtectedRoute>} />
             <Route path="/admin/whatsapp-inbox" element={<ProtectedRoute adminOnly><AdminWhatsAppInbox /></ProtectedRoute>} />
+            <Route path="/admin/reps" element={<ProtectedRoute adminOnly><AdminRepsPage /></ProtectedRoute>} />
+            <Route path="/admin/commissions" element={<ProtectedRoute adminOnly><AdminCommissionsPage /></ProtectedRoute>} />
             <Route path="/admin/cases/:caseId" element={<ProtectedRoute adminOnly><AdminCaseDetail /></ProtectedRoute>} />
             <Route path="/admin/cases/:caseId/trust-viewer-preview" element={<ProtectedRoute adminOnly><AdminTrustViewerPreview /></ProtectedRoute>} />
             <Route path="/admin/branding" element={<ProtectedRoute adminOnly><BrandingPage /></ProtectedRoute>} />

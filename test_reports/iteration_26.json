@@ -1,0 +1,32 @@
+{
+  "summary": "NEO Directive backend testing complete. Wrote /app/backend/tests/test_neo_directive.py covering Stripe health/catalog, Reps/Managers CRUD, public rep resolver, trust-case creation with rep_code + referral snapshot, Stripe checkout guard + client checkout + payment status, commission engine (4 splits: solo/mgr x basic/private), commission approve/deny via admin API, WhatsApp APPROVE handler, and Nia chat (basic reply + history + 4 urgent-flag phrases). 22/22 tests passing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "startup", "issue": "FastAPI on_event('startup'/'shutdown') is deprecated — should migrate to lifespan handlers"},
+      {"endpoint": "N/A", "issue": "starlette formparsers PendingDeprecationWarning: use `import python_multipart`"}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_neo_directive.py",
+    "/app/test_reports/pytest/neo_directive_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is >6000 lines — split by domain (stripe/commissions/nia/reps/managers) into routers.",
+    "stripe_service.setup_catalog swallows all exceptions and returns {} silently on failure — the admin endpoint responds ok:true even when Stripe is misconfigured. Consider re-raising so /admin/stripe/setup-catalog surfaces a 502.",
+    "_stripe_apply_paid always sets case.status='Payment Verified' before the already_paid short-circuit — harmless idempotency but the update_case runs twice on webhook + status-poll.",
+    "resolve_rep_public is case-insensitive on input (upper()), which is correct; consider adding a rate limit since it's unauthenticated and enumerable.",
+    "Nia chat endpoint has no auth or rate-limiting; a public POST calls the LLM which costs $ per call. Add throttling by IP/session_id.",
+    "approval_code generation uses token_urlsafe(6).upper().replace(...) which can produce codes shorter than 6 chars if the sample contains many '_' or '-'. Use secrets.choice over a fixed alphabet instead."
+  ],
+  "updated_files": ["/app/backend/tests/test_neo_directive.py"],
+  "success_rate": {"backend": "100%", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "Admin: support@igcfirm.com / Wllorenzo03! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Created ephemeral test reps (TESTREPxxxx, RESOLVxxxx, DELREPxxxx, CASExxxx, SPLxxxx), managers, and trust cases with TEST_ prefix in trust_name. Also creates commissions rows in db.commissions. These accumulate but are namespaced with random suffixes to avoid collisions.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_neo_directive.py rebinds server.db to a fresh AsyncIOMotorClient inside asyncio.run() because the module-level motor client is bound to the ASGI event loop and can't be reused from pytest sync tests. If new endpoints touch the same helpers, reuse that _run() pattern. Nia LLM tests take ~5-10s each due to Claude call latency.",
+  "rca of the issue": "N/A — no bugs found. Initial test failures were test-harness issues (motor client bound to a different loop), fixed by rebinding server.db within a fresh event loop for the commission-engine tests."
+}

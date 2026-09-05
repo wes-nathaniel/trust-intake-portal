@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
+import NiaChat from "@/components/NiaChat";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import {
@@ -63,6 +64,7 @@ export default function TrustPreview() {
   // Per-page in-memory blob-url cache (avoids re-downloading + re-rendering)
   const pageCacheRef = useRef({}); // { [pageNum]: blobUrl }
   const [pageBlobUrl, setPageBlobUrl] = useState(null);
+  const [pageLoadError, setPageLoadError] = useState(false);
 
   const [trustCase, setTrustCase] = useState(null);
   const [disclosureAck, setDisclosureAck] = useState(false);
@@ -133,10 +135,12 @@ export default function TrustPreview() {
     if (!meta) return;
     let cancelled = false;
     setPageLoading(true);
+    setPageLoadError(false);
     (async () => {
       const url = await fetchPage(pageIdx);
       if (cancelled) return;
       setPageBlobUrl(url);
+      setPageLoadError(!url);
       setPageLoading(false);
       // Preload next + previous + next+1 to keep the viewer snappy
       const toPreload = [pageIdx + 1, pageIdx - 1, pageIdx + 2];
@@ -320,13 +324,14 @@ export default function TrustPreview() {
               </div>
             </div>
           )}
-          {pageBlobUrl && (
+          {pageBlobUrl && !pageLoadError && (
             <img
               src={pageBlobUrl}
               alt={`Trust draft page ${pageIdx}`}
               draggable={false}
               onDragStart={(e) => e.preventDefault()}
               onContextMenu={(e) => e.preventDefault()}
+              onError={() => { setPageLoadError(true); pageCacheRef.current[pageIdx] = null; }}
               style={{
                 userSelect: "none",
                 WebkitUserSelect: "none",
@@ -337,6 +342,30 @@ export default function TrustPreview() {
               }}
               data-testid={`preview-page-img-${pageIdx}`}
             />
+          )}
+          {pageLoadError && !pageLoading && (
+            <div className="text-center text-white/80 max-w-sm px-4" data-testid="preview-page-error">
+              <div className="mx-auto mb-3 h-12 w-12 rounded-full bg-white/10 flex items-center justify-center text-xl">!</div>
+              <p className="font-serif text-xl text-white mb-1">Page unavailable</p>
+              <p className="text-sm text-white/70 mb-4">
+                We couldn't render page {pageIdx} right now. Please refresh, or try again in a moment.
+              </p>
+              <button
+                onClick={() => {
+                  pageCacheRef.current[pageIdx] = null;
+                  setPageLoadError(false);
+                  setPageLoading(true);
+                  fetchPage(pageIdx).then((u) => {
+                    setPageBlobUrl(u);
+                    setPageLoadError(!u);
+                    setPageLoading(false);
+                  });
+                }}
+                className="btn-primary text-sm px-4 py-2"
+                data-testid="preview-page-retry-btn">
+                Try again
+              </button>
+            </div>
           )}
         </div>
 
@@ -605,6 +634,7 @@ export default function TrustPreview() {
           </div>
         </div>
       )}
+      <NiaChat caseId={caseId} clientFirstName={(trustCase?.grantors?.[0]?.full_legal_name || "").split(" ")[0] || null} />
     </Layout>
   );
 }

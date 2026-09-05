@@ -31,16 +31,22 @@ _statuses: List[str] = []
 _now_iso: Optional[Callable[[], str]] = None
 _update_status: Optional[Callable[[str, str], Awaitable[None]]] = None
 _append_note: Optional[Callable[[str, str], Awaitable[dict]]] = None
+_approve_commission: Optional[Callable[[str, str], Awaitable[Optional[dict]]]] = None
+_deny_commission: Optional[Callable[[str, str], Awaitable[Optional[dict]]]] = None
 
 
-def configure(*, db, statuses, now_iso, update_status, append_note):
+def configure(*, db, statuses, now_iso, update_status, append_note,
+              approve_commission=None, deny_commission=None):
     """Wire up dependencies at server startup."""
     global _db, _statuses, _now_iso, _update_status, _append_note
+    global _approve_commission, _deny_commission
     _db = db
     _statuses = list(statuses)
     _now_iso = now_iso
     _update_status = update_status
     _append_note = append_note
+    _approve_commission = approve_commission
+    _deny_commission = deny_commission
 
 
 HELP_TEXT = (
@@ -50,6 +56,8 @@ HELP_TEXT = (
     "  /case <id> info\n"
     "  /case <id> status <new-status>\n"
     "  /case <id> note <text>\n"
+    "  APPROVE <code>     — release the commission for that approval code\n"
+    "  DENY <code>        — void the commission for that approval code\n"
     "\nStatuses: " + ", ".join([
         "Intake Started", "Intake In Progress", "Waiting on Documents",
         "In Review", "Drafting Trust", "Ready for Client Review",
@@ -91,6 +99,18 @@ async def handle_admin_command(body: str, admin_number: str, admin_email: Option
     """Parse and execute an admin command. Always returns a reply string
     (which the webhook will send back via WhatsApp)."""
     text = (body or "").strip()
+    if not text:
+        return "Empty message. Send /help for the command list."
+
+    # --- Commission approvals via natural language ---
+    #   APPROVE ABC123
+    #   DENY ABC123
+    upper = text.upper()
+    if upper.startswith("APPROVE ") or upper == "APPROVE":
+        return await _cmd_commission_approve(text)
+    if upper.startswith("DENY ") or upper == "DENY":
+        return await _cmd_commission_deny(text)
+
     if not text.startswith("/"):
         return (
             "Hi — this is the IGC admin WhatsApp channel. "
@@ -115,6 +135,41 @@ async def handle_admin_command(body: str, admin_number: str, admin_email: Option
         return await _cmd_case(rest)
 
     return f"Unknown command: {cmd}. Send /help."
+
+
+async def _cmd_commission_approve(text: str) -> str:
+    parts = text.split(maxsplit=1)
+    code = parts[1].strip().upper() if len(parts) > 1 else ""
+    if not code:
+        return "Usage: APPROVE <code>. Reply DENY <code> to void."
+    if _approve_commission is None:
+        return "Commission approval isn't wired yet."
+    result = await _approve_commission(code, "whatsapp")
+    if not result:
+        return f"No pending commission found for code {code}."
+    if result.get("already"):
+        return f"Commission {code} was already {result.get('status')}."
+    return (
+        f"✓ Commission {code} APPROVED.\n"
+        f"Rep {result.get('rep_name')} → ${(result.get('rep_cents') or 0)/100:,.2f}"
+        + (f"\nManager {result.get('manager_name')} → ${(result.get('manager_cents') or 0)/100:,.2f} override"
+           if result.get('manager_id') else "")
+    )
+
+
+async def _cmd_commission_deny(text: str) -> str:
+    parts = text.split(maxsplit=1)
+    code = parts[1].strip().upper() if len(parts) > 1 else ""
+    if not code:
+        return "Usage: DENY <code>."
+    if _deny_commission is None:
+        return "Commission denial isn't wired yet."
+    result = await _deny_commission(code, "whatsapp")
+    if not result:
+        return f"No pending commission found for code {code}."
+    if result.get("already"):
+        return f"Commission {code} was already {result.get('status')}."
+    return f"✗ Commission {code} DENIED — nothing will be released."
 
 
 async def _cmd_cases(rest: str) -> str:

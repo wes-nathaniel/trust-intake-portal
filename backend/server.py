@@ -36,6 +36,9 @@ import page_explanation_jobs
 from ai_assistant import answer_question as ai_answer_question
 from trust_preview import pdf_bytes_to_preview_pages, pdf_bytes_to_preview_page, page_count as pdf_page_count
 import square_service
+import stripe_service
+import commissions as commissions_mod
+import nia_assistant
 import doc_explainer
 from functools import lru_cache
 import threading
@@ -568,6 +571,10 @@ class TrustCaseCreate(BaseModel):
     trust_name: Optional[str] = ""
     intake_path: IntakePath = "new"
     client_phone: Optional[str] = Field(default="", max_length=30)
+    # Rep referral code — captured from ?ref=REPCODE URL param on the
+    # landing / register / start-new pages and passed through here on case
+    # create. Validated + normalized server-side; stored on case as `rep_code`.
+    rep_code: Optional[str] = Field(default="", max_length=32)
 
 class TrustNameUpdate(BaseModel):
     trust_name: str = Field(min_length=3, max_length=200)
@@ -1296,6 +1303,21 @@ async def update_case(case_id: str, updates: dict):
 async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_current_user)):
     intake_path = body.intake_path or "new"
     suggested_amount = INTAKE_PATH_PRICE_CENTS.get(intake_path, INTAKE_PATH_PRICE_CENTS["new"])
+    # Resolve + attach rep referral (if any). Silently ignore invalid codes so
+    # a stale ?ref= URL never blocks case creation.
+    rep_code_raw = (body.rep_code or "").strip().upper()[:32]
+    rep_snapshot = None
+    if rep_code_raw:
+        rep_doc = await db.reps.find_one({"rep_code": rep_code_raw, "active": {"$ne": False}}, {"_id": 0})
+        if rep_doc:
+            rep_snapshot = {
+                "rep_id": rep_doc["id"],
+                "rep_code": rep_doc["rep_code"],
+                "rep_name": rep_doc.get("name"),
+                "rep_email": rep_doc.get("email"),
+                "manager_id": rep_doc.get("manager_id"),
+                "attached_at": now_iso(),
+            }
     case = {
         "id": new_id(),
         "client_id": user["id"],
@@ -1326,11 +1348,28 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
         },
         "payment": {"status": "none", "suggested_amount_cents": suggested_amount},
         "trust_unlocked": False,
+        "rep_code": rep_snapshot["rep_code"] if rep_snapshot else None,
+        "referral": rep_snapshot,
         "created_at": now_iso(),
         "updated_at": now_iso(),
     }
     await db.trust_cases.insert_one(case)
     case.pop("_id", None)
+
+    # --- NEO Stage 1: Intake started — WhatsApp Wes so he sees a new deal in the pipeline ---
+    try:
+        who = case["client_name"] or case["client_email"]
+        deal_type = (
+            "Existing Trust Review" if intake_path == "review"
+            else ("Joint Trust" if body.trust_type == "joint" else "Single Trust")
+        )
+        ref_note = f" · Ref: {rep_snapshot['rep_name']} ({rep_snapshot['rep_code']})" if rep_snapshot else ""
+        notify.notify_admin(
+            f"[IGC · Stage 1 · New Intake] {who} started a {deal_type} intake. "
+            f"Case #{case['id'][:8].upper()}{ref_note}"
+        )
+    except Exception as e:
+        logger.error(f"NEO stage-1 WhatsApp alert failed: {e}")
     # Branded welcome email
     branding = await _branding_doc()
     biz = branding.get("business_name", "our firm")
@@ -1693,17 +1732,17 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
         except Exception as e:
             logger.error(f"Review-completed admin email failed: {e}")
 
-        # --- SMS to admin ---
+        # --- SMS + WhatsApp to admin ---
         try:
             if review_kind == "intake":
                 sms_body = (
-                    f"IGC: {case.get('client_name') or case.get('client_email')} completed intake. "
-                    f"Case #{case_id[:8].upper()} → In Review."
+                    f"[IGC · Stage 1b · Intake Completed] {case.get('client_name') or case.get('client_email')} "
+                    f"finished the intake wizard. Case #{case_id[:8].upper()} → In Review."
                 )
             elif review_kind == "trust_draft":
                 sms_body = (
-                    f"IGC: {case.get('client_name') or case.get('client_email')} approved drafted trust. "
-                    f"Case #{case_id[:8].upper()}. Open admin to advance to Ready for Payment."
+                    f"[IGC · Stage 2 · Document Approved] {case.get('client_name') or case.get('client_email')} "
+                    f"approved the drafted trust. Case #{case_id[:8].upper()}. Open admin to advance to Ready for Payment."
                 )
             else:
                 sms_body = (
@@ -4734,6 +4773,589 @@ async def admin_verify_payment(case_id: str, body: PaymentVerifyReq, admin: dict
     return {"ok": True, "payment": payment}
 
 
+# =====================================================================
+# NEO DIRECTIVE — Stripe, Rep Referrals, Commission Engine, Nia Assistant
+# =====================================================================
+
+# ---------- Stripe payments ----------
+
+class StripeCheckoutReq(BaseModel):
+    lookup_key: Literal["basic_living_trust", "private_trust"]
+    origin_url: str  # e.g. https://trust.igcfirm.com
+
+
+@api_router.get("/admin/stripe/health")
+async def stripe_health(_: dict = Depends(require_admin)):
+    return stripe_service.health()
+
+
+@api_router.post("/admin/stripe/setup-catalog")
+async def stripe_setup_catalog(_: dict = Depends(require_admin)):
+    result = stripe_service.setup_catalog()
+    if not result:
+        raise HTTPException(502, "Stripe catalog setup returned no prices — see server logs.")
+    return {"ok": True, "prices": result}
+
+
+@api_router.post("/trust-cases/{case_id}/stripe/checkout")
+async def stripe_create_checkout(case_id: str, body: StripeCheckoutReq, user: dict = Depends(get_current_user)):
+    """Client kicks off a Stripe Checkout Session for their case."""
+    case = await get_case(case_id, user)
+    if not case:
+        raise HTTPException(404, "Case not found")
+    if user.get("role") == "admin":
+        raise HTTPException(400, "Admins cannot start checkout on behalf of a client.")
+    if not stripe_service.is_enabled():
+        raise HTTPException(503, "Stripe is not configured.")
+
+    try:
+        session = stripe_service.create_checkout_session(
+            lookup_key=body.lookup_key,
+            origin_url=body.origin_url.rstrip("/"),
+            metadata={
+                "case_id": case_id,
+                "user_id": user["id"],
+                "lookup_key": body.lookup_key,
+                "rep_code": case.get("rep_code") or "",
+            },
+            customer_email=case.get("client_email"),
+        )
+    except Exception as e:
+        logger.error(f"Stripe checkout create failed: {e}")
+        raise HTTPException(502, f"Stripe error: {e}")
+
+    await db.payment_transactions.insert_one({
+        "session_id": session["session_id"],
+        "case_id": case_id,
+        "user_id": user["id"],
+        "lookup_key": body.lookup_key,
+        "amount": session["amount_cents"],
+        "currency": session["currency"],
+        "status": "initiated",
+        "payment_status": "pending",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    })
+
+    p = dict(case.get("payment") or {})
+    p["stripe_session_id"] = session["session_id"]
+    p["amount_cents"] = session["amount_cents"]
+    p["lookup_key"] = body.lookup_key
+    p["product_name"] = commissions_mod.product_display_name(body.lookup_key)
+    if not p.get("status") or p.get("status") in ("none", "amount_set"):
+        p["status"] = "checkout_pending"
+    await update_case(case_id, {"payment": p, "status": "Ready for Payment"})
+
+    return {"checkout_url": session["checkout_url"], "session_id": session["session_id"]}
+
+
+@api_router.get("/payments/status/{session_id}")
+async def stripe_payment_status(session_id: str):
+    """Unauthenticated status poll."""
+    record = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if not record:
+        raise HTTPException(404, "Transaction not found")
+
+    if record.get("payment_status") != "paid":
+        try:
+            s = stripe_service.retrieve_session(session_id)
+            if s.payment_status == "paid" or s.status == "complete":
+                await db.payment_transactions.update_one(
+                    {"session_id": session_id, "payment_status": {"$ne": "paid"}},
+                    {"$set": {
+                        "status": "completed",
+                        "payment_status": "paid",
+                        "stripe_payment_intent_id": s.payment_intent,
+                        "updated_at": now_iso(),
+                    }},
+                )
+                await _stripe_apply_paid(session_id)
+                record = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+        except Exception as e:
+            logger.warning(f"stripe status live-fetch: {e}")
+
+    return {
+        "session_id": record["session_id"],
+        "status": record.get("status"),
+        "payment_status": record.get("payment_status"),
+    }
+
+
+async def _stripe_apply_paid(session_id: str):
+    record = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if not record:
+        return
+    case_id = record.get("case_id")
+    if not case_id:
+        return
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        return
+    p = dict(case.get("payment") or {})
+    already_paid = p.get("status") in ("paid", "verified", "paid_manual")
+    p["status"] = "paid"
+    p["stripe_paid_at"] = now_iso()
+    p["stripe_session_id"] = session_id
+    p["amount_cents"] = record.get("amount") or p.get("amount_cents")
+    p["lookup_key"] = record.get("lookup_key") or p.get("lookup_key")
+    await update_case(case_id, {"payment": p, "status": "Payment Verified"})
+
+    if already_paid:
+        return
+
+    # NEO Stage 3: Payment confirmed
+    try:
+        who = case.get("client_name") or case.get("client_email")
+        amount_str = f"${(record.get('amount') or 0) / 100:,.2f}"
+        product = commissions_mod.product_display_name(record.get("lookup_key") or "")
+        notify.notify_admin(
+            f"[IGC · Stage 3 · Payment Confirmed] {who} paid {amount_str} for {product}. "
+            f"Case #{case_id[:8].upper()}."
+        )
+    except Exception as e:
+        logger.error(f"NEO stage-3 WhatsApp alert failed: {e}")
+
+    # NEO Stage 4: Commission hold
+    try:
+        await _create_commission_hold(case, record)
+    except Exception as e:
+        logger.error(f"commission hold create failed: {e}")
+
+
+async def _create_commission_hold(case: dict, payment_record: dict):
+    rep_code = case.get("rep_code")
+    if not rep_code:
+        return
+    rep = await db.reps.find_one({"rep_code": rep_code}, {"_id": 0})
+    if not rep:
+        return
+    manager = None
+    if rep.get("manager_id"):
+        manager = await db.managers.find_one({"id": rep["manager_id"]}, {"_id": 0})
+
+    lookup_key = payment_record.get("lookup_key")
+    split = commissions_mod.split_for(lookup_key, has_manager=bool(manager))
+    if split["rep_cents"] <= 0:
+        return
+
+    existing = await db.commissions.find_one({"case_id": case["id"], "lookup_key": lookup_key})
+    if existing:
+        return
+
+    approval_code = secrets.token_urlsafe(6).upper().replace("_", "").replace("-", "")[:6]
+    commission = {
+        "id": new_id(),
+        "case_id": case["id"],
+        "case_short": case["id"][:8].upper(),
+        "client_name": case.get("client_name") or case.get("client_email"),
+        "product": commissions_mod.product_display_name(lookup_key or ""),
+        "lookup_key": lookup_key,
+        "rep_id": rep["id"],
+        "rep_code": rep["rep_code"],
+        "rep_name": rep.get("name"),
+        "rep_email": rep.get("email"),
+        "rep_phone": rep.get("phone"),
+        "manager_id": (manager or {}).get("id"),
+        "manager_name": (manager or {}).get("name"),
+        "manager_phone": (manager or {}).get("phone"),
+        "rep_cents": split["rep_cents"],
+        "manager_cents": split["manager_cents"],
+        "status": "pending_approval",
+        "approval_code": approval_code,
+        "created_at": now_iso(),
+    }
+    await db.commissions.insert_one(commission)
+
+    try:
+        rep_amt = f"${split['rep_cents']/100:,.2f}"
+        mgr_amt = f"${split['manager_cents']/100:,.2f}" if split["manager_cents"] else None
+        lines = [
+            f"[IGC · Stage 4 · Commission Hold] {commission['product']} — {commission['client_name']} (case #{commission['case_short']}).",
+            f"Rep: {rep.get('name')} ({rep['rep_code']}) → {rep_amt}",
+        ]
+        if manager:
+            lines.append(f"Manager: {manager.get('name')} → {mgr_amt} override")
+        lines.append(f"Reply APPROVE {approval_code} to release. Reply DENY {approval_code} to void.")
+        notify.notify_admin("\n".join(lines))
+    except Exception as e:
+        logger.error(f"NEO stage-4 WhatsApp alert failed: {e}")
+
+
+@api_router.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    try:
+        event = stripe_service.construct_event(payload, sig)
+    except Exception as e:
+        logger.error(f"Stripe webhook signature verification failed: {e}")
+        raise HTTPException(400, "Invalid signature")
+
+    et = event["type"]
+    obj = event["data"]["object"]
+    sid = obj["id"] if "id" in obj else None
+
+    if et == "checkout.session.completed":
+        await db.payment_transactions.update_one(
+            {"session_id": sid, "payment_status": {"$ne": "paid"}},
+            {"$set": {
+                "status": "completed",
+                "payment_status": obj.get("payment_status") or "paid",
+                "stripe_payment_intent_id": obj.get("payment_intent"),
+                "updated_at": now_iso(),
+            }},
+        )
+        try:
+            await _stripe_apply_paid(sid)
+        except Exception as e:
+            logger.error(f"Stripe apply_paid failed: {e}")
+
+    elif et == "checkout.session.async_payment_succeeded":
+        await db.payment_transactions.update_one(
+            {"session_id": sid},
+            {"$set": {"payment_status": "paid", "updated_at": now_iso()}},
+        )
+        try:
+            await _stripe_apply_paid(sid)
+        except Exception as e:
+            logger.error(f"Stripe apply_paid failed: {e}")
+
+    elif et == "checkout.session.async_payment_failed":
+        await db.payment_transactions.update_one(
+            {"session_id": sid},
+            {"$set": {"status": "failed", "payment_status": "failed", "updated_at": now_iso()}},
+        )
+    elif et == "checkout.session.expired":
+        await db.payment_transactions.update_one(
+            {"session_id": sid},
+            {"$set": {"status": "expired", "payment_status": "expired", "updated_at": now_iso()}},
+        )
+    return {"status": "ok"}
+
+
+# ---------- Reps / Managers admin ----------
+
+class RepUpsert(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    email: EmailStr
+    rep_code: str = Field(min_length=2, max_length=32)
+    phone: Optional[str] = Field(default="", max_length=30)
+    manager_id: Optional[str] = None
+    active: bool = True
+
+
+class ManagerUpsert(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    email: EmailStr
+    phone: Optional[str] = Field(default="", max_length=30)
+    active: bool = True
+
+
+@api_router.get("/admin/reps")
+async def list_reps(_: dict = Depends(require_admin)):
+    reps = await db.reps.find({}, {"_id": 0}).to_list(500)
+    return {"reps": reps}
+
+
+@api_router.post("/admin/reps")
+async def create_rep(body: RepUpsert, _: dict = Depends(require_admin)):
+    code = body.rep_code.strip().upper()
+    if await db.reps.find_one({"rep_code": code}):
+        raise HTTPException(409, f"Rep code {code} already exists")
+    if body.manager_id and not await db.managers.find_one({"id": body.manager_id}):
+        raise HTTPException(400, "Manager not found")
+    rep = {
+        "id": new_id(),
+        "name": body.name.strip(),
+        "email": body.email.lower(),
+        "rep_code": code,
+        "phone": (body.phone or "").strip(),
+        "manager_id": body.manager_id or None,
+        "active": body.active,
+        "created_at": now_iso(),
+    }
+    await db.reps.insert_one(rep)
+    rep.pop("_id", None)
+    return {"rep": rep}
+
+
+@api_router.put("/admin/reps/{rep_id}")
+async def update_rep(rep_id: str, body: RepUpsert, _: dict = Depends(require_admin)):
+    code = body.rep_code.strip().upper()
+    dup = await db.reps.find_one({"rep_code": code, "id": {"$ne": rep_id}})
+    if dup:
+        raise HTTPException(409, f"Rep code {code} already exists")
+    if body.manager_id and not await db.managers.find_one({"id": body.manager_id}):
+        raise HTTPException(400, "Manager not found")
+    result = await db.reps.update_one({"id": rep_id}, {"$set": {
+        "name": body.name.strip(),
+        "email": body.email.lower(),
+        "rep_code": code,
+        "phone": (body.phone or "").strip(),
+        "manager_id": body.manager_id or None,
+        "active": body.active,
+        "updated_at": now_iso(),
+    }})
+    if not result.matched_count:
+        raise HTTPException(404, "Rep not found")
+    rep = await db.reps.find_one({"id": rep_id}, {"_id": 0})
+    return {"rep": rep}
+
+
+@api_router.delete("/admin/reps/{rep_id}")
+async def delete_rep(rep_id: str, _: dict = Depends(require_admin)):
+    res = await db.reps.delete_one({"id": rep_id})
+    if not res.deleted_count:
+        raise HTTPException(404, "Rep not found")
+    return {"ok": True}
+
+
+@api_router.get("/admin/managers")
+async def list_managers(_: dict = Depends(require_admin)):
+    mgrs = await db.managers.find({}, {"_id": 0}).to_list(500)
+    return {"managers": mgrs}
+
+
+@api_router.post("/admin/managers")
+async def create_manager(body: ManagerUpsert, _: dict = Depends(require_admin)):
+    if await db.managers.find_one({"email": body.email.lower()}):
+        raise HTTPException(409, "Manager email already exists")
+    m = {
+        "id": new_id(),
+        "name": body.name.strip(),
+        "email": body.email.lower(),
+        "phone": (body.phone or "").strip(),
+        "active": body.active,
+        "created_at": now_iso(),
+    }
+    await db.managers.insert_one(m)
+    m.pop("_id", None)
+    return {"manager": m}
+
+
+@api_router.put("/admin/managers/{mgr_id}")
+async def update_manager(mgr_id: str, body: ManagerUpsert, _: dict = Depends(require_admin)):
+    result = await db.managers.update_one({"id": mgr_id}, {"$set": {
+        "name": body.name.strip(),
+        "email": body.email.lower(),
+        "phone": (body.phone or "").strip(),
+        "active": body.active,
+        "updated_at": now_iso(),
+    }})
+    if not result.matched_count:
+        raise HTTPException(404, "Manager not found")
+    m = await db.managers.find_one({"id": mgr_id}, {"_id": 0})
+    return {"manager": m}
+
+
+@api_router.delete("/admin/managers/{mgr_id}")
+async def delete_manager(mgr_id: str, _: dict = Depends(require_admin)):
+    res = await db.managers.delete_one({"id": mgr_id})
+    if not res.deleted_count:
+        raise HTTPException(404, "Manager not found")
+    await db.reps.update_many({"manager_id": mgr_id}, {"$set": {"manager_id": None}})
+    return {"ok": True}
+
+
+# Public rep-code resolver — StartNew calls this after grabbing ?ref= from URL
+@api_router.get("/reps/resolve/{rep_code}")
+async def resolve_rep_public(rep_code: str):
+    code = (rep_code or "").strip().upper()
+    if not code:
+        raise HTTPException(404, "Not found")
+    rep = await db.reps.find_one({"rep_code": code, "active": {"$ne": False}}, {"_id": 0})
+    if not rep:
+        raise HTTPException(404, "Not found")
+    return {"rep_code": rep["rep_code"], "rep_name": rep.get("name")}
+
+
+# ---------- Commissions ----------
+
+class CommissionApproveReq(BaseModel):
+    note: Optional[str] = None
+
+
+@api_router.get("/admin/commissions")
+async def list_commissions(
+    status: Optional[str] = Query(None),
+    _: dict = Depends(require_admin),
+):
+    q: dict = {}
+    if status:
+        q["status"] = status
+    rows = await db.commissions.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return {"commissions": rows}
+
+
+@api_router.post("/admin/commissions/{commission_id}/approve")
+async def admin_approve_commission(commission_id: str, body: CommissionApproveReq, admin: dict = Depends(require_admin)):
+    c = await db.commissions.find_one({"id": commission_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Commission not found")
+    if c.get("status") == "approved":
+        return {"ok": True, "already_approved": True, "commission": c}
+    await db.commissions.update_one({"id": commission_id}, {"$set": {
+        "status": "approved",
+        "approved_at": now_iso(),
+        "approved_by": admin["id"],
+        "approved_source": "admin_ui",
+        "approve_note": (body.note or "")[:500],
+    }})
+    c = await db.commissions.find_one({"id": commission_id}, {"_id": 0})
+    await _notify_commission_released(c)
+    return {"ok": True, "commission": c}
+
+
+@api_router.post("/admin/commissions/{commission_id}/deny")
+async def admin_deny_commission(commission_id: str, body: CommissionApproveReq, admin: dict = Depends(require_admin)):
+    c = await db.commissions.find_one({"id": commission_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Commission not found")
+    if c.get("status") == "denied":
+        return {"ok": True, "already_denied": True, "commission": c}
+    await db.commissions.update_one({"id": commission_id}, {"$set": {
+        "status": "denied",
+        "denied_at": now_iso(),
+        "denied_by": admin["id"],
+        "denied_source": "admin_ui",
+        "deny_note": (body.note or "")[:500],
+    }})
+    c = await db.commissions.find_one({"id": commission_id}, {"_id": 0})
+    return {"ok": True, "commission": c}
+
+
+async def _notify_commission_released(c: dict):
+    rep_amt = f"${(c.get('rep_cents') or 0)/100:,.2f}"
+    try:
+        if c.get("rep_phone"):
+            whatsapp.send_whatsapp(
+                c["rep_phone"],
+                f"IGC: Your commission of {rep_amt} for {c.get('client_name')} ({c.get('product')}) is approved and being released."
+            )
+    except Exception as e:
+        logger.error(f"rep commission whatsapp failed: {e}")
+    if c.get("manager_id"):
+        try:
+            mgr_amt = f"${(c.get('manager_cents') or 0)/100:,.2f}"
+            if c.get("manager_phone"):
+                whatsapp.send_whatsapp(
+                    c["manager_phone"],
+                    f"IGC: Your override of {mgr_amt} for {c.get('client_name')} ({c.get('product')}) is approved and being released."
+                )
+        except Exception as e:
+            logger.error(f"mgr commission whatsapp failed: {e}")
+
+
+# ---------- Nia AI Assistant ----------
+
+class NiaChatReq(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    session_id: str = Field(min_length=6, max_length=120)
+    case_id: Optional[str] = None
+    client_first_name: Optional[str] = Field(default=None, max_length=80)
+
+
+@api_router.post("/nia/chat")
+async def nia_chat(body: NiaChatReq, request: Request):
+    """Client-facing chat with Nia. Auth optional — Nia works pre-login too.
+    Simple per-IP + per-session rate limit (20 messages / 5 min) to protect the LLM budget."""
+    ip = (request.client.host if request.client else "unknown")
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    window_start = now_ts - 300
+    # Prune + count recent hits per IP OR session
+    await db.nia_rate.delete_many({"ts": {"$lt": window_start}})
+    recent = await db.nia_rate.count_documents({
+        "$or": [{"ip": ip}, {"session_id": body.session_id}],
+        "ts": {"$gte": window_start},
+    })
+    if recent >= 20:
+        raise HTTPException(429, "Slow down — please wait a moment before sending more messages.")
+    await db.nia_rate.insert_one({"ip": ip, "session_id": body.session_id, "ts": now_ts})
+
+    # Try to identify caller (best-effort, doesn't fail if unauth)
+    user = None
+    try:
+        token = request.cookies.get("access_token")
+        if token:
+            payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+            user = await db.users.find_one({"id": payload.get("sub")}, {"_id": 0, "password_hash": 0})
+    except Exception:
+        user = None
+
+    doc = await db.nia_sessions.find_one({"session_id": body.session_id}, {"_id": 0})
+    history = (doc or {}).get("turns", []) if doc else []
+
+    first_name = body.client_first_name
+    if not first_name and user:
+        name = user.get("name") or ""
+        first_name = (name.split(" ") or [""])[0]
+    if not first_name and body.case_id:
+        case = await db.trust_cases.find_one({"id": body.case_id}, {"_id": 0})
+        if case:
+            grantors = case.get("grantors") or []
+            if grantors:
+                first_name = (grantors[0].get("first_name")
+                              or (grantors[0].get("full_legal_name") or "").split(" ")[0])
+
+    urgent = nia_assistant.detect_urgent(body.message)
+
+    try:
+        reply = await nia_assistant.chat(
+            history=history,
+            message=body.message,
+            session_id=body.session_id,
+            client_first_name=first_name,
+        )
+    except Exception as e:
+        logger.error(f"Nia chat failed: {e}")
+        reply = ("I'm having a hard time reaching my brain right now — a member of the Iron Gate team "
+                 "has been notified and will follow up shortly. In the meantime, please try again in a minute.")
+        urgent = True
+
+    new_turns = list(history) + [
+        {"role": "user", "content": body.message, "at": now_iso()},
+        {"role": "assistant", "content": reply, "at": now_iso()},
+    ]
+    trimmed = new_turns[-30:]
+
+    await db.nia_sessions.update_one(
+        {"session_id": body.session_id},
+        {"$set": {
+            "session_id": body.session_id,
+            "turns": trimmed,
+            "case_id": body.case_id,
+            "user_id": (user or {}).get("id"),
+            "updated_at": now_iso(),
+        }},
+        upsert=True,
+    )
+
+    if urgent:
+        try:
+            case_note = f" (case #{body.case_id[:8].upper()})" if body.case_id else ""
+            who = ((user or {}).get("name")
+                   or (user or {}).get("email")
+                   or first_name or "A client")
+            notify.notify_admin(
+                f"[IGC · Nia flagged URGENT] {who}{case_note}: \"{body.message[:180]}\""
+            )
+        except Exception as e:
+            logger.error(f"Nia urgent whatsapp failed: {e}")
+
+    return {"reply": reply, "urgent": urgent, "session_id": body.session_id}
+
+
+@api_router.get("/nia/history/{session_id}")
+async def nia_history(session_id: str):
+    doc = await db.nia_sessions.find_one({"session_id": session_id}, {"_id": 0})
+    return {"turns": (doc or {}).get("turns", [])}
+
+# =====================================================================
+# END NEO DIRECTIVE ROUTES
+# =====================================================================
+
+
+
 
 
 
@@ -5293,12 +5915,59 @@ async def _wa_append_note(case_id: str, body_text: str) -> dict:
     return note
 
 
+async def _wa_approve_commission(code: str, source: str) -> Optional[dict]:
+    """Approve a commission by approval_code via WhatsApp (Wes replies APPROVE ABC123).
+    Returns:
+      None if no matching commission,
+      {"already": True, "status": ...} if already resolved,
+      the full commission dict on success.
+    """
+    c = await db.commissions.find_one({"approval_code": code}, {"_id": 0})
+    if not c:
+        return None
+    if c.get("status") != "pending_approval":
+        return {"already": True, "status": c.get("status")}
+    await db.commissions.update_one(
+        {"id": c["id"]},
+        {"$set": {
+            "status": "approved",
+            "approved_at": now_iso(),
+            "approved_source": source,
+        }},
+    )
+    c = await db.commissions.find_one({"id": c["id"]}, {"_id": 0})
+    try:
+        await _notify_commission_released(c)
+    except Exception as e:
+        logger.error(f"commission released notify failed: {e}")
+    return c
+
+
+async def _wa_deny_commission(code: str, source: str) -> Optional[dict]:
+    c = await db.commissions.find_one({"approval_code": code}, {"_id": 0})
+    if not c:
+        return None
+    if c.get("status") != "pending_approval":
+        return {"already": True, "status": c.get("status")}
+    await db.commissions.update_one(
+        {"id": c["id"]},
+        {"$set": {
+            "status": "denied",
+            "denied_at": now_iso(),
+            "denied_source": source,
+        }},
+    )
+    return await db.commissions.find_one({"id": c["id"]}, {"_id": 0})
+
+
 whatsapp_commands.configure(
     db=db,
     statuses=STATUSES,
     now_iso=now_iso,
     update_status=_wa_update_status,
     append_note=_wa_append_note,
+    approve_commission=_wa_approve_commission,
+    deny_commission=_wa_deny_commission,
 )
 
 
@@ -5371,6 +6040,7 @@ async def startup():
         _idx(db.users, "id", unique=True),
         _idx(db.trust_cases, "id", unique=True),
         _idx(db.trust_cases, "client_id"),
+        _idx(db.trust_cases, "rep_code"),
         _idx(db.messages, [("case_id", 1), ("created_at", 1)]),
         _idx(db.login_attempts, "identifier"),
         _idx(db.password_reset_tokens, "expires_at", expireAfterSeconds=3600),
@@ -5379,6 +6049,18 @@ async def startup():
         _idx(db.questions, [("case_id", 1), ("created_at", 1)]),
         _idx(db.questions, "status"),
         _idx(db.monthly_summaries, "period", unique=True),
+        _idx(db.reps, "id", unique=True),
+        _idx(db.reps, "rep_code", unique=True),
+        _idx(db.managers, "id", unique=True),
+        _idx(db.managers, "email", unique=True),
+        _idx(db.commissions, "id", unique=True),
+        _idx(db.commissions, "approval_code"),
+        _idx(db.commissions, "case_id"),
+        _idx(db.commissions, "status"),
+        _idx(db.payment_transactions, "session_id", unique=True),
+        _idx(db.payment_transactions, "case_id"),
+        _idx(db.nia_sessions, "session_id", unique=True),
+        _idx(db.nia_rate, "ts"),
     ]
     for coll, spec, kwargs in _index_defs:
         try:
@@ -5476,6 +6158,12 @@ async def startup():
         asyncio.create_task(_monthly_summary_scheduler())
     except Exception as e:
         logger.error(f"Monthly summary scheduler failed to start: {e}")
+
+    # --- Stripe catalog (idempotent) ---
+    try:
+        stripe_service.setup_catalog()
+    except Exception as e:
+        logger.error(f"Stripe setup_catalog failed (non-fatal): {e}")
 
     logger.info("Lifespan startup complete")
 

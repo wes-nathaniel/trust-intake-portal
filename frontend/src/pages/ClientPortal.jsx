@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
+import NiaChat from "@/components/NiaChat";
 import api, { formatApiError } from "@/lib/api";
 import { ArrowRight, ShieldCheck, Download, FilePen, AlertTriangle, Plus, Sparkles } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
@@ -232,6 +233,7 @@ export default function ClientPortal() {
           </button>
         </div>
       )}
+      <NiaChat clientFirstName={user?.first_name || (user?.name || "").split(" ")[0]} />
     </Layout>
   );
 }

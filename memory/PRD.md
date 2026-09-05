@@ -1,13 +1,51 @@
 # Trust Intake & Client Portal — PRD
 
 ## Problem Statement
-Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facing 8-step intake wizard, admin dashboard, secure page-by-page trust draft preview (watermarked, anti-copy/print), Square-powered payment workflow with ACH tracking, final trust unlock with notarization instructions, legal disclosures + acknowledgments, business asset SOS advisory, EIN admin-filing, branding, and messaging.
+Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facing 8-step intake wizard, admin dashboard, secure page-by-page trust draft preview (watermarked, anti-copy/print), Stripe-powered payment workflow (Basic Living Trust $1,497 / Private Trust $2,497), final trust unlock with notarization instructions, legal disclosures + acknowledgments, business asset SOS advisory, EIN admin-filing, branding, and messaging.
 
 ## Architecture
 - **Backend**: FastAPI + MongoDB (motor). JWT auth (httpOnly cookies), bcrypt, brute-force lockout.
 - **Frontend**: React (CRA + craco) + Tailwind + shadcn/ui. Cormorant Garamond + IBM Plex Sans.
-- **3rd-party**: Resend (email), Emergent LLM key (AI Q&A — Claude Sonnet), Dropbox Sign (dormant), Square (invoices + webhooks — live production), Twilio SMS + **Twilio WhatsApp** (fan-out admin notifications, per-case outbound + inbound thread).
+- **3rd-party**: Brevo (email), Emergent LLM key (AI Q&A + Nia assistant — Claude Sonnet), Dropbox Sign (dormant), **Stripe (claimable sandbox — primary payment)**, Twilio SMS + Twilio WhatsApp (fan-out admin notifications, per-case outbound + inbound thread, commission approve/deny via WhatsApp reply). Square kept as legacy secondary (Zelle/CashApp remain).
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
+
+
+## Changelog — 2026-09-05 (NEO Directive full ship + PDF fallback)
+- ✅ **Stripe payments (Emergent claimable sandbox)** — new `/app/backend/stripe_service.py`. Two products created idempotently at startup: `basic_living_trust` ($1,497 / 149700c) and `private_trust` ($2,497 / 249700c). New endpoints:
+  - `GET /api/admin/stripe/health`
+  - `POST /api/admin/stripe/setup-catalog`
+  - `POST /api/trust-cases/{case_id}/stripe/checkout` (creates a hosted Checkout Session, inserts a `payment_transactions` row BEFORE redirect)
+  - `GET /api/payments/status/{session_id}` (unauth, polls Stripe if DB is still pending)
+  - `POST /api/stripe/webhook` (signature-verified — handles `checkout.session.completed`, `async_payment_*`, `expired`)
+  - Client-side Stripe Checkout redirect via new `/payment/success` (polls status → auto-return to portal) and `/payment/cancel` pages.
+  - Env vars in `backend/.env`: `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_ACCOUNT_ID`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_MODE=test`, `STRIPE_ONBOARDING_URL`. **Sandbox claim URL**: `https://dashboard.stripe.com/onboard_sandbox/YWNjdF8xVUNNWFpHdE1ZSEg3NFd0LDE3ODkyMzM4MzEv100sPTcYS4M`
+- ✅ **8-stage WhatsApp alerts to Wes (+1 954-598-3681)** — wired through the existing `notify.notify_admin()` fan-out:
+  - **Stage 1 · New Intake** — fires at `POST /api/trust-cases`. Format: `[IGC · Stage 1 · New Intake] {client} started a {deal_type} intake. Case #{short}` (with rep ref suffix if applicable).
+  - **Stage 1b · Intake Completed** — fires when client hits Complete Review in the intake wizard.
+  - **Stage 2 · Document Approved** — fires when client marks the drafted trust as satisfied.
+  - **Stage 3 · Payment Confirmed** — fires inside `_stripe_apply_paid()` when the Stripe webhook / status poll marks the session paid.
+  - **Stage 4 · Commission Hold** — fires immediately after Stage 3 when a rep is attached. Includes the 6-char `APPROVE code` instruction.
+- ✅ **Rep referral tracking + commission engine (fixed dollars, NOT %s)** — new `/app/backend/commissions.py` with `PRODUCT_TIERS` and `split_for(lookup_key, has_manager)`:
+  - Basic Living Trust: rep-only $500 · rep+mgr $450 + $50
+  - Private Trust: rep-only $800 · rep+mgr $720 + $80
+  - New collections: `reps`, `managers`, `commissions`, `payment_transactions`, `nia_sessions`, `nia_rate`.
+  - `TrustCaseCreate` now accepts `rep_code`. `?ref=REPCODE` is picked up by `StartNew.jsx` (also stashed to localStorage for pre-signup nav) and passed to the create-case call. Public resolver: `GET /api/reps/resolve/{rep_code}` — returns `{rep_code, rep_name}` for the banner.
+  - Admin CRUD: `GET/POST/PUT/DELETE /api/admin/reps` and `.../managers`. Manager-delete detaches dependent reps.
+  - Admin approval: `POST /api/admin/commissions/{id}/approve|deny`.
+  - **WhatsApp approval**: Wes replies `APPROVE ABC123` (or `DENY ABC123`) on his WhatsApp channel — the existing `whatsapp_commands.handle_admin_command` now routes those directly to `_wa_approve_commission` / `_wa_deny_commission` which flip the DB row and WhatsApp the rep + manager that their commission is releasing.
+- ✅ **Nia — client AI assistant** — new `/app/backend/nia_assistant.py` with a strict trust-focused `SYSTEM_PROMPT` (no legalese, no attorney/lawyer references, no pricing unless asked, warm tone). Uses Emergent LLM Key + Claude Sonnet 4.5. Session history persists in `nia_sessions.turns`. Endpoints:
+  - `POST /api/nia/chat` — 20 msgs / 5 min rate limit by IP/session.
+  - `GET /api/nia/history/{session_id}` — turns array.
+  - Urgent-flag regex (refund / cancel / lawsuit / scam / attorney / lawyer / speak to human / lost access / broken / "I want my money back" + variants) fires an immediate WhatsApp alert to Wes with the message excerpt.
+  - New `NiaChat.jsx` chat bubble mounted on ClientPortal, StartNew, IntakeWizard, and TrustPreview. Session_id persists in localStorage.
+- ✅ **Admin Reps & Managers page** (`/admin/reps`, `AdminRepsPage.jsx`) — full CRUD for both entities; copy-referral-link button per rep. New nav link "Reps" for admin.
+- ✅ **Admin Commissions page** (`/admin/commissions`, `AdminCommissionsPage.jsx`) — filterable table (all / pending / approved / denied) with per-row Approve / Deny buttons. New nav link "Commissions".
+- ✅ **Payment picker** rebuilt (`PaymentMethodPicker.jsx`) — Stripe primary CTA (redirect to hosted checkout), tier switcher between Basic Living / Private Trust, plus Zelle modal and Cash App options retained for direct-pay clients.
+- ✅ **PDF page fallback UI** — TrustPreview.jsx `<img onError>` now flips to a friendly "Page unavailable — please refresh / Try again" panel instead of a broken image icon. Retry button re-fetches the page.
+- 🧪 **Testing**: 22/22 new backend tests pass in `/app/backend/tests/test_neo_directive.py` (Stripe health/catalog, Reps/Managers CRUD, referral resolver, case-with-rep_code, Stripe checkout guard + create + status, all 4 commission splits, admin + WhatsApp approve/deny, Nia basic + urgent + history). See `/app/test_reports/iteration_26.json`.
+
+---
+
 
 
 ## Changelog — 2026-07-16 (security audit + hardening + admin SSN reveal)

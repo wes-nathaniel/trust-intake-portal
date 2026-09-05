@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
+import NiaChat from "@/components/NiaChat";
 import { Users, User, ArrowRight, FileSearch, FilePlus, ScrollText } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
@@ -13,6 +14,26 @@ export default function StartNew() {
   const [trustName, setTrustName] = useState("");
   const [clientPhone, setClientPhone] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [refInfo, setRefInfo] = useState(null); // { rep_code, rep_name }
+
+  // Capture ?ref= from URL (or localStorage stash from earlier landing) and
+  // resolve it to a display name via the public endpoint.
+  useEffect(() => {
+    let code = null;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      code = (params.get("ref") || "").trim().toUpperCase();
+      if (code) localStorage.setItem("igc_ref_code", code);
+      else code = (localStorage.getItem("igc_ref_code") || "").trim().toUpperCase();
+    } catch (_) { /* SSR / private mode safe */ }
+    if (!code) return;
+    (async () => {
+      try {
+        const { data } = await api.get(`/reps/resolve/${encodeURIComponent(code)}`);
+        setRefInfo({ rep_code: data.rep_code, rep_name: data.rep_name });
+      } catch (_) { /* silent — invalid code, stay quiet */ }
+    })();
+  }, []);
 
   const create = async () => {
     if (hasExistingTrust === null) {
@@ -33,8 +54,8 @@ export default function StartNew() {
     try {
       const intake_path = hasExistingTrust ? "review" : "new";
       const payload = { intake_path, trust_name: name, client_phone: clientPhone.trim() };
-      // trust_type only meaningful for new path; default "single" for review
       payload.trust_type = hasExistingTrust ? "single" : trustType;
+      if (refInfo?.rep_code) payload.rep_code = refInfo.rep_code;
       const { data } = await api.post("/trust-cases", payload);
       navigate(`/intake/${data.id}`);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
@@ -49,6 +70,23 @@ export default function StartNew() {
       </p>
 
       <div className="bg-white border border-[#E2E0DA] rounded-xl p-5 sm:p-8 max-w-2xl">
+        {/* Referral banner — shown only when a valid ?ref=CODE is present */}
+        {refInfo && (
+          <div
+            className="mb-6 flex items-center gap-3 rounded-lg border border-bronze/40 bg-bronze/5 px-4 py-3 text-sm text-navy"
+            data-testid="referral-banner">
+            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-bronze/20 text-bronze font-bold">
+              ★
+            </span>
+            <div>
+              <div className="font-semibold">Referred by {refInfo.rep_name}</div>
+              <div className="text-xs text-[#64748B]">
+                Code: <span className="font-mono">{refInfo.rep_code}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ========== Step 1: Existing trust question ========== */}
         <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold mb-3">1. Tell us about your trust</p>
         <p className="font-serif text-xl sm:text-2xl text-navy mb-4">Do you currently have a living trust set up?</p>
@@ -191,6 +229,7 @@ export default function StartNew() {
           progress is saved section by section.
         </p>
       </div>
+      <NiaChat />
     </Layout>
   );
 }

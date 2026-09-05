@@ -1,33 +1,57 @@
-import React, { useState } from "react";
-import { CreditCard, Smartphone, Send, X, Copy, ExternalLink, CheckCircle2, Loader2 } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { CreditCard, Smartphone, Send, X, Copy, Loader2, CheckCircle2, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "@/lib/api";
 
-const ZELLE = {
-  phone: "954-598-3681",
-  name: "Wesley Nathaniel",
-};
+const ZELLE = { phone: "954-598-3681", name: "Wesley Nathaniel" };
 const CASHAPP_URL = "https://cash.app/$WNate1971";
 
 function fmtAmount(cents) {
-  if (!cents) return null;
+  if (!cents && cents !== 0) return null;
   return `$${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+const PRODUCTS = [
+  {
+    lookup_key: "basic_living_trust",
+    name: "Basic Living Trust",
+    price_cents: 149700,
+    tagline: "Complete living trust preparation",
+  },
+  {
+    lookup_key: "private_trust",
+    name: "Private Trust",
+    price_cents: 249700,
+    tagline: "Enhanced privacy + advanced structuring",
+  },
+];
+
 /**
- * Payment method picker — Zelle (modal w/ instructions), Cash App (new tab), Square (existing public_url).
- * Then "I Made My Payment" button → POST /trust-cases/{id}/payment-claimed.
+ * Payment method picker — Stripe (checkout redirect), Zelle (modal), Cash App (new tab).
+ * After Stripe redirect returns, our /payment/success page polls status.
+ * Zelle/CashApp still flow through the manual claim → admin verify path.
  *
  * Props:
- *  - caseId, payment {amount_cents, public_url, status, claimed}
- *  - onClaimed() callback after successful claim (parent reload)
+ *  - caseId
+ *  - payment { amount_cents, lookup_key, status }
+ *  - onClaimed() callback
+ *  - defaultLookupKey (optional) — pre-select the tier admin already picked
  */
-export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed }) {
+export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed, defaultLookupKey }) {
+  const navigate = useNavigate();
   const [zelleOpen, setZelleOpen] = useState(false);
   const [chosenMethod, setChosenMethod] = useState(null);
   const [claiming, setClaiming] = useState(false);
+  const [stripeLoading, setStripeLoading] = useState(false);
+  const [tier, setTier] = useState(defaultLookupKey || payment.lookup_key || PRODUCTS[0].lookup_key);
 
-  const amountCents = payment.amount_cents;
+  useEffect(() => {
+    if (payment.lookup_key) setTier(payment.lookup_key);
+  }, [payment.lookup_key]);
+
+  const selectedProduct = PRODUCTS.find((p) => p.lookup_key === tier) || PRODUCTS[0];
+  const amountCents = payment.amount_cents ?? selectedProduct.price_cents;
   const amountStr = fmtAmount(amountCents);
 
   const status = payment.status;
@@ -38,8 +62,23 @@ export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed })
     try {
       await navigator.clipboard.writeText(text);
       toast.success(`${label} copied`);
-    } catch (e) {
+    } catch (_) {
       toast.error("Could not copy. Long-press to copy.");
+    }
+  };
+
+  const startStripe = async () => {
+    setStripeLoading(true);
+    try {
+      const { data } = await api.post(`/trust-cases/${caseId}/stripe/checkout`, {
+        lookup_key: tier,
+        origin_url: window.location.origin,
+      });
+      // Redirect immediately
+      window.location.href = data.checkout_url;
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+      setStripeLoading(false);
     }
   };
 
@@ -48,18 +87,11 @@ export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed })
     setChosenMethod("cashapp");
     window.open(CASHAPP_URL, "_blank", "noopener,noreferrer");
   };
-  const pickSquare = () => {
-    if (!payment.public_url) { toast.error("Square invoice link not ready yet."); return; }
-    setChosenMethod("square");
-    window.open(payment.public_url, "_blank", "noopener,noreferrer");
-  };
 
   const claimPayment = async () => {
     setClaiming(true);
     try {
-      await api.post(`/trust-cases/${caseId}/payment-claimed`, {
-        method: chosenMethod || "other",
-      });
+      await api.post(`/trust-cases/${caseId}/payment-claimed`, { method: chosenMethod || "other" });
       toast.success("Thank you — your payment is now pending verification.");
       onClaimed?.();
     } catch (e) {
@@ -68,7 +100,6 @@ export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed })
   };
 
   // ----- States -----
-
   if (isVerified) {
     return (
       <div className="rounded-xl bg-green-50 border-2 border-green-300 p-6 text-center" data-testid="payment-verified-block">
@@ -78,7 +109,6 @@ export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed })
       </div>
     );
   }
-
   if (isPending) {
     return (
       <div className="rounded-xl bg-amber-50 border-2 border-amber-300 p-6 text-center" data-testid="payment-pending-verification-block">
@@ -92,30 +122,67 @@ export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed })
     );
   }
 
-  if (!amountCents) {
-    return (
-      <div className="rounded-xl bg-white border border-[#E2E0DA] p-6 text-center" data-testid="payment-awaiting-amount-block">
-        <p className="font-serif text-xl text-navy mb-1">Your agent is preparing your invoice</p>
-        <p className="text-sm text-[#64748B]">
-          Once the amount is set, you'll see your payment options here.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div data-testid="payment-method-picker">
-      <h3 className="font-serif text-3xl text-navy mb-1 text-center">Choose Your Payment Method</h3>
+      <h3 className="font-serif text-3xl text-navy mb-1 text-center">Choose Your Trust Package</h3>
       <p className="text-sm text-[#64748B] text-center max-w-2xl mx-auto mb-6">
-        Select your preferred payment method below. Complete your payment, then click <b>"I Made My Payment"</b> to notify us.
+        Select the trust that best fits your family, then pick a payment method below.
       </p>
+
+      {/* Tier selection */}
+      <div className="grid gap-3 sm:grid-cols-2 mb-6">
+        {PRODUCTS.map((p) => (
+          <button
+            key={p.lookup_key}
+            onClick={() => setTier(p.lookup_key)}
+            className={`rounded-xl border-2 bg-white p-5 text-left transition-all min-h-[140px] flex flex-col justify-between ${
+              tier === p.lookup_key ? "border-bronze ring-2 ring-bronze/30 bg-bronze/5" : "border-[#E2E0DA] hover:border-bronze"
+            }`}
+            data-testid={`tier-${p.lookup_key}`}>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-bronze font-semibold">{p.name}</p>
+              <p className="font-serif text-3xl text-navy mt-2">{fmtAmount(p.price_cents)}</p>
+              <p className="text-xs text-[#64748B] mt-1">{p.tagline}</p>
+            </div>
+            {tier === p.lookup_key && (
+              <div className="mt-3 inline-flex items-center gap-1 text-xs text-bronze font-semibold">
+                <CheckCircle2 className="h-4 w-4" /> Selected
+              </div>
+            )}
+          </button>
+        ))}
+      </div>
+
       <p className="text-center mb-6">
         <span className="inline-block px-4 py-2 rounded-full bg-bronze/15 text-navy text-sm">
-          Amount due: <b className="text-lg">{amountStr}</b>
+          Amount due: <b className="text-lg" data-testid="amount-due">{amountStr}</b>
         </span>
       </p>
 
-      <div className="grid gap-3 sm:grid-cols-3 mb-6">
+      {/* Stripe — primary CTA */}
+      <button
+        onClick={startStripe}
+        disabled={stripeLoading}
+        className="w-full mb-4 py-5 rounded-xl text-white text-lg sm:text-xl font-bold shadow-lg transition-all active:scale-[0.99] disabled:opacity-50"
+        style={{ backgroundColor: "#635BFF", minHeight: 64 }}
+        data-testid="pay-with-stripe-btn">
+        {stripeLoading ? (
+          <span className="inline-flex items-center gap-2"><Loader2 className="h-5 w-5 animate-spin" /> Opening secure checkout…</span>
+        ) : (
+          <span className="inline-flex items-center gap-2"><CreditCard className="h-5 w-5" /> Pay with Card — {amountStr}</span>
+        )}
+      </button>
+      <p className="mb-6 text-center text-[11px] text-[#64748B] flex items-center justify-center gap-1">
+        <ShieldCheck className="h-3 w-3" /> Secured by Stripe · Card, Apple Pay & Google Pay accepted
+      </p>
+
+      <div className="flex items-center gap-3 my-5">
+        <div className="h-px flex-1 bg-[#E2E0DA]" />
+        <span className="text-xs uppercase tracking-wide text-[#64748B]">or send directly</span>
+        <div className="h-px flex-1 bg-[#E2E0DA]" />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 mb-6">
         <button
           onClick={pickZelle}
           className="rounded-xl border-2 border-[#6f00ff]/30 hover:border-[#6f00ff] bg-white p-5 text-left transition-all active:scale-[0.99] min-h-[120px] flex flex-col justify-between"
@@ -143,40 +210,19 @@ export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed })
             <p className="text-xs text-[#64748B] mt-1">Opens cash.app in a new tab</p>
           </div>
         </button>
-
-        <button
-          onClick={pickSquare}
-          disabled={!payment.public_url}
-          className={`rounded-xl border-2 bg-white p-5 text-left transition-all active:scale-[0.99] min-h-[120px] flex flex-col justify-between ${
-            payment.public_url
-              ? "border-navy/30 hover:border-navy"
-              : "border-[#E2E0DA] opacity-60 cursor-not-allowed"
-          }`}
-          data-testid="pay-method-square">
-          <div className="flex items-center gap-2 text-navy font-bold">
-            <CreditCard className="h-5 w-5" />
-            <span>Square</span>
-          </div>
-          <div>
-            <p className="font-serif text-xl text-navy">Pay with Debit Card</p>
-            <p className="text-xs text-[#64748B] mt-1">
-              {payment.public_url ? "Secure Square payment page" : "Card option not available — your agent will enable it shortly."}
-            </p>
-          </div>
-        </button>
       </div>
 
-      <button
-        onClick={claimPayment}
-        disabled={claiming}
-        className="w-full py-5 sm:py-6 rounded-xl text-white text-xl sm:text-2xl font-bold shadow-lg transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed"
-        style={{ backgroundColor: "#28a745", minHeight: 64 }}
-        data-testid="i-made-payment-btn">
-        {claiming ? "Submitting…" : "✓  I Made My Payment"}
-      </button>
-      <p className="mt-3 text-center text-xs text-[#64748B]">
-        Press only after you've completed payment by your chosen method. Your agent will verify and unlock your final trust.
-      </p>
+      {/* Manual claim (only relevant for Zelle/CashApp) */}
+      {chosenMethod && chosenMethod !== "stripe" && (
+        <button
+          onClick={claimPayment}
+          disabled={claiming}
+          className="w-full py-4 rounded-xl text-white text-lg font-bold shadow-lg transition-all active:scale-[0.99] disabled:opacity-50"
+          style={{ backgroundColor: "#28a745", minHeight: 56 }}
+          data-testid="i-made-payment-btn">
+          {claiming ? "Submitting…" : "✓  I Made My Payment (Zelle / Cash App)"}
+        </button>
+      )}
 
       {zelleOpen && (
         <div
@@ -189,15 +235,10 @@ export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed })
                 <p className="text-xs uppercase tracking-[0.2em] font-bold text-[#6f00ff]">Pay with Zelle</p>
                 <p className="font-serif text-2xl text-navy mt-1">Send your payment</p>
               </div>
-              <button
-                onClick={() => setZelleOpen(false)}
-                className="text-[#64748B] hover:text-navy"
-                aria-label="Close"
-                data-testid="zelle-close-btn">
+              <button onClick={() => setZelleOpen(false)} className="text-[#64748B] hover:text-navy" aria-label="Close" data-testid="zelle-close-btn">
                 <X className="h-5 w-5" />
               </button>
             </div>
-
             <div className="space-y-3">
               <div className="rounded-lg border border-[#E2E0DA] p-3">
                 <p className="text-[10px] uppercase text-[#64748B] font-bold tracking-wide">Send to</p>
@@ -208,7 +249,6 @@ export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed })
                   </button>
                 </div>
               </div>
-
               <div className="rounded-lg border border-[#E2E0DA] p-3">
                 <p className="text-[10px] uppercase text-[#64748B] font-bold tracking-wide">Name</p>
                 <div className="flex items-center justify-between mt-1">
@@ -218,27 +258,21 @@ export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed })
                   </button>
                 </div>
               </div>
-
               <div className="rounded-lg border-2 border-bronze/40 bg-bronze/5 p-3">
                 <p className="text-[10px] uppercase text-bronze font-bold tracking-wide">Amount</p>
                 <div className="flex items-center justify-between mt-1">
                   <p className="text-2xl font-bold text-navy font-mono" data-testid="zelle-amount">{amountStr}</p>
-                  <button onClick={() => copy((amountCents/100).toFixed(2), "Amount")} className="text-[#64748B] hover:text-navy" title="Copy" data-testid="zelle-copy-amount">
+                  <button onClick={() => copy((amountCents / 100).toFixed(2), "Amount")} className="text-[#64748B] hover:text-navy" title="Copy" data-testid="zelle-copy-amount">
                     <Copy className="h-4 w-4" />
                   </button>
                 </div>
               </div>
             </div>
-
             <p className="text-xs text-[#64748B] mt-4 leading-relaxed">
               Open your bank's app or website, find the Zelle option, and send the exact amount to the phone number above.
               When done, close this window and press <b>"I Made My Payment"</b>.
             </p>
-
-            <button
-              onClick={() => setZelleOpen(false)}
-              className="mt-5 w-full py-3 rounded-md bg-navy text-white font-semibold"
-              data-testid="zelle-done-btn">
+            <button onClick={() => setZelleOpen(false)} className="mt-5 w-full py-3 rounded-md bg-navy text-white font-semibold" data-testid="zelle-done-btn">
               I've sent the Zelle payment
             </button>
           </div>

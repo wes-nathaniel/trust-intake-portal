@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "@/components/Layout";
+import NiaChat from "@/components/NiaChat";
 import api, { formatApiError } from "@/lib/api";
 import StatusTracker from "@/components/StatusTracker";
 import MessageThread from "@/components/MessageThread";
@@ -226,6 +227,7 @@ export default function IntakeWizard() {
           </div>
         </div>
       </div>
+      <NiaChat caseId={caseId} clientFirstName={(trustCase?.grantors?.[0]?.full_legal_name || "").split(" ")[0] || null} />
     </Layout>
   );
 }
