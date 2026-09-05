@@ -294,6 +294,9 @@ class TestCommissionEngine:
             new_db = client[os.environ["DB_NAME"]]
             # rebind db globally so helper uses this loop's client
             server.db = new_db
+            # Post-refactor: routers read state.db from routes._neo_state
+            from routes._neo_state import state as _neo_state
+            _neo_state.db = new_db
             import commissions as cm
             import notify as _n
             # silence WhatsApp
@@ -353,6 +356,9 @@ class TestCommissionEngine:
             client = AsyncIOMotorClient(os.environ["MONGO_URL"])
             new_db = client[os.environ["DB_NAME"]]
             server.db = new_db
+            # Post-refactor: routers read state.db from routes._neo_state
+            from routes._neo_state import state as _neo_state
+            _neo_state.db = new_db
             # Re-wire whatsapp_commands to point at our approve/deny closures
             wc.configure(
                 db=new_db, statuses=[], now_iso=server.now_iso,

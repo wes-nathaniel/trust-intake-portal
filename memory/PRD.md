@@ -10,6 +10,21 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
 
+## Changelog — 2026-09-05 (post-NEO refactor + live-purchase verified)
+- ✅ **Refactor**: extracted the ~580-line NEO block out of `server.py` into `/app/backend/routes/` — `stripe_router.py`, `commissions_router.py`, `nia_router.py`, sharing a small `_neo_state.py` state carrier. `server.py` now weighs ~5,760 lines (down from 6,333). All 22 regression tests still pass (`iteration_27.json`).
+- 🐛 **Bug fix**: Stripe SDK v15 `StripeObject.get()` no longer supports dict-style `.get()` — webhook handler now coerces the event payload via `to_dict_recursive()` before reading fields. Symptom: webhook was returning `AttributeError: get` and never applying paid state.
+- ✅ **Public payment pages**: `/payment/success` + `/payment/cancel` are now public routes so the confirmation UX survives Stripe's cross-origin redirect roundtrip even if the auth cookie is dropped. The status endpoint is unauth by design (session_id is the identifier).
+- ✅ **Live 4242 purchase verified end-to-end**:
+   - Case created with `?ref=TESTREP1` → Stage 1 WhatsApp fired
+   - Stripe hosted checkout completed with test card 4242 4242 4242 4242
+   - Backend `checkout.session.completed` webhook → payment status "paid"
+   - Case status → "Payment Verified" + Stage 3 WhatsApp to Wes
+   - Commission created: Rep $450 + Manager $50 override for Test Rep One / Wesley Nathaniel (approval code `FJZX9F`) + Stage 4 WhatsApp
+   - `/payment/success` page shows "Payment received!"
+- ✅ **Seeded first live-ready rep**: `TESTREP1` (Test Rep One, manager: Wesley Nathaniel · phone +19545983681). Referral URL: `https://trust-intake-portal.preview.emergentagent.com/register?ref=TESTREP1`
+
+---
+
 ## Changelog — 2026-09-05 (NEO Directive full ship + PDF fallback)
 - ✅ **Stripe payments (Emergent claimable sandbox)** — new `/app/backend/stripe_service.py`. Two products created idempotently at startup: `basic_living_trust` ($1,497 / 149700c) and `private_trust` ($2,497 / 249700c). New endpoints:
   - `GET /api/admin/stripe/health`

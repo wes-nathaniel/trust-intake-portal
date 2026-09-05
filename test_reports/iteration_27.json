@@ -1,0 +1,31 @@
+{
+  "summary": "Regression run of the 22-check NEO Directive backend suite after refactoring server.py's NEO block into routes/stripe_router.py, routes/commissions_router.py, routes/nia_router.py with a shared routes/_neo_state.py carrier. Initial run: 17 passed, 1 skipped, 4 failed (RuntimeError: Event loop is closed) — all four failures were confined to the 3 commission-split branches that exercise the real DB helper (_stripe_apply_paid, now re-exported from routes.stripe_router) plus the WhatsApp APPROVE test (which calls server._wa_approve_commission -> routes.commissions_router._wa_approve_commission). Root cause: post-refactor these helpers read `state.db` from routes._neo_state (bound to the app's original ASGI event loop at startup), while the tests only rebind `server.db` inside a fresh asyncio.run() loop. Fix (test-harness only): also rebind routes._neo_state.state.db to the loop-local motor client. After fix: 22/22 passed in 51.6s. Confirmed server._stripe_apply_paid is importable and callable as a re-export from routes.stripe_router. No behavior regressions detected in the refactor.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "startup", "issue": "FastAPI on_event('startup'/'shutdown') is still deprecated — migrate to lifespan handlers (carryover from iteration_26)"},
+      {"endpoint": "N/A", "issue": "starlette formparsers PendingDeprecationWarning: use `import python_multipart` (carryover)"}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_neo_directive.py",
+    "/app/test_reports/pytest/neo_directive_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Nice refactor: routers cleanly read from routes._neo_state.state, and server.py re-exports _stripe_apply_paid/_wa_approve_commission/_wa_deny_commission so whatsapp_commands and external scripts keep working. No circular imports.",
+    "routes/_neo_state.py uses SimpleNamespace with no schema — a small dataclass or TypedDict would give type hints and catch missing configure() keys at import time.",
+    "Each router reads `db = state.db` inside every handler (good — picks up test rebinds), but the pattern is repeated ~7 times. A tiny helper `deps()` returning a NamedTuple would DRY it up.",
+    "stripe_router still re-fires update_case on both webhook and status-poll (already_paid short-circuit is after the status='Payment Verified' write) — carryover from iteration_26, not introduced by this refactor.",
+    "resolve_rep_public + Nia chat remain unauthenticated with no rate limit — same finding as iteration_26, still worth adding IP throttling."
+  ],
+  "updated_files": ["/app/backend/tests/test_neo_directive.py"],
+  "success_rate": {"backend": "100% (22/22)", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "Admin: support@igcfirm.com / Wllorenzo03! (from /app/memory/test_credentials.md). Seeded rep TESTREP1 not required — tests generate ephemeral TESTREP*/CASE*/SPL* fixtures.",
+  "seed_data_creation": "Same as iteration_26 — ephemeral managers/reps/cases with random suffixes and TEST_ prefix on trust_name; commissions rows accumulate in db.commissions but are namespaced.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Post-refactor, any test that calls server._stripe_apply_paid, server._wa_approve_commission, or server._wa_deny_commission from a fresh asyncio.run() loop MUST rebind BOTH server.db AND routes._neo_state.state.db to the loop-local motor client — otherwise you get 'Event loop is closed' when the router hits Mongo. The _run() blocks in test_neo_directive.py now demonstrate the pattern.",
+  "rca of the issue": "Refactor moved DB access from server-module globals to routes._neo_state.state.db. That state object is populated once at server import time with a motor client bound to the ASGI event loop. Pytest's asyncio.run() creates a new loop per test, so any motor call against the stale client raises 'Event loop is closed'. Iteration_26's tests already handled this for `server.db` by rebinding it; the fix was to extend the same rebind to `state.db`. Not a product bug — pure test-harness plumbing."
+}

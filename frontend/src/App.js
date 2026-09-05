@@ -61,9 +61,11 @@ function App() {
             <Route path="/portal/trust-final/:caseId" element={<ProtectedRoute><TrustFinal /></ProtectedRoute>} />
             <Route path="/intake/:caseId" element={<ProtectedRoute><IntakeWizard /></ProtectedRoute>} />
 
-            {/* Stripe checkout landings — accessible to authenticated clients */}
-            <Route path="/payment/success" element={<ProtectedRoute><PaymentSuccess /></ProtectedRoute>} />
-            <Route path="/payment/cancel" element={<ProtectedRoute><PaymentCancel /></ProtectedRoute>} />
+            {/* Stripe checkout landings — public so the poll works even if the
+                auth cookie was dropped during the cross-origin Stripe roundtrip.
+                The status endpoint is unauth by design (only session_id is needed). */}
+            <Route path="/payment/success" element={<PaymentSuccess />} />
+            <Route path="/payment/cancel" element={<PaymentCancel />} />
 
             <Route path="/admin" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
             <Route path="/admin/questions" element={<ProtectedRoute adminOnly><AdminQuestions /></ProtectedRoute>} />
