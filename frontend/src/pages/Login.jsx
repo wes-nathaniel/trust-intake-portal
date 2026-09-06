@@ -43,14 +43,37 @@ export default function Login() {
         </div>
       </div>
 
-      <div className="flex items-center justify-center p-8">
-        <form onSubmit={submit} className="w-full max-w-md space-y-6" data-testid="login-form">
+      <div className="flex items-center justify-center p-8 relative overflow-hidden">
+        {/* Watermark crest — sits behind the sign-in copy, slightly faded, breathing on the page */}
+        <img
+          src="/irongate-logo.png"
+          alt=""
+          aria-hidden="true"
+          className="pointer-events-none select-none absolute z-0"
+          style={{
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            width: "min(560px, 90%)",
+            opacity: 0.06,
+            filter: "drop-shadow(0 20px 40px rgba(20,30,50,0.12))",
+          }}
+          draggable={false}
+        />
+        <form onSubmit={submit} className="w-full max-w-md space-y-6 relative z-10" data-testid="login-form">
           <div className="flex items-center gap-2 text-bronze">
             <Shield className="h-5 w-5" />
             <span className="text-xs uppercase tracking-[0.2em]">Secure Sign In</span>
           </div>
           <div>
-            <img src="/irongate-logo.png" alt="Iron Gate Consulting" data-testid="login-logo" className="h-24 w-24 mt-4 mb-5" />
+            <img
+              src="/irongate-logo.png"
+              alt="Iron Gate Consulting"
+              data-testid="login-logo"
+              className="h-36 w-36 sm:h-40 sm:w-40 mt-2 mb-4 select-none pointer-events-none"
+              style={{ objectFit: "contain", filter: "drop-shadow(0 12px 24px rgba(20,30,50,0.18))" }}
+              draggable={false}
+            />
             <h2 className="font-serif text-4xl text-navy mb-1">IGC Trust Portal</h2>
             <p className="text-[#64748B]">Sign in to your {branding.business_name} account.</p>
           </div>

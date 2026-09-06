@@ -79,12 +79,33 @@ export default function ResetPassword() {
         </div>
       </div>
 
-      <div className="flex items-center justify-center p-8">
-        <div className="w-full max-w-md space-y-6" data-testid="reset-password-page">
+      <div className="flex items-center justify-center p-8 relative overflow-hidden">
+        <img
+          src="/irongate-logo.png"
+          alt=""
+          aria-hidden="true"
+          className="pointer-events-none select-none absolute z-0"
+          style={{
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            width: "min(560px, 90%)",
+            opacity: 0.06,
+          }}
+          draggable={false}
+        />
+        <div className="w-full max-w-md space-y-6 relative z-10" data-testid="reset-password-page">
           <div className="flex items-center gap-2 text-bronze">
             <Shield className="h-5 w-5" />
             <span className="text-xs uppercase tracking-[0.2em]">Account recovery</span>
           </div>
+          <img
+            src="/irongate-logo.png"
+            alt="Iron Gate Consulting"
+            className="h-24 w-24 sm:h-28 sm:w-28 select-none pointer-events-none"
+            style={{ objectFit: "contain", filter: "drop-shadow(0 10px 20px rgba(20,30,50,0.15))" }}
+            draggable={false}
+          />
 
           {done ? (
             <div className="space-y-4" data-testid="reset-password-success">

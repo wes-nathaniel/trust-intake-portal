@@ -18,19 +18,21 @@ export default function Layout({ children }) {
     <div className="min-h-screen bg-sand">
       <header className="sticky top-0 z-40 bg-white/90 backdrop-blur-xl border-b border-[#E2E0DA]" data-testid="app-header">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 flex items-center justify-between h-14 sm:h-16 gap-2">
-          <Link to={user && user.role === "admin" ? "/admin" : "/portal"} className="flex items-center gap-2 sm:gap-3 min-w-0" data-testid="brand-link">
-            {branding.logo_url ? (
-              <img src={branding.logo_url} alt="logo" className="h-8 w-8 sm:h-9 sm:w-9 rounded-sm object-cover shrink-0" />
-            ) : (
-              <div className="h-8 w-8 sm:h-9 sm:w-9 rounded-sm bg-navy flex items-center justify-center shrink-0">
-                <span className="font-serif text-bronze text-lg sm:text-xl font-semibold">T</span>
-              </div>
-            )}
+          <Link to={user && user.role === "admin" ? "/admin" : "/portal"} className="flex items-center gap-3 sm:gap-4 min-w-0" data-testid="brand-link">
+            {/* Iron Gate crest — transparent PNG, no box, no border. Slightly translucent
+                so text still leads. Larger than the old 32px avatar so it can breathe. */}
+            <img
+              src={branding.logo_url || "/irongate-logo.png"}
+              alt="Iron Gate Consulting"
+              className="h-12 w-12 sm:h-14 sm:w-14 shrink-0 select-none pointer-events-none"
+              style={{ objectFit: "contain", filter: "drop-shadow(0 1px 2px rgba(20,30,50,0.08))" }}
+              draggable={false}
+            />
             <div className="flex flex-col leading-none min-w-0">
-              <span className="font-serif text-base sm:text-xl tracking-tight text-navy truncate" data-testid="brand-business-name">
+              <span className="font-serif text-lg sm:text-2xl tracking-tight text-navy truncate" data-testid="brand-business-name">
                 {branding.business_name}
               </span>
-              <span className="hidden sm:inline text-[10px] uppercase tracking-[0.2em] text-[#64748B]">Trust & Estate Portal</span>
+              <span className="hidden sm:inline text-[10px] uppercase tracking-[0.24em] text-[#64748B] mt-0.5">Trust & Estate Portal</span>
             </div>
           </Link>
 

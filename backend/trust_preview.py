@@ -1,11 +1,13 @@
 """Trust draft preview — convert PDF pages to low-resolution, watermarked PNG images
 so clients can review the draft without being able to download/print/copy.
 
-Watermark: "IGC — SAMPLE ONLY — NOT VALID UNTIL PAID" (diagonal, light gray).
+Watermark: Iron Gate crest + "IGC — SAMPLE ONLY — NOT VALID UNTIL PAID" text
+(diagonal, light gray).
 """
 from __future__ import annotations
+import os
 from io import BytesIO
-from typing import List
+from typing import List, Optional
 
 import pypdfium2 as pdfium
 from PIL import Image, ImageDraw, ImageFont
@@ -16,6 +18,27 @@ SCALE = PREVIEW_DPI / 72.0
 
 WATERMARK_TEXT = "IGC — SAMPLE ONLY — NOT VALID UNTIL PAID"
 WATERMARK_RGBA = (120, 120, 120, 60)  # very light gray, partial alpha
+
+# Crest — the transparent Iron Gate logo, stamped as a faded crest behind text.
+_CREST_PATH_CANDIDATES = (
+    "/app/frontend/public/irongate-logo.png",
+    "/app/frontend/build/irongate-logo.png",
+)
+_crest_cache: Optional[Image.Image] = None
+
+
+def _load_crest() -> Optional[Image.Image]:
+    global _crest_cache
+    if _crest_cache is not None:
+        return _crest_cache
+    for p in _CREST_PATH_CANDIDATES:
+        if os.path.exists(p):
+            try:
+                _crest_cache = Image.open(p).convert("RGBA")
+                return _crest_cache
+            except Exception:
+                pass
+    return None
 
 
 def _load_font(size: int) -> ImageFont.ImageFont:
@@ -33,9 +56,25 @@ def _load_font(size: int) -> ImageFont.ImageFont:
 
 
 def _apply_watermark(img: Image.Image) -> Image.Image:
-    """Tile diagonal watermark across the image."""
+    """Tile diagonal watermark across the image + stamp a faded Iron Gate crest."""
     base = img.convert("RGBA")
     W, H = base.size
+
+    # ---------- (1) Faded crest, centered ----------
+    crest = _load_crest()
+    if crest is not None:
+        target = max(1, int(min(W, H) * 0.45))
+        c = crest.copy()
+        c.thumbnail((target, target), Image.LANCZOS)
+        # Fade to ~7% alpha so text remains readable on top
+        r, g, b, a = c.split()
+        a = a.point(lambda v: int(v * 0.07))
+        c.putalpha(a)
+        cx = (W - c.width) // 2
+        cy = (H - c.height) // 2
+        base.alpha_composite(c, (cx, cy))
+
+    # ---------- (2) Diagonal SAMPLE ONLY text tiles ----------
     font_size = max(18, W // 26)
     font = _load_font(font_size)
 
