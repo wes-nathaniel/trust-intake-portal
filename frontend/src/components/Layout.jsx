@@ -1,7 +1,7 @@
 import React from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { Bell, LogOut, Menu as MenuIcon } from "lucide-react";
+import { Bell, LogOut, Menu as MenuIcon, UserCog } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import AdminNotifications from "@/components/AdminNotifications";
 
@@ -61,10 +61,19 @@ export default function Layout({ children }) {
                 {user.role === "admin" && <AdminNotifications />}
                 <Link
                   to="/account"
-                  className="hidden md:inline text-sm text-[#64748B] hover:text-bronze truncate max-w-[180px]"
+                  className="hidden md:inline-flex items-center gap-1.5 text-sm text-navy hover:text-bronze border border-[#E2E0DA] hover:border-bronze rounded-full px-3 py-1.5 transition-colors max-w-[220px]"
                   data-testid="user-email-link"
-                  title="Account settings">
-                  {user.email}
+                  title="Account settings — click to change email or name">
+                  <UserCog className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{user.email}</span>
+                </Link>
+                <Link
+                  to="/account"
+                  className="md:hidden text-navy hover:text-bronze"
+                  data-testid="user-account-mobile-btn"
+                  title="Account settings"
+                  aria-label="Account settings">
+                  <UserCog className="h-5 w-5" />
                 </Link>
                 <Button variant="ghost" size="sm" onClick={handleLogout} data-testid="logout-btn" className="px-2 sm:px-3">
                   <LogOut className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">Sign out</span>
