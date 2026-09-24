@@ -22,6 +22,7 @@ import AdminQuestions from "@/pages/AdminQuestions";
 import AdminWhatsAppInbox from "@/pages/AdminWhatsAppInbox";
 import AdminRepsPage from "@/pages/AdminRepsPage";
 import AdminCommissionsPage from "@/pages/AdminCommissionsPage";
+import AccountSettings from "@/pages/AccountSettings";
 import PaymentSuccess from "@/pages/PaymentSuccess";
 import PaymentCancel from "@/pages/PaymentCancel";
 import Company from "@/pages/Company";
@@ -72,6 +73,7 @@ function App() {
             <Route path="/admin/whatsapp-inbox" element={<ProtectedRoute adminOnly><AdminWhatsAppInbox /></ProtectedRoute>} />
             <Route path="/admin/reps" element={<ProtectedRoute adminOnly><AdminRepsPage /></ProtectedRoute>} />
             <Route path="/admin/commissions" element={<ProtectedRoute adminOnly><AdminCommissionsPage /></ProtectedRoute>} />
+            <Route path="/account" element={<ProtectedRoute><AccountSettings /></ProtectedRoute>} />
             <Route path="/admin/cases/:caseId" element={<ProtectedRoute adminOnly><AdminCaseDetail /></ProtectedRoute>} />
             <Route path="/admin/cases/:caseId/trust-viewer-preview" element={<ProtectedRoute adminOnly><AdminTrustViewerPreview /></ProtectedRoute>} />
             <Route path="/admin/branding" element={<ProtectedRoute adminOnly><BrandingPage /></ProtectedRoute>} />

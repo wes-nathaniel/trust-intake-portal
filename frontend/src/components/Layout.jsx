@@ -59,7 +59,13 @@ export default function Layout({ children }) {
             {user && user !== false ? (
               <>
                 {user.role === "admin" && <AdminNotifications />}
-                <span className="hidden md:inline text-sm text-[#64748B] truncate max-w-[180px]" data-testid="user-email">{user.email}</span>
+                <Link
+                  to="/account"
+                  className="hidden md:inline text-sm text-[#64748B] hover:text-bronze truncate max-w-[180px]"
+                  data-testid="user-email-link"
+                  title="Account settings">
+                  {user.email}
+                </Link>
                 <Button variant="ghost" size="sm" onClick={handleLogout} data-testid="logout-btn" className="px-2 sm:px-3">
                   <LogOut className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">Sign out</span>
                 </Button>

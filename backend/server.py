@@ -1001,6 +1001,40 @@ async def logout(request: Request, response: Response, user: dict = Depends(get_
 async def me(user: dict = Depends(get_current_user)):
     return public_user(user)
 
+
+class UpdateMeReq(BaseModel):
+    email: Optional[EmailStr] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    current_password: str = Field(min_length=1, max_length=200)
+
+
+@api_router.patch("/auth/me")
+async def update_me(body: UpdateMeReq, user: dict = Depends(get_current_user)):
+    """Self-service profile update. Requires current_password to prove identity
+    (guards against a hijacked session performing a permanent account rename).
+    If email changes, the new email must not already be in use."""
+    fresh = await db.users.find_one({"id": user["id"]})
+    if not fresh or not verify_password(body.current_password, fresh.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+
+    updates = {"updated_at": now_iso()}
+    new_email = (body.email or "").strip().lower() if body.email else None
+    if new_email and new_email != fresh["email"].lower():
+        # Enforce uniqueness
+        existing = await db.users.find_one({"email": new_email, "id": {"$ne": user["id"]}})
+        if existing:
+            raise HTTPException(status_code=409, detail="That email is already in use.")
+        updates["email"] = new_email
+    if body.name and body.name.strip() != (fresh.get("name") or ""):
+        updates["name"] = body.name.strip()
+
+    if len(updates) == 1:  # only updated_at
+        return {"ok": True, "changed": False, "user": public_user(fresh)}
+
+    await db.users.update_one({"id": user["id"]}, {"$set": updates})
+    refreshed = await db.users.find_one({"id": user["id"]})
+    return {"ok": True, "changed": True, "user": public_user(refreshed)}
+
 @api_router.post("/auth/dismiss-tour")
 async def dismiss_tour(user: dict = Depends(get_current_user)):
     if not user.get("has_seen_tour"):
