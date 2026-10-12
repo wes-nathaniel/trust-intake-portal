@@ -823,6 +823,11 @@ class BrandingUpdate(BaseModel):
     header_image_url: Optional[str] = None
 
 # ---------- BRUTE FORCE ----------
+# Lockout window — tunable via env so support can reduce it during admin
+# testing without a code change. Default 2 minutes (short enough that a
+# fat-fingered admin isn't stuck for long, long enough to deter real brute-force).
+LOCKOUT_MINUTES = int(os.environ.get("LOCKOUT_MINUTES", "2"))
+
 async def check_lockout(identifier: str):
     rec = await db.login_attempts.find_one({"identifier": identifier}, {"_id": 0})
     if not rec:
@@ -837,7 +842,7 @@ async def record_failure(identifier: str):
     count = (rec.get("count", 0) if rec else 0) + 1
     update = {"identifier": identifier, "count": count, "last": now_iso()}
     if count >= 5:
-        update["locked_until"] = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+        update["locked_until"] = (datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_MINUTES)).isoformat()
         update["count"] = 0
     await db.login_attempts.update_one({"identifier": identifier}, {"$set": update}, upsert=True)
 
