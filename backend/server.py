@@ -109,7 +109,7 @@ APP_NAME = os.environ.get("APP_NAME", "trust-portal")
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "").strip()
-ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "wes@igcfirm.com").strip().lower()
+ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "wes@igchq.com").strip().lower()
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "outreach@igcoutreach.com")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 # Idle-session timeout: an authenticated user who makes no requests for this
@@ -436,9 +436,41 @@ def _html_to_text(html: str) -> str:
 
 
 async def send_email_notification(to_email: str, subject: str, html_body: str):
-    """Send an HTML+text email via Brevo transactional API. Non-fatal on
-    failure — logs the error so an outbound-email hiccup never breaks the
-    request that triggered the notification."""
+    """Send an HTML+text email via Resend. Non-fatal on failure.
+
+    Provider fallback order:
+      1. Resend (primary — igchq.com + igcreach.com are domain-verified)
+      2. Brevo (legacy — kept so we can toggle back if Resend ever errors out)
+
+    `send_via_resend_sync` is called inside a thread so we don't block the
+    event loop on the SDK's requests call.
+    """
+    # ---- Primary: Resend ----
+    rk = os.environ.get("RESEND_API_KEY", "").strip()
+    if rk:
+        try:
+            resend.api_key = rk
+            def _send():
+                return resend.Emails.send({
+                    "from": f"{SENDER_DISPLAY} <{SENDER_EMAIL}>",
+                    "to": [to_email],
+                    "subject": subject,
+                    "html": html_body,
+                    "text": _html_to_text(html_body),
+                    "reply_to": REPLY_TO_EMAIL,
+                    "headers": {
+                        "List-Unsubscribe": f"<mailto:{REPLY_TO_EMAIL}?subject=Unsubscribe>",
+                        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+                    },
+                })
+            result = await asyncio.to_thread(_send)
+            if result and result.get("id"):
+                return
+            logger.warning(f"Resend returned no id — falling through to Brevo. result={result}")
+        except Exception as e:
+            logger.error(f"Resend send failed, will try Brevo: {type(e).__name__}: {str(e)[:400]}")
+
+    # ---- Fallback: Brevo ----
     if not BREVO_API_KEY:
         logger.info(f"[email-mock] to={to_email} subject={subject}")
         return
@@ -449,8 +481,6 @@ async def send_email_notification(to_email: str, subject: str, html_body: str):
         "subject": subject,
         "htmlContent": html_body,
         "textContent": _html_to_text(html_body),
-        # Best-effort — Brevo documents standard headers as unsupported but
-        # in practice passes these through. Confirmed working in our test.
         "headers": {
             "List-Unsubscribe": f"<mailto:{REPLY_TO_EMAIL}?subject=Unsubscribe>",
             "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
@@ -469,7 +499,6 @@ async def send_email_notification(to_email: str, subject: str, html_body: str):
             )
         r.raise_for_status()
     except Exception as e:
-        # Include Brevo's response body for diagnosability (safe: no secrets)
         body = getattr(e, "response", None)
         detail = body.text[:400] if body is not None else str(e)[:400]
         logger.error(f"Brevo send failed: {detail}")
@@ -478,17 +507,40 @@ async def send_email_notification(to_email: str, subject: str, html_body: str):
 async def send_email_notification_with_attachment(to_email: str, subject: str, html_body: str,
                                                   attachment_name: str, attachment_bytes: bytes,
                                                   content_type: str = "application/pdf"):
-    """Same as `send_email_notification` but attaches a single file (typically
-    the signed trust PDF). `content_type` is retained for backwards
-    compatibility with the old Resend signature; Brevo infers MIME from the
-    filename extension."""
+    """Same contract as send_email_notification, with a single file attachment.
+    Resend primary, Brevo fallback. `content_type` kept for backward compat."""
+    import base64
+
+    rk = os.environ.get("RESEND_API_KEY", "").strip()
+    if rk:
+        try:
+            resend.api_key = rk
+            def _send():
+                return resend.Emails.send({
+                    "from": f"{SENDER_DISPLAY} <{SENDER_EMAIL}>",
+                    "to": [to_email],
+                    "subject": subject,
+                    "html": html_body,
+                    "text": _html_to_text(html_body),
+                    "reply_to": REPLY_TO_EMAIL,
+                    "attachments": [{
+                        "filename": attachment_name,
+                        "content": list(attachment_bytes),  # Resend expects list[int] for bytes
+                    }],
+                })
+            result = await asyncio.to_thread(_send)
+            if result and result.get("id"):
+                return
+        except Exception as e:
+            logger.error(f"Resend send (attachment) failed, will try Brevo: {type(e).__name__}: {str(e)[:400]}")
+
+    # ---- Fallback: Brevo ----
     if not BREVO_API_KEY:
         logger.info(
             f"[email-mock-attach] to={to_email} subject={subject} "
             f"attachment={attachment_name} ({len(attachment_bytes)} bytes)"
         )
         return
-    import base64
     payload = {
         "sender": {"email": SENDER_EMAIL, "name": SENDER_DISPLAY},
         "to": [{"email": to_email}],
