@@ -105,7 +105,7 @@ APP_NAME = os.environ.get("APP_NAME", "trust-portal")
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "support@igcfirm.com").strip().lower()
+ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "wes@igchq.com").strip().lower()
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 # Idle-session timeout: an authenticated user who makes no requests for this
