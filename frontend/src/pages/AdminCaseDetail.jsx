@@ -50,6 +50,15 @@ export default function AdminCaseDetail() {
   const [invoiceDue, setInvoiceDue] = useState(14);
   const [invoiceSending, setInvoiceSending] = useState(false);
 
+  // Admin force-change of the client's login email. We require two confirmations
+  // (typed new email + explicit "Change email" click) so this can't fire from an
+  // errant click. Keeps all case data intact — only `users.email` and this case's
+  // `client_email` move.
+  const [emailModalOpen, setEmailModalOpen] = useState(false);
+  const [newEmail, setNewEmail] = useState("");
+  const [confirmEmail, setConfirmEmail] = useState("");
+  const [changingEmail, setChangingEmail] = useState(false);
+
   const [loginsOpen, setLoginsOpen] = useState(false);
   const [loginRows, setLoginRows] = useState(null);
   const toggleLogins = async () => {
@@ -345,6 +354,33 @@ export default function AdminCaseDetail() {
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
+  const changeClientEmail = async () => {
+    const target = newEmail.trim().toLowerCase();
+    const confirmTarget = confirmEmail.trim().toLowerCase();
+    if (!target) { toast.error("Enter the new email."); return; }
+    if (target !== confirmTarget) { toast.error("The two emails don't match."); return; }
+    if (target === (c.client_email || "").toLowerCase()) {
+      toast.error("That is already this client's login email.");
+      return;
+    }
+    setChangingEmail(true);
+    try {
+      const { data } = await api.patch("/admin/users/change-email", {
+        old_email: c.client_email,
+        new_email: target,
+      });
+      toast.success(`Email updated → ${data.new_email} (${data.cases_updated} case${data.cases_updated === 1 ? "" : "s"} synced). Courtesy email sent.`);
+      setEmailModalOpen(false);
+      setNewEmail("");
+      setConfirmEmail("");
+      await load();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setChangingEmail(false);
+    }
+  };
+
   return (
     <Layout>
       <Link to="/admin" className="text-sm text-[#64748B] hover:text-navy inline-flex items-center gap-1 mb-6" data-testid="admin-back-btn">
@@ -372,6 +408,14 @@ export default function AdminCaseDetail() {
           {c.trust_name && <p className="text-navy/80 font-serif text-lg mt-0.5" data-testid="admin-trust-name">{c.trust_name}</p>}
           <p className="text-[#64748B] mt-1">
             <span data-testid="admin-client-email">{c.client_email}</span>
+            <button
+              type="button"
+              onClick={() => { setNewEmail(""); setConfirmEmail(""); setEmailModalOpen(true); }}
+              className="ml-2 inline-flex items-center gap-1 text-xs text-bronze hover:text-navy underline underline-offset-4"
+              data-testid="admin-change-email-btn"
+              title="Change this client's login email">
+              Change
+            </button>
             {c.client_phone && (
               <>
                 {" · "}
@@ -886,6 +930,71 @@ export default function AdminCaseDetail() {
       <div className="mt-6">
         <MessageThread caseId={caseId} title="Client Messages" />
       </div>
+
+      {/* Admin force-change email modal — two-step typed confirmation to prevent fat-fingers */}
+      {emailModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy/50"
+          data-testid="admin-change-email-modal"
+          onClick={(e) => { if (e.target === e.currentTarget && !changingEmail) setEmailModalOpen(false); }}>
+          <div className="bg-white border border-[#E2E0DA] rounded-xl shadow-2xl w-full max-w-md p-6">
+            <h3 className="font-serif text-2xl text-navy mb-1">Change client login email</h3>
+            <p className="text-sm text-[#64748B] mb-4">
+              This replaces the client's login email everywhere. All their data stays intact — grantors, documents, payments, and messages are untouched.
+            </p>
+            <div className="rounded-md bg-sand/40 border border-[#E2E0DA] p-3 mb-4 text-sm">
+              <p className="text-[#64748B]">Current email</p>
+              <p className="font-semibold text-navy break-all" data-testid="admin-change-email-current">{c.client_email}</p>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs uppercase tracking-wide text-[#64748B] font-semibold mb-1 block">New email</label>
+                <input
+                  type="email"
+                  autoFocus
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  disabled={changingEmail}
+                  className="w-full rounded-md border border-[#E2E0DA] px-3 py-2 focus:border-bronze outline-none"
+                  placeholder="client.new.email@example.com"
+                  data-testid="admin-change-email-new"
+                />
+              </div>
+              <div>
+                <label className="text-xs uppercase tracking-wide text-[#64748B] font-semibold mb-1 block">Confirm new email</label>
+                <input
+                  type="email"
+                  value={confirmEmail}
+                  onChange={(e) => setConfirmEmail(e.target.value)}
+                  disabled={changingEmail}
+                  className="w-full rounded-md border border-[#E2E0DA] px-3 py-2 focus:border-bronze outline-none"
+                  placeholder="retype the new email"
+                  data-testid="admin-change-email-confirm"
+                />
+              </div>
+            </div>
+            <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900 mt-4">
+              A courtesy email will be sent to the new address with sign-in instructions. The change is logged for audit.
+            </div>
+            <div className="flex gap-2 justify-end mt-5">
+              <button
+                type="button"
+                onClick={() => setEmailModalOpen(false)}
+                disabled={changingEmail}
+                className="btn-secondary"
+                data-testid="admin-change-email-cancel">Cancel</button>
+              <button
+                type="button"
+                onClick={changeClientEmail}
+                disabled={changingEmail || !newEmail.trim() || newEmail.trim() !== confirmEmail.trim()}
+                className="btn-primary disabled:opacity-50"
+                data-testid="admin-change-email-submit">
+                {changingEmail ? "Updating…" : "Change email"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   );
 }
