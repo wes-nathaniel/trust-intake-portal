@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
-import { Search, Users, FileClock, ArrowRight, UserPlus, Trash2, Archive, X, CheckSquare, Square, Sparkles } from "lucide-react";
+import { Search, Users, FileClock, ArrowRight, UserPlus, Trash2, Archive, X, CheckSquare, Square, Sparkles, Mail } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import InviteClientDialog from "@/components/InviteClientDialog";
 import DiagnosticsPanel from "@/components/DiagnosticsPanel";
@@ -149,6 +149,33 @@ export default function AdminDashboard() {
     if (confirm1 !== "DELETE") { toast.message("Cancelled."); return; }
     try { await api.delete(`/admin/trust-cases/${id}`); toast.success("Case deleted."); await load(); }
     catch (err) { toast.error(formatApiError(err.response?.data?.detail)); }
+  };
+
+  // Quick admin-force email change from the case list — two-prompt confirm
+  // (new email + retype) so a misclick can't accidentally swap an address.
+  // Same backend endpoint as the case-detail modal.
+  const quickChangeEmail = async (oldEmail, label, e) => {
+    e.preventDefault(); e.stopPropagation();
+    const next = window.prompt(`Change login email for ${label}?\n\nCurrent: ${oldEmail}\n\nEnter the NEW email:`);
+    if (!next) return;
+    const trimmed = next.trim().toLowerCase();
+    if (!trimmed || !trimmed.includes("@")) { toast.error("Not a valid email."); return; }
+    if (trimmed === oldEmail.toLowerCase()) { toast.error("That is already the login email."); return; }
+    const confirmEmail = window.prompt(`Please RETYPE the new email to confirm:`);
+    if (!confirmEmail || confirmEmail.trim().toLowerCase() !== trimmed) {
+      toast.error("The two emails don't match — nothing changed.");
+      return;
+    }
+    try {
+      const { data } = await api.patch("/admin/users/change-email", {
+        old_email: oldEmail,
+        new_email: trimmed,
+      });
+      toast.success(`Email updated → ${data.new_email} (${data.cases_updated} case${data.cases_updated === 1 ? "" : "s"} synced). Courtesy email sent.`);
+      await load();
+    } catch (err) {
+      toast.error(formatApiError(err.response?.data?.detail));
+    }
   };
 
   return (
@@ -327,7 +354,17 @@ export default function AdminDashboard() {
                         );
                       })()}
                     </p>
-                    <p className="text-xs text-[#64748B]" data-testid={`client-email-${c.id}`}>{c.client_email}</p>
+                    <p className="text-xs text-[#64748B]" data-testid={`client-email-${c.id}`}>
+                      {c.client_email}
+                      <button
+                        type="button"
+                        onClick={(e) => quickChangeEmail(c.client_email, c.client_name || c.client_email, e)}
+                        className="ml-2 text-[11px] text-bronze hover:text-navy underline underline-offset-4"
+                        title="Change this client's login email"
+                        data-testid={`admin-list-change-email-${c.id}`}>
+                        Change
+                      </button>
+                    </p>
                     {c.client_phone && (
                       <p className="text-xs text-navy font-medium" data-testid={`client-phone-${c.id}`}>
                         <a href={`tel:${c.client_phone}`} className="hover:text-bronze">{c.client_phone}</a>
