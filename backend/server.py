@@ -591,6 +591,22 @@ class ResetReq(BaseModel):
     token: str
     password: str = Field(min_length=6)
 
+class RequestEmailChangeReq(BaseModel):
+    new_email: EmailStr
+    current_password: str
+
+class ConfirmEmailChangeReq(BaseModel):
+    token: str
+
+class ForgotEmailReq(BaseModel):
+    """Self-serve login-email recovery. Client must match ALL FOUR fields against
+    data on file (grantor record): legal name, DOB, last 4 of SSN, ZIP."""
+    full_name: str = Field(min_length=1, max_length=200)
+    date_of_birth: str = Field(min_length=1, max_length=40)
+    last4_ssn: str = Field(min_length=4, max_length=4, pattern=r"^\d{4}$")
+    zip: str = Field(min_length=5, max_length=10)
+    new_email: EmailStr
+
 class InviteReq(BaseModel):
     name: str
     email: EmailStr
@@ -1175,6 +1191,382 @@ async def reset_password(body: ResetReq):
     await db.users.update_one({"id": rec["user_id"]}, {"$set": {"password_hash": hash_password(body.password)}})
     await db.password_reset_tokens.update_one({"token": body.token}, {"$set": {"used": True}})
     return {"ok": True}
+
+
+# ---------- EMAIL CHANGE (dual-confirm) ----------
+EMAIL_CHANGE_TOKEN_HOURS = 24
+EMAIL_RECOVERY_IP_LOCK_HOURS = 24
+
+
+def _email_change_html_new(biz, accent, primary, display, new_email, link):
+    """Verification email sent to the NEW address. Clicking confirms the switch."""
+    inner = f"""
+<p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Confirm your new email</p>
+<p>Hi {display},</p>
+<p>We received a request to change the login email on your {biz} account to <b>{new_email}</b>. If this was you, click the button below to confirm. The link is valid for <b>24 hours</b>.</p>
+{_cta(link, "Confirm new email", accent)}
+<p style="color:#64748B;font-size:13px;">If the button doesn't work, copy this URL:<br/><span style="word-break:break-all;">{link}</span></p>
+<p style="color:#64748B;font-size:13px;">If you did not request this, you can safely ignore this email — your login will remain unchanged.</p>
+"""
+    return _email_shell(biz, primary, accent, inner)
+
+
+def _email_change_html_old(biz, accent, primary, display, new_email):
+    """Courtesy alert sent to the OLD address so the user is notified a change was requested."""
+    inner = f"""
+<p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Email change requested</p>
+<p>Hi {display},</p>
+<p>Someone just requested to change the login email on your {biz} account from this address to <b>{new_email}</b>. The change will only take effect once that new address confirms the request.</p>
+<p>If this wasn't you, change your password immediately and contact <a href="mailto:{REPLY_TO_EMAIL}">{REPLY_TO_EMAIL}</a>.</p>
+"""
+    return _email_shell(biz, primary, accent, inner)
+
+
+@api_router.post("/auth/request-email-change")
+async def request_email_change(body: RequestEmailChangeReq, user: dict = Depends(get_current_user)):
+    """Authenticated email-change request. Password re-entry required.
+    Issues a 24h token, mails verification link to NEW email, courtesy notice to OLD email,
+    and alerts the admin. No account-level change happens until /auth/confirm-email-change is hit."""
+    new_email = body.new_email.lower().strip()
+    fresh = await db.users.find_one({"id": user["id"]})
+    if not fresh or not verify_password(body.current_password, fresh.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+    if new_email == fresh["email"].lower():
+        raise HTTPException(status_code=400, detail="That is already your login email.")
+    conflict = await db.users.find_one({"email": new_email, "id": {"$ne": user["id"]}})
+    if conflict:
+        raise HTTPException(status_code=409, detail="That email is already in use.")
+    token = secrets.token_urlsafe(32)
+    await db.email_change_tokens.insert_one({
+        "token": token,
+        "user_id": user["id"],
+        "new_email": new_email,
+        "old_email": fresh["email"],
+        "used": False,
+        "source": "self_service",
+        "expires_at": datetime.now(timezone.utc) + timedelta(hours=EMAIL_CHANGE_TOKEN_HOURS),
+        "created_at": now_iso(),
+    })
+    link = f"{FRONTEND_URL}/confirm-email?token={token}"
+    branding = await _branding_doc()
+    biz = branding.get("business_name", "Trust Portal")
+    accent = branding.get("accent_color", "#C5A880")
+    primary = branding.get("primary_color", "#1C252E")
+    display = fresh.get("name") or fresh["email"]
+    try:
+        await send_email_notification(new_email, f"Confirm your new {biz} login email",
+                                      _email_change_html_new(biz, accent, primary, display, new_email, link))
+    except Exception as e:
+        logger.error(f"request-email-change new-email send failed: {e}")
+    try:
+        await send_email_notification(fresh["email"], f"Email change requested — {biz}",
+                                      _email_change_html_old(biz, accent, primary, display, new_email))
+    except Exception as e:
+        logger.error(f"request-email-change old-email send failed: {e}")
+    try:
+        await send_email_notification(
+            ADMIN_NOTIFY_EMAIL,
+            f"[{biz}] Email change requested — {display}",
+            f"<p>{display} &lt;{fresh['email']}&gt; requested to change their login email to <b>{new_email}</b>. "
+            f"Awaiting confirmation via the verification link sent to the new address.</p>",
+        )
+    except Exception as e:
+        logger.error(f"request-email-change admin send failed: {e}")
+    return {"ok": True, "message": "A confirmation link has been sent to the new email address."}
+
+
+@api_router.get("/auth/email-change-info")
+async def email_change_info(token: str):
+    """Public — frontend confirm page uses this to show which email is being switched to."""
+    rec = await db.email_change_tokens.find_one({"token": token, "used": False})
+    if not rec:
+        raise HTTPException(status_code=400, detail="This confirmation link is invalid or has already been used.")
+    exp = rec["expires_at"]
+    if isinstance(exp, str):
+        exp = datetime.fromisoformat(exp)
+    if exp.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="This confirmation link has expired. Please request a new email change.")
+    return {"ok": True, "new_email": rec["new_email"]}
+
+
+@api_router.post("/auth/confirm-email-change")
+async def confirm_email_change(body: ConfirmEmailChangeReq):
+    """Public — click-through confirmation. Updates user.email AND all trust_cases.client_email
+    tied to that user so the admin dashboard stays consistent."""
+    rec = await db.email_change_tokens.find_one({"token": body.token, "used": False})
+    if not rec:
+        raise HTTPException(status_code=400, detail="This confirmation link is invalid or has already been used.")
+    exp = rec["expires_at"]
+    if isinstance(exp, str):
+        exp = datetime.fromisoformat(exp)
+    if exp.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="This confirmation link has expired.")
+    new_email = rec["new_email"].lower()
+    conflict = await db.users.find_one({"email": new_email, "id": {"$ne": rec["user_id"]}})
+    if conflict:
+        await db.email_change_tokens.update_one({"token": body.token}, {"$set": {"used": True, "void_reason": "email_taken"}})
+        raise HTTPException(status_code=409, detail="That email is already in use. Please request a new email change.")
+    user = await db.users.find_one({"id": rec["user_id"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    old_email = user["email"]
+    await db.users.update_one({"id": rec["user_id"]}, {"$set": {"email": new_email, "updated_at": now_iso()}})
+    # Keep trust_cases.client_email in sync — admin dashboard filters by this field
+    await db.trust_cases.update_many({"client_id": rec["user_id"]}, {"$set": {"client_email": new_email}})
+    await db.email_change_tokens.update_one({"token": body.token}, {"$set": {"used": True, "confirmed_at": now_iso()}})
+
+    branding = await _branding_doc()
+    biz = branding.get("business_name", "Trust Portal")
+    accent = branding.get("accent_color", "#C5A880")
+    primary = branding.get("primary_color", "#1C252E")
+    display = user.get("name") or new_email
+    try:
+        inner = f"""
+<p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Your login email has been updated</p>
+<p>Hi {display},</p>
+<p>Your login email on {biz} is now <b>{new_email}</b>. Use it the next time you sign in.</p>
+"""
+        await send_email_notification(new_email, f"Your {biz} login email was updated",
+                                      _email_shell(biz, primary, accent, inner))
+    except Exception as e:
+        logger.error(f"confirm-email-change new-email confirmation failed: {e}")
+    try:
+        inner = f"""
+<p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Email change completed</p>
+<p>Hi {display},</p>
+<p>The login email on your {biz} account has been changed to <b>{new_email}</b>. This address ({old_email}) will no longer be used for sign-in.</p>
+<p>If this wasn't you, contact <a href="mailto:{REPLY_TO_EMAIL}">{REPLY_TO_EMAIL}</a> immediately.</p>
+"""
+        await send_email_notification(old_email, f"Email change completed — {biz}",
+                                      _email_shell(biz, primary, accent, inner))
+    except Exception as e:
+        logger.error(f"confirm-email-change old-email notice failed: {e}")
+    try:
+        await send_email_notification(
+            ADMIN_NOTIFY_EMAIL,
+            f"[{biz}] Email change CONFIRMED — {display}",
+            f"<p>{display} successfully changed their login email from <b>{old_email}</b> to <b>{new_email}</b> "
+            f"(via {rec.get('source', 'self_service')}).</p>",
+        )
+    except Exception as e:
+        logger.error(f"confirm-email-change admin notify failed: {e}")
+    return {"ok": True, "email": new_email}
+
+
+@api_router.post("/auth/forgot-email")
+async def forgot_email(body: ForgotEmailReq, request: Request):
+    """Self-serve email recovery for a client who can't access their original address.
+    Match on ALL FOUR of (legal name, DOB, last-4 SSN, ZIP) against the grantor records on file.
+    - All match -> issue a 24h change-email token; verification link emailed to the new address.
+    - Any mismatch -> log attempt + lock the submitter's IP for 24h + alert admin via email + WhatsApp."""
+    import re as _re
+    xff = request.headers.get("x-forwarded-for", "")
+    ip = xff.split(",")[0].strip() if xff else (request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown"))
+
+    now = datetime.now(timezone.utc)
+    lock = await db.email_recovery_locks.find_one({"ip": ip})
+    if lock:
+        exp = lock.get("expires_at")
+        if isinstance(exp, str):
+            exp = datetime.fromisoformat(exp)
+        if exp and exp.replace(tzinfo=timezone.utc) > now:
+            raise HTTPException(status_code=429, detail="Too many recovery attempts. Try again in 24 hours or contact support.")
+
+    sub_name = (body.full_name or "").strip().lower()
+    sub_dob_digits = _re.sub(r"\D", "", (body.date_of_birth or ""))
+    sub_last4 = (body.last4_ssn or "").strip()
+    sub_zip = (body.zip or "").strip()
+    sub_new_email = body.new_email.lower().strip()
+
+    matched_user_id = None
+    matched_case_id = None
+    async for case in db.trust_cases.find({}, {"client_id": 1, "id": 1, "grantors": 1, "_id": 0}):
+        for g in (case.get("grantors") or []):
+            g_name = (g.get("full_legal_name") or "").strip().lower()
+            g_dob = _re.sub(r"\D", "", g.get("date_of_birth") or "")
+            g_zip = ((g.get("address") or {}).get("zip") or "").strip()
+            g_ssn_plain = ssn_crypto.decrypt_ssn(g.get("ssn") or "")
+            g_last4 = _re.sub(r"\D", "", g_ssn_plain)[-4:] if g_ssn_plain else ""
+            if g_name and g_name == sub_name and g_dob and g_dob == sub_dob_digits and g_last4 and g_last4 == sub_last4 and g_zip and g_zip == sub_zip:
+                matched_user_id = case.get("client_id")
+                matched_case_id = case.get("id")
+                break
+        if matched_user_id:
+            break
+
+    attempt_doc = {
+        "id": new_id(),
+        "ip": ip,
+        "submitted_name": body.full_name[:200],
+        "submitted_dob": body.date_of_birth[:40],
+        "submitted_last4": body.last4_ssn,
+        "submitted_zip": body.zip[:10],
+        "submitted_new_email": sub_new_email,
+        "matched_user_id": matched_user_id,
+        "matched_case_id": matched_case_id,
+        "success": bool(matched_user_id),
+        "created_at": now_iso(),
+    }
+    await db.email_recovery_attempts.insert_one(attempt_doc)
+
+    if not matched_user_id:
+        await db.email_recovery_locks.update_one(
+            {"ip": ip},
+            {"$set": {"ip": ip, "expires_at": now + timedelta(hours=EMAIL_RECOVERY_IP_LOCK_HOURS), "last_attempt": now_iso()}},
+            upsert=True,
+        )
+        try:
+            await send_email_notification(
+                ADMIN_NOTIFY_EMAIL,
+                "[IGC] Failed email-recovery attempt",
+                f"<p>A client failed email-recovery identity verification.</p>"
+                f"<ul>"
+                f"<li>IP: {ip}</li>"
+                f"<li>Submitted name: {body.full_name}</li>"
+                f"<li>Submitted DOB: {body.date_of_birth}</li>"
+                f"<li>Submitted last-4 SSN: {body.last4_ssn}</li>"
+                f"<li>Submitted ZIP: {body.zip}</li>"
+                f"<li>Submitted new email: {sub_new_email}</li>"
+                f"</ul>"
+                f"<p>This IP has been locked for 24 hours. Review in admin dashboard → Email recovery attempts.</p>",
+            )
+        except Exception as e:
+            logger.error(f"forgot-email admin email failed: {e}")
+        try:
+            notify.notify_admin(
+                f"[IGC] Failed email-recovery attempt from IP {ip}. "
+                f"Submitted name='{body.full_name}' DOB='{body.date_of_birth}' "
+                f"last4='{body.last4_ssn}' zip='{body.zip}'. IP locked 24h."
+            )
+        except Exception as e:
+            logger.error(f"forgot-email WhatsApp alert failed: {e}")
+        raise HTTPException(status_code=400, detail="We could not verify your identity with the information provided. If you believe this is in error, contact support.")
+
+    # Match found — ensure new email isn't already attached to another user
+    conflict = await db.users.find_one({"email": sub_new_email, "id": {"$ne": matched_user_id}})
+    if conflict:
+        raise HTTPException(status_code=409, detail="That email is already in use.")
+    user = await db.users.find_one({"id": matched_user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    token = secrets.token_urlsafe(32)
+    await db.email_change_tokens.insert_one({
+        "token": token,
+        "user_id": matched_user_id,
+        "new_email": sub_new_email,
+        "old_email": user["email"],
+        "used": False,
+        "source": "forgot_email",
+        "expires_at": now + timedelta(hours=EMAIL_CHANGE_TOKEN_HOURS),
+        "created_at": now_iso(),
+    })
+    link = f"{FRONTEND_URL}/confirm-email?token={token}"
+    branding = await _branding_doc()
+    biz = branding.get("business_name", "Trust Portal")
+    accent = branding.get("accent_color", "#C5A880")
+    primary = branding.get("primary_color", "#1C252E")
+    display = user.get("name") or sub_new_email
+    try:
+        await send_email_notification(sub_new_email, f"Confirm your new {biz} login email",
+                                      _email_change_html_new(biz, accent, primary, display, sub_new_email, link))
+    except Exception as e:
+        logger.error(f"forgot-email new-email send failed: {e}")
+    try:
+        await send_email_notification(user["email"], f"Email change requested — {biz}",
+                                      _email_change_html_old(biz, accent, primary, display, sub_new_email))
+    except Exception as e:
+        logger.error(f"forgot-email old-email send failed: {e}")
+    try:
+        await send_email_notification(
+            ADMIN_NOTIFY_EMAIL,
+            f"[{biz}] Email recovery verified — {display}",
+            f"<p>{display} &lt;{user['email']}&gt; passed 4-of-4 identity verification and requested to change their "
+            f"login email to <b>{sub_new_email}</b>. Awaiting confirmation.</p>",
+        )
+    except Exception as e:
+        logger.error(f"forgot-email admin notify failed: {e}")
+    return {"ok": True, "message": "Identity verified. A confirmation link has been sent to the new email address."}
+
+
+@api_router.get("/admin/email-recovery-attempts")
+async def admin_email_recovery_attempts(admin: dict = Depends(require_admin)):
+    """Admin visibility into recent email-recovery activity. Last 100 attempts, newest first."""
+    docs = await db.email_recovery_attempts.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return docs
+
+
+class AdminChangeEmailReq(BaseModel):
+    old_email: EmailStr
+    new_email: EmailStr
+
+
+@api_router.patch("/admin/users/change-email")
+async def admin_force_change_email(body: AdminChangeEmailReq, admin: dict = Depends(require_admin)):
+    """Admin force-swap of a client's login email. Used when a client typed the
+    wrong email at signup and has no way to receive the self-serve verification
+    link. All related `trust_cases.client_email` records are kept in sync.
+    All data (grantors, documents, payments, messages) stays intact — only the
+    `email` field on the user record and `client_email` on their cases change.
+
+    Every call is logged to `email_force_change_log` for audit purposes."""
+    old_email = body.old_email.lower().strip()
+    new_email = body.new_email.lower().strip()
+    if old_email == new_email:
+        raise HTTPException(status_code=400, detail="Old and new email are identical.")
+    user = await db.users.find_one({"email": old_email})
+    if not user:
+        raise HTTPException(status_code=404, detail=f"No user found with email {old_email}.")
+    conflict = await db.users.find_one({"email": new_email, "id": {"$ne": user["id"]}})
+    if conflict:
+        raise HTTPException(status_code=409, detail=f"The email {new_email} is already in use by another account.")
+    await db.users.update_one({"id": user["id"]}, {"$set": {"email": new_email, "updated_at": now_iso()}})
+    cases_updated = (await db.trust_cases.update_many(
+        {"client_id": user["id"]}, {"$set": {"client_email": new_email}}
+    )).modified_count
+    await db.email_force_change_log.insert_one({
+        "id": new_id(),
+        "user_id": user["id"],
+        "old_email": old_email,
+        "new_email": new_email,
+        "admin_id": admin["id"],
+        "admin_email": admin["email"],
+        "cases_updated": cases_updated,
+        "created_at": now_iso(),
+    })
+    # Fire-and-forget courtesy notifications
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name", "Trust Portal")
+        accent = branding.get("accent_color", "#C5A880")
+        primary = branding.get("primary_color", "#1C252E")
+        display = user.get("name") or new_email
+        inner = f"""
+<p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Your login email has been updated</p>
+<p>Hi {display},</p>
+<p>Our support team updated the login email on your {biz} account to <b>{new_email}</b> at your request. Please use this address the next time you sign in.</p>
+<p style="color:#64748B;font-size:13px;">If you did not request this change, contact <a href="mailto:{REPLY_TO_EMAIL}">{REPLY_TO_EMAIL}</a> immediately.</p>
+"""
+        await send_email_notification(new_email, f"Your {biz} login email was updated",
+                                      _email_shell(biz, primary, accent, inner))
+    except Exception as e:
+        logger.error(f"admin force-change notification failed: {e}")
+    try:
+        await send_email_notification(
+            ADMIN_NOTIFY_EMAIL,
+            f"[{biz}] Email force-changed by admin",
+            f"<p>Admin {admin.get('email')} manually changed login email for user "
+            f"<b>{user.get('name') or 'unnamed'}</b> from <b>{old_email}</b> to <b>{new_email}</b>. "
+            f"{cases_updated} case(s) updated.</p>",
+        )
+    except Exception as e:
+        logger.error(f"admin force-change admin notify failed: {e}")
+    return {
+        "ok": True,
+        "user_id": user["id"],
+        "old_email": old_email,
+        "new_email": new_email,
+        "cases_updated": cases_updated,
+    }
 
 
 # ---------- CLIENT INVITES ----------

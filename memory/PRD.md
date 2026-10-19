@@ -3,10 +3,40 @@
 ## Problem Statement
 Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facing 8-step intake wizard, admin dashboard, secure page-by-page trust draft preview (watermarked, anti-copy/print), Stripe-powered payment workflow (Basic Living Trust $1,497 / Private Trust $2,497), final trust unlock with notarization instructions, legal disclosures + acknowledgments, business asset SOS advisory, EIN admin-filing, branding, and messaging.
 
+---
+
+## Changelog — 2026-10-19 (Email-change self-service + admin force-change for locked-out clients)
+- ✅ **Dual-confirm email change (Flow 1)** — new backend endpoints in `/app/backend/server.py`:
+  - `POST /api/auth/request-email-change` (authed; validates current password, issues 24h token, mails verification link to NEW address, courtesy notice to OLD address, admin alert to `wes@igchq.com`)
+  - `GET /api/auth/email-change-info?token=…` (public — frontend confirm page uses this)
+  - `POST /api/auth/confirm-email-change` (public click-through — updates `users.email` and auto-syncs `trust_cases.client_email`; fires completion emails + admin notice)
+  - New collection: `email_change_tokens` (`token, user_id, new_email, old_email, used, source, expires_at`).
+- ✅ **Forgot-email identity recovery (Flow 2)** — public endpoint for locked-out clients:
+  - `POST /api/auth/forgot-email` — requires EXACT 4-of-4 match on grantor record: `full_name`, `date_of_birth`, `last4_ssn`, `zip`. All match → issues same 24h token to the submitted new email. Any mismatch → 400 generic error, IP locked for 24h, admin alert fires via email + WhatsApp.
+  - `GET /api/admin/email-recovery-attempts` — admin audit list of last 100 attempts.
+  - New collections: `email_recovery_attempts`, `email_recovery_locks`.
+- ✅ **Admin force-change endpoint (hotfix for Rose)** —
+  - `PATCH /api/admin/users/change-email` `{old_email, new_email}` — admin-only; keeps ALL data (grantors, docs, payments, messages); auto-syncs every `trust_cases.client_email` for that user; writes audit row to `email_force_change_log`.
+- ✅ **Frontend**:
+  - New pages: `/forgot-email` (`ForgotEmail.jsx`) + `/confirm-email?token=…` (`ConfirmEmailChange.jsx`).
+  - `Login.jsx`: added "Can't access your email?" link next to Forgot Password.
+  - `AccountSettings.jsx`: email-change section now uses dual-confirm flow (name change stays instant).
+- ✅ **Rose Nabhan unblocked** — on 2026-10-19 22:09 UTC, admin force-change swapped `rosenabhan@yahoo.com` → `rosenabhan@gmail.com` on prod. 1 trust case auto-synced. Courtesy email delivered via Resend (ID `01a1563a-908b-7160-bcd5-5824a2d7820a`).
+- 🟡 **Known production email glitch** — automatic courtesy email inside admin force-change endpoint silently did not fire on prod for Rose's case (DB mutation succeeded, HTTP 200 returned, but no Resend event appeared). Dual-confirm flow emails DID fire on prod during the 22:06 UTC health check. Root cause may be env binding or Resend throttling specific to the ADMIN_NOTIFY path; sent Rose's courtesy email manually via Resend API as workaround. Needs follow-up.
+
+### Health-check — all 3 flows GREEN on production (2026-10-19 22:06–22:08 UTC)
+| Flow | Backend | UI screenshot |
+|---|---|---|
+| Flow 1 — Happy path (register → request change → confirm → login) | 200/200/200/200/401 ✅ | n/a |
+| Flow 2 — Link expired/invalid | GET+POST confirm → 400 "invalid or already used" ✅ | `/tmp/shot_confirm_expired.png` |
+| Flow 3 — Failed verification + IP lockout | first attempt → 400, second → 429 "locked 24h" ✅ | `/tmp/shot_failed_verification.png` |
+
+---
+
 ## Architecture
 - **Backend**: FastAPI + MongoDB (motor). JWT auth (httpOnly cookies), bcrypt, brute-force lockout.
 - **Frontend**: React (CRA + craco) + Tailwind + shadcn/ui. Cormorant Garamond + IBM Plex Sans.
-- **3rd-party**: Brevo (email), Emergent LLM key (AI Q&A + Nia assistant — Claude Sonnet), Dropbox Sign (dormant), **Stripe (claimable sandbox — primary payment)**, Twilio SMS + Twilio WhatsApp (fan-out admin notifications, per-case outbound + inbound thread, commission approve/deny via WhatsApp reply). Square kept as legacy secondary (Zelle/CashApp remain).
+- **3rd-party**: Resend (email — primary; Brevo suspended), Emergent LLM key (AI Q&A + Nia assistant — Claude Sonnet), Dropbox Sign (dormant), **Stripe (claimable sandbox — primary payment)**, Twilio SMS + Twilio WhatsApp (fan-out admin notifications, per-case outbound + inbound thread, commission approve/deny via WhatsApp reply). Square kept as legacy secondary (Zelle/CashApp remain).
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
 

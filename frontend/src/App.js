@@ -23,6 +23,8 @@ import AdminWhatsAppInbox from "@/pages/AdminWhatsAppInbox";
 import AdminRepsPage from "@/pages/AdminRepsPage";
 import AdminCommissionsPage from "@/pages/AdminCommissionsPage";
 import AccountSettings from "@/pages/AccountSettings";
+import ConfirmEmailChange from "@/pages/ConfirmEmailChange";
+import ForgotEmail from "@/pages/ForgotEmail";
 import PaymentSuccess from "@/pages/PaymentSuccess";
 import PaymentCancel from "@/pages/PaymentCancel";
 import Company from "@/pages/Company";
@@ -46,7 +48,9 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/forgot-email" element={<ForgotEmail />} />
             <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/confirm-email" element={<ConfirmEmailChange />} />
             <Route path="/accept-invite" element={<AcceptInvite />} />
 
             {/* Public A2P / compliance landing page — no auth */}

@@ -106,6 +106,10 @@ export default function Login() {
             <Link to="/forgot-password" className="text-navy font-medium hover:text-bronze" data-testid="login-forgot-password-link">
               Forgot your password?
             </Link>
+            <span className="mx-2 text-[#CBD5E1]">·</span>
+            <Link to="/forgot-email" className="text-navy font-medium hover:text-bronze" data-testid="login-forgot-email-link">
+              Can't access your email?
+            </Link>
           </p>
           <p className="text-sm text-center text-[#64748B]">
             New here?{" "}
