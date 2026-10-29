@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
 import NiaChat from "@/components/NiaChat";
 import api, { formatApiError } from "@/lib/api";
-import { ArrowRight, ShieldCheck, Download, FilePen, AlertTriangle, Plus, Sparkles } from "lucide-react";
+import { ArrowRight, ShieldCheck, Download, FilePen, AlertTriangle, Plus, Sparkles, KeyRound } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import StatusTracker from "@/components/StatusTracker";
 import TourCard from "@/components/TourCard";
@@ -53,6 +53,10 @@ export default function ClientPortal() {
             </p>
           </>
         )}
+        <Link to="/account#password" className="mt-3 inline-flex items-center gap-1.5 text-sm text-bronze hover:text-navy underline underline-offset-4"
+          data-testid="portal-change-password-link">
+          <KeyRound className="h-4 w-4" /> Change password
+        </Link>
       </div>
 
       {loading ? (

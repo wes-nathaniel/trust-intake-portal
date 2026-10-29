@@ -8,6 +8,7 @@ import os
 import uuid
 import logging
 import secrets
+import re
 import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
@@ -181,6 +182,9 @@ def clear_auth_cookies(response: Response):
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("refresh_token", path="/")
 
+PASSWORD_CHANGE_ALLOWED_PATHS = {"/api/auth/me", "/api/auth/change-password", "/api/auth/logout"}
+
+
 async def get_current_user(request: Request) -> dict:
     token = request.cookies.get("access_token")
     if not token:
@@ -221,6 +225,8 @@ async def get_current_user(request: Request) -> dict:
         raise
     except Exception as e:
         logger.warning(f"idle-timeout check DB error (allowing request): {e}")
+    if user.get("requires_password_change") and request.url.path not in PASSWORD_CHANGE_ALLOWED_PATHS:
+        raise HTTPException(status_code=403, detail="Password change required. Please set a new password to continue.")
     return user
 
 async def require_admin(user: dict = Depends(get_current_user)) -> dict:
@@ -447,7 +453,9 @@ async def send_email_notification(to_email: str, subject: str, html_body: str):
     """
     # ---- Primary: Resend ----
     rk = os.environ.get("RESEND_API_KEY", "").strip()
-    if rk:
+    if not rk:
+        logger.error(f"RESEND_API_KEY missing — cannot send email to={to_email} subject={subject}")
+    for attempt in range(3 if rk else 0):
         try:
             resend.api_key = rk
             def _send():
@@ -465,15 +473,18 @@ async def send_email_notification(to_email: str, subject: str, html_body: str):
                 })
             result = await asyncio.to_thread(_send)
             if result and result.get("id"):
-                return
-            logger.warning(f"Resend returned no id — falling through to Brevo. result={result}")
+                return True
+            logger.warning(f"Resend returned no id (attempt {attempt + 1}). result={result}")
         except Exception as e:
-            logger.error(f"Resend send failed, will try Brevo: {type(e).__name__}: {str(e)[:400]}")
+            logger.error(f"Resend send failed (attempt {attempt + 1}) to={to_email}: {type(e).__name__}: {str(e)[:400]}")
+            if "testing email" in str(e) or "validation" in type(e).__name__.lower():
+                break
+        await asyncio.sleep(1.2 * (attempt + 1))
 
     # ---- Fallback: Brevo ----
     if not BREVO_API_KEY:
-        logger.info(f"[email-mock] to={to_email} subject={subject}")
-        return
+        logger.error(f"[email-not-sent] to={to_email} subject={subject}")
+        return False
     payload = {
         "sender": {"email": SENDER_EMAIL, "name": SENDER_DISPLAY},
         "to": [{"email": to_email}],
@@ -498,10 +509,12 @@ async def send_email_notification(to_email: str, subject: str, html_body: str):
                 json=payload,
             )
         r.raise_for_status()
+        return True
     except Exception as e:
         body = getattr(e, "response", None)
         detail = body.text[:400] if body is not None else str(e)[:400]
         logger.error(f"Brevo send failed: {detail}")
+        return False
 
 
 async def send_email_notification_with_attachment(to_email: str, subject: str, html_body: str,
@@ -1003,6 +1016,7 @@ def public_user(u: dict) -> dict:
         "role": u.get("role", "client"),
         "is_first_login": not bool(u.get("has_logged_in_before")),
         "has_seen_tour": bool(u.get("has_seen_tour")),
+        "requires_password_change": bool(u.get("requires_password_change")),
     }
 
 @api_router.post("/auth/register")
@@ -1188,7 +1202,7 @@ async def reset_password(body: ResetReq):
         expires_at = datetime.fromisoformat(expires_at)
     if expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="Token expired")
-    await db.users.update_one({"id": rec["user_id"]}, {"$set": {"password_hash": hash_password(body.password)}})
+    await db.users.update_one({"id": rec["user_id"]}, {"$set": {"password_hash": hash_password(body.password), "requires_password_change": False}})
     await db.password_reset_tokens.update_one({"token": body.token}, {"$set": {"used": True}})
     return {"ok": True}
 
@@ -1533,12 +1547,14 @@ async def admin_force_change_email(body: AdminChangeEmailReq, admin: dict = Depe
         "cases_updated": cases_updated,
         "created_at": now_iso(),
     })
-    # Fire-and-forget courtesy notifications
+    # Courtesy notifications (result reported back to the admin UI)
+    courtesy_sent = False
+    biz = "Trust Portal"
     try:
         branding = await _branding_doc()
-        biz = branding.get("business_name", "Trust Portal")
-        accent = branding.get("accent_color", "#C5A880")
-        primary = branding.get("primary_color", "#1C252E")
+        biz = branding.get("business_name") or "Trust Portal"
+        accent = branding.get("accent_color") or "#C5A880"
+        primary = branding.get("primary_color") or "#1C252E"
         display = user.get("name") or new_email
         inner = f"""
 <p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Your login email has been updated</p>
@@ -1546,10 +1562,10 @@ async def admin_force_change_email(body: AdminChangeEmailReq, admin: dict = Depe
 <p>Our support team updated the login email on your {biz} account to <b>{new_email}</b> at your request. Please use this address the next time you sign in.</p>
 <p style="color:#64748B;font-size:13px;">If you did not request this change, contact <a href="mailto:{REPLY_TO_EMAIL}">{REPLY_TO_EMAIL}</a> immediately.</p>
 """
-        await send_email_notification(new_email, f"Your {biz} login email was updated",
-                                      _email_shell(biz, primary, accent, inner))
+        courtesy_sent = bool(await send_email_notification(
+            new_email, f"Your {biz} login email was updated", _email_shell(biz, primary, accent, inner)))
     except Exception as e:
-        logger.error(f"admin force-change notification failed: {e}")
+        logger.error(f"admin force-change notification failed: {type(e).__name__}: {e}")
     try:
         await send_email_notification(
             ADMIN_NOTIFY_EMAIL,
@@ -1566,7 +1582,69 @@ async def admin_force_change_email(body: AdminChangeEmailReq, admin: dict = Depe
         "old_email": old_email,
         "new_email": new_email,
         "cases_updated": cases_updated,
+        "courtesy_email_sent": courtesy_sent,
     }
+
+
+# ---------- PASSWORD MANAGEMENT (temp password + self-service change) ----------
+_TEMP_PW_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
+
+
+def _generate_temp_password() -> str:
+    while True:
+        raw = "".join(secrets.choice(_TEMP_PW_ALPHABET) for _ in range(12))
+        if any(c.isupper() for c in raw) and any(c.islower() for c in raw) and any(c.isdigit() for c in raw):
+            return f"{raw[:4]}-{raw[4:8]}-{raw[8:]}"
+
+
+class AdminTempPasswordReq(BaseModel):
+    email: EmailStr
+
+
+@api_router.post("/admin/users/temp-password")
+async def admin_set_temp_password(body: AdminTempPasswordReq, admin: dict = Depends(require_admin)):
+    email = body.email.lower().strip()
+    user = await db.users.find_one({"email": email})
+    if not user:
+        raise HTTPException(status_code=404, detail=f"No user found with email {email}.")
+    if user.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="Temporary passwords can only be set for client accounts.")
+    temp = _generate_temp_password()
+    await db.users.update_one({"id": user["id"]}, {"$set": {
+        "password_hash": hash_password(temp),
+        "requires_password_change": True,
+        "temp_password_set_at": now_iso(),
+        "updated_at": now_iso(),
+    }})
+    await db.login_attempts.delete_many({"identifier": {"$regex": f":{re.escape(email)}$"}})
+    await db.password_admin_log.insert_one({
+        "id": new_id(), "user_id": user["id"], "user_email": email,
+        "admin_id": admin["id"], "admin_email": admin["email"],
+        "action": "temp_password_set", "created_at": now_iso(),
+    })
+    return {"ok": True, "email": email, "name": user.get("name") or "", "temp_password": temp}
+
+
+class ChangePasswordReq(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+@api_router.post("/auth/change-password")
+async def change_password(body: ChangePasswordReq, user: dict = Depends(get_current_user)):
+    fresh = await db.users.find_one({"id": user["id"]})
+    if not fresh or not verify_password(body.current_password, fresh.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+    if body.current_password == body.new_password:
+        raise HTTPException(status_code=400, detail="New password must be different from your current password.")
+    await db.users.update_one({"id": user["id"]}, {"$set": {
+        "password_hash": hash_password(body.new_password),
+        "requires_password_change": False,
+        "password_changed_at": now_iso(),
+        "updated_at": now_iso(),
+    }})
+    refreshed = await db.users.find_one({"id": user["id"]})
+    return {"ok": True, "user": public_user(refreshed)}
 
 
 # ---------- CLIENT INVITES ----------

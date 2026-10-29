@@ -8,6 +8,7 @@ import InviteClientDialog from "@/components/InviteClientDialog";
 import DiagnosticsPanel from "@/components/DiagnosticsPanel";
 import StorageRollupCard from "@/components/StorageRollupCard";
 import ExportCsvControl from "@/components/ExportCsvControl";
+import TempPasswordDialog from "@/components/TempPasswordDialog";
 import { toast } from "sonner";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
@@ -23,6 +24,7 @@ export default function AdminDashboard() {
   const [includeArchived, setIncludeArchived] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [tempTarget, setTempTarget] = useState(null);
 
   const toggleRow = (id) => {
     setSelected((prev) => {
@@ -171,7 +173,9 @@ export default function AdminDashboard() {
         old_email: oldEmail,
         new_email: trimmed,
       });
-      toast.success(`Email updated → ${data.new_email} (${data.cases_updated} case${data.cases_updated === 1 ? "" : "s"} synced). Courtesy email sent.`);
+      const synced = `${data.cases_updated} case${data.cases_updated === 1 ? "" : "s"} synced`;
+      if (data.courtesy_email_sent) toast.success(`Email updated → ${data.new_email} (${synced}). Courtesy email sent.`);
+      else toast.warning(`Email updated → ${data.new_email} (${synced}), but the courtesy email could not be sent — please notify the client directly.`);
       await load();
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail));
@@ -364,6 +368,14 @@ export default function AdminDashboard() {
                         data-testid={`admin-list-change-email-${c.id}`}>
                         Change
                       </button>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setTempTarget({ email: c.client_email, label: c.client_name || c.client_email }); }}
+                        className="ml-2 text-[11px] text-bronze hover:text-navy underline underline-offset-4"
+                        title="Set a temporary password for this client"
+                        data-testid={`admin-list-temp-password-${c.id}`}>
+                        Temp password
+                      </button>
                     </p>
                     {c.client_phone && (
                       <p className="text-xs text-navy font-medium" data-testid={`client-phone-${c.id}`}>
@@ -423,6 +435,9 @@ export default function AdminDashboard() {
             </tbody>
           </table>
         </div>
+      )}
+      {tempTarget && (
+        <TempPasswordDialog email={tempTarget.email} label={tempTarget.label} onClose={() => setTempTarget(null)} />
       )}
     </Layout>
   );

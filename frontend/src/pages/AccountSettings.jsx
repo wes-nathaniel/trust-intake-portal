@@ -1,10 +1,11 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Layout from "@/components/Layout";
 import { UserCog, Mail, User as UserIcon, KeyRound, Save, MailCheck } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import PasswordInput from "@/components/PasswordInput";
+import ChangePasswordForm from "@/components/ChangePasswordForm";
 
 /**
  * Self-service account settings.
@@ -24,6 +25,12 @@ export default function AccountSettings() {
   const [emailPassword, setEmailPassword] = useState("");
   const [requestingEmail, setRequestingEmail] = useState(false);
   const [emailRequested, setEmailRequested] = useState(false);
+
+  useEffect(() => {
+    if (window.location.hash === "#password") {
+      setTimeout(() => document.getElementById("password")?.scrollIntoView({ behavior: "smooth" }), 100);
+    }
+  }, []);
 
   const saveName = async (e) => {
     e.preventDefault();
@@ -202,11 +209,19 @@ export default function AccountSettings() {
           )}
         </form>
 
-        <p className="text-xs text-[#94A3B8] mt-4">
-          Need to change your password? Use{" "}
-          <a href="/forgot-password" className="text-bronze underline">Forgot Password</a>
-          {" "}and we'll email you a reset link.
-        </p>
+        {/* ---------- Change password ---------- */}
+        <section id="password" className="bg-white border border-[#E2E0DA] rounded-xl p-5 sm:p-6 space-y-5 mt-6 scroll-mt-24"
+          data-testid="change-password-section">
+          <h2 className="font-serif text-xl text-navy flex items-center gap-2">
+            <KeyRound className="h-5 w-5 text-bronze" /> Change password
+          </h2>
+          <ChangePasswordForm />
+          <p className="text-xs text-[#94A3B8]">
+            Forgot your current password? Use{" "}
+            <a href="/forgot-password" className="text-bronze underline">Forgot Password</a>
+            {" "}and we'll email you a reset link.
+          </p>
+        </section>
       </div>
     </Layout>
   );

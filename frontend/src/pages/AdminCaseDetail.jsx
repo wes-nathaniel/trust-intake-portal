@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { displaySSN } from "@/pages/intake/_shared";
 import DocRequestsPanel from "@/components/DocRequestsPanel";
 import SSNReveal from "@/components/SSNReveal";
+import TempPasswordDialog from "@/components/TempPasswordDialog";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
                   "Drafting Trust", "Ready for Client Review", "Ready for Payment", "Pending Payment Verification", "Payment Verified", "Completed"];
@@ -55,6 +56,7 @@ export default function AdminCaseDetail() {
   // errant click. Keeps all case data intact — only `users.email` and this case's
   // `client_email` move.
   const [emailModalOpen, setEmailModalOpen] = useState(false);
+  const [tempPwOpen, setTempPwOpen] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [confirmEmail, setConfirmEmail] = useState("");
   const [changingEmail, setChangingEmail] = useState(false);
@@ -369,7 +371,9 @@ export default function AdminCaseDetail() {
         old_email: c.client_email,
         new_email: target,
       });
-      toast.success(`Email updated → ${data.new_email} (${data.cases_updated} case${data.cases_updated === 1 ? "" : "s"} synced). Courtesy email sent.`);
+      const synced = `${data.cases_updated} case${data.cases_updated === 1 ? "" : "s"} synced`;
+      if (data.courtesy_email_sent) toast.success(`Email updated → ${data.new_email} (${synced}). Courtesy email sent.`);
+      else toast.warning(`Email updated → ${data.new_email} (${synced}), but the courtesy email could not be sent — please notify the client directly.`);
       setEmailModalOpen(false);
       setNewEmail("");
       setConfirmEmail("");
@@ -415,6 +419,14 @@ export default function AdminCaseDetail() {
               data-testid="admin-change-email-btn"
               title="Change this client's login email">
               Change
+            </button>
+            <button
+              type="button"
+              onClick={() => setTempPwOpen(true)}
+              className="ml-2 inline-flex items-center gap-1 text-xs text-bronze hover:text-navy underline underline-offset-4"
+              data-testid="admin-temp-password-btn"
+              title="Set a temporary password for this client">
+              Temp password
             </button>
             {c.client_phone && (
               <>
@@ -994,6 +1006,9 @@ export default function AdminCaseDetail() {
             </div>
           </div>
         </div>
+      )}
+      {tempPwOpen && (
+        <TempPasswordDialog email={c.client_email} label={c.client_name || c.client_email} onClose={() => setTempPwOpen(false)} />
       )}
     </Layout>
   );
