@@ -522,3 +522,10 @@ See `/app/memory/test_credentials.md` — admin: support@igcfirm.com / Wllorenzo
 - Client WhatsApp OFF: whatsapp.CLIENT_WHATSAPP_ENABLED=False (password alerts → email, admin manual send → 400, opt-in welcome skipped). Admin WhatsApp (notify_admin, commissions, admin command replies) unchanged.
 - Tested: iteration_30 (backend 23/23); trustee-overwrite issue fixed by capping trustee at 1.
 - NOT PUBLISHED — user must approve.
+
+## 2026-06 — Free step navigation, admin status WhatsApp alerts, Signal House prep
+- Free navigation: IntakeWizard has no step locks; gotoStep syncs ?step=. ReviewStep lists missing steps (lib/intakeProgress.js) and disables Submit; backend `_intake_missing_steps` returns 400 on client intake_submitted_ack when incomplete.
+- ADMIN_WHATSAPP_STATUS_ALERTS {"Waiting on Documents","In Review"} → whatsapp.send_admin_whatsapp from `_notify_status_change` (covers admin, auto-advance, WhatsApp-command changes).
+- client_messaging.py: Signal House SMS (POST https://v2.signalhouse.io/message/sms, Bearer SIGNALHOUSE_API_KEY, SIGNALHOUSE_FROM_NUMBER) + WhatsApp for opted-in; SIGNALHOUSE_ACTIVE=False (do not activate until user says). Wired into client status-change + password alerts. GET /api/admin/signalhouse/status.
+- KNOWN BLOCKER: Twilio WhatsApp From = sandbox (…8886) → every send fails 63007; Twilio SMS all undelivered 30034 (A2P 10DLC not registered). No admin texts/WhatsApp are being delivered; email works.
+- Tested: iteration_31 (backend 100%, frontend fixes applied: chip re-click, banner text, mobile overflow, chat bubble overlap).

@@ -133,7 +133,7 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
         <div className="flex items-center gap-3">
           <ShieldCheck className="h-5 w-5 text-bronze" />
           <div>
-            <p className="font-semibold text-navy">{isReviewPath ? "Your existing trust is uploaded." : "All required intake sections are complete."}</p>
+            <p className="font-semibold text-navy">{missing.length ? "Some required sections still need attention." : isReviewPath ? "Your existing trust is uploaded." : "All required intake sections are complete."}</p>
             <p className="text-sm text-[#64748B]">{isReviewPath ? "Acknowledge the legal disclosures below to complete your review." : "Please review the summary below and acknowledge the legal disclosures."}</p>
           </div>
         </div>

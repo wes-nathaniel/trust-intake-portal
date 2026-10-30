@@ -40,7 +40,7 @@ function stepsForCase(trustCase) {
 export default function IntakeWizard() {
   const { caseId } = useParams();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [trustCase, setTrustCase] = useState(null);
   const [stepIdx, setStepIdx] = useState(0);
 
@@ -80,6 +80,7 @@ export default function IntakeWizard() {
     // Free navigation: any step can be opened; final submit still requires all steps (see ReviewStep)
     if (i < 0 || i >= steps.length) return;
     setStepIdx(i);
+    setSearchParams({ step: steps[i].key }, { replace: true });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -119,7 +120,7 @@ export default function IntakeWizard() {
 
       <div className="grid lg:grid-cols-[280px_1fr] gap-4 lg:gap-8">
         {/* Step nav — vertical on lg+, horizontal scrollable strip on mobile */}
-        <aside className="lg:space-y-1 lg:block" data-testid="intake-step-nav">
+        <aside className="min-w-0 lg:space-y-1 lg:block" data-testid="intake-step-nav">
           <div className="lg:hidden -mx-3 px-3 mb-2 overflow-x-auto no-scrollbar">
             <div className="flex gap-2 min-w-max pb-2">
               {steps.map((s, i) => {
@@ -165,7 +166,7 @@ export default function IntakeWizard() {
             <StepComp trustCase={trustCase} caseId={caseId} reload={reload} />
           </div>
 
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center justify-between gap-3 pr-0 sm:pr-16 pb-16 sm:pb-0">
             <button onClick={() => gotoStep(safeStepIdx - 1)} disabled={safeStepIdx === 0}
               className="btn-secondary flex-1 sm:flex-none" data-testid="wizard-prev-btn">
               <ArrowLeft className="h-4 w-4 inline mr-1" /> Previous

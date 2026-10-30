@@ -1,0 +1,38 @@
+{
+  "summary": "Quick focused test of free step navigation + Review submit guard + admin WhatsApp status alerts. Backend 4/4 pytest pass (client guard 400 with step list, admin bypass, full-completion submit -> In Review, admin status Waiting on Documents ok; WhatsApp attempted, only Twilio 63007 'NOT sent' logged, no tracebacks). UI: all desktop+mobile step buttons enabled, Next always enabled, ?step=review deep link works, review-missing-ein/documents navigate with ?step=key, submit disabled when incomplete; on complete case (fresh TEST client) submit enabled, after disclosures submission succeeds, badge shown, status In Review. Found and fixed mobile horizontal overflow; found 2 minor frontend bugs (below).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "email notifications (Brevo fallback)", "issue": "Backend log: Brevo send failed 'account is blocked due to malicious behavior' (permission_denied). Resend rejects example.com recipients (expected for test). Pre-existing, unrelated to this feature, but means Brevo fallback is dead."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ReviewStep missing-step chips", "issue": "Clicking a review-missing-{key} chip a 2nd time does nothing when the URL is already ?step={key} (e.g. click EIN chip -> go back to Review via sidebar (URL stays ?step=ein) -> click EIN chip again -> stays on Review). Root cause: IntakeWizard deep-link effect only reacts to searchParams changes; sidebar gotoStep doesn't update URL. Fix: make gotoStep call setSearchParams({step: key}) (keeps URL in sync & refresh-safe) or pass an onGoto callback to ReviewStep instead of navigate().", "selector": "[data-testid='review-missing-ein']", "priority": "MEDIUM"},
+      {"component": "ReviewStep review-complete-banner", "issue": "Banner always says 'All required intake sections are complete.' even when review-missing-steps lists incomplete steps (now reachable thanks to free navigation). Should be conditional on missing.length === 0.", "selector": "[data-testid='review-complete-banner']", "priority": "MEDIUM"},
+      {"component": "IntakeWizard mobile step strip", "issue": "FIXED by testing agent: at 390px the page had horizontal overflow (scrollWidth 1161) because the min-w-max step strip expanded the grid track. Added min-w-0 to <aside data-testid='intake-step-nav'>; verified scrollWidth 390.", "selector": "[data-testid='intake-step-nav']", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Intake wizard (desktop)", "issues": ["Floating chat bubble overlaps the bottom-right Next / Back to Portal button (wizard-next-btn / wizard-done-btn) partially covering its label."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_iteration31_free_nav_submit_guard.py", "/app/test_reports/pytest/iteration31.xml", "/app/test_reports/setup_iter31_complete_case.py"],
+  "action_items": [
+    "Sync step with URL in IntakeWizard.gotoStep (setSearchParams) so review-missing chips always navigate",
+    "Make review-complete-banner text conditional on missingSteps() being empty",
+    "Move/offset the floating chat bubble so it does not cover wizard-next-btn",
+    "(Optional) Brevo account blocked - email fallback broken"
+  ],
+  "critical_code_review_comments": [
+    "IntakeWizard: `locked` is now constant false; Lock icon/locked classes are dead code - remove.",
+    "Frontend/backend completeness rules duplicated (intakeProgress.js vs _intake_missing_steps) - fine but keep in sync; backend Documents check covers review path correctly.",
+    "pwtest case 562399a8 is in status 'In Review' while still missing EIN + Documents (from earlier admin testing) - not a bug of this feature."
+  ],
+  "updated_files": ["/app/frontend/src/pages/IntakeWizard.jsx", "/app/backend/tests/test_iteration31_free_nav_submit_guard.py", "/app/test_reports/setup_iter31_complete_case.py"],
+  "success_rate": {"backend": "100%", "frontend": "85%"},
+  "seed_data_creation": "TEST client test_freenav_ui_661f08@example.com / Client12345! with case e28811a5-b0b4-47fb-affa-1321e524848b (submitted, In Review). pytest-created clients/cases are deleted on teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run tests/test_iteration31_free_nav_submit_guard.py for guard regression. setup_iter31_complete_case.py seeds a fully complete unsubmitted case for UI submit tests (disclosure checkboxes still required in UI before submit)."
+}
