@@ -22,8 +22,8 @@ export default function Login() {
     setLoading(false);
     if (res.ok) {
       const from = location.state?.from?.pathname;
-      // route by role from the returned user (axios returned body used by context)
-      const target = from || "/";
+      const adminOnlyFrom = from && from.startsWith("/admin") && res.user?.role !== "admin";
+      const target = from && !adminOnlyFrom ? from : "/";
       navigate(target, { replace: true });
     } else {
       setError(res.error);

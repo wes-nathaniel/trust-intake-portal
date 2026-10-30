@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { createPortal } from "react-dom";
 import { KeyRound, Copy, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "@/lib/api";
@@ -26,7 +27,7 @@ export default function TempPasswordDialog({ email, label, onClose }) {
     catch { toast.error("Copy failed — select the password and copy it manually."); }
   };
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" data-testid="temp-password-modal"
       onClick={(e) => e.stopPropagation()}>
       <div className="bg-white rounded-xl w-full max-w-md p-6 shadow-xl relative">
@@ -67,6 +68,7 @@ export default function TempPasswordDialog({ email, label, onClose }) {
           </>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -498,3 +498,12 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 
 ## Credentials
 See `/app/memory/test_credentials.md` — admin: support@igcfirm.com / Wllorenzo03!
+
+## 2026-06 — Password management (forked session)
+- Admin "Temp password" (admin case list row + case detail header): POST /api/admin/users/temp-password {email} → app-generated XXXX-XXXX-XXXX password shown once, no email sent; clients only (admins rejected); clears login lockouts; audit in `password_admin_log`.
+- `users.requires_password_change` flag → get_current_user returns 403 on all endpoints except /auth/me, /auth/change-password, /auth/logout; ProtectedRoute renders ForcePasswordChange screen.
+- Client "Change password" anytime: /account#password section + link on /portal; POST /api/auth/change-password {current_password, new_password≥8}. Reset-password link also clears the flag.
+- Email: Resend now retries 3x (rate-limit fix for silent prod failure of admin email-change courtesy email); send_email_notification returns bool; admin change-email returns `courtesy_email_sent` and UI warns if it failed.
+- Login no longer redirects a client to a stale /admin "from" route.
+- Tested: curl (backend) + testing agent iteration_28 (frontend 100%, modal portal fix applied).
+- Pending: Stripe live keys before Tuesday demo; igchq.com meta tags live in the separate IGC Website project; split server.py into routers.

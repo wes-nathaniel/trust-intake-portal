@@ -1,0 +1,39 @@
+{
+  "summary": "Frontend E2E test of the Admin 'Set Temporary Password' and Client 'Change Password' features, plus regressions. One real UI bug found and fixed: on /admin/cases/{id} the TempPasswordDialog showed up off-screen (dialog top=1449px in a 1080px viewport). On the admin list the backdrop only covered the content column. Cause: the parent <main class='fade-in-up'> keeps a transform, so it becomes the containing block for position:fixed. Fixed by rendering the dialog with a React portal on document.body, then re-tested: overlay is 0,0,1920x1080 and the dialog sits at top=406. After the fix, every requested flow passed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "TempPasswordDialog (AdminCaseDetail + AdminDashboard)", "issue": "FIXED by testing agent: the modal appeared off-screen or only partly dimmed the page because the fade-in-up transform on <main> broke position:fixed. It now renders via createPortal(document.body).", "selector": "[data-testid='temp-password-modal']", "priority": "HIGH (fixed)"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Login redirect (pre-existing, minor)", "issues": ["Login.jsx sends the user to location.state.from without checking role. In one run the client briefly landed on /admin (the admin's previous route) after logging in. ProtectedRoute then shows the force screen or redirects to /portal, so nothing leaks, but the role should be checked before using 'from'."]}
+    ]
+  },
+  "test_report_links": ["/app/tests/seed_pw_client.py"],
+  "action_items": [
+    "Optional: in Login.jsx, ignore state.from when it is an /admin path and the user is not an admin.",
+    "Optional: other modals rendered inside <main class='fade-in-up'> with position:fixed may have the same containing-block problem. Audit them, or remove the leftover transform after the animation ends (e.g. animation-fill-mode: none, or end with transform: none)."
+  ],
+  "critical_code_review_comments": [
+    "The fade-in-up animation leaves a transform on <main>, which breaks fixed-position overlays nested inside it. Portals are the safe pattern.",
+    "Copy button: navigator.clipboard fails in headless/non-secure contexts and shows the 'Copy failed — select manually' toast. The fallback works as designed (the value is select-all)."
+  ],
+  "updated_files": ["/app/frontend/src/components/TempPasswordDialog.jsx", "/app/tests/seed_pw_client.py"],
+  "success_rate": {"backend": "not tested (frontend only)", "frontend": "100% after fix (all listed flows)"},
+  "verified_flows": [
+    "Admin list: Temp password link visible next to Change; opens modal; Cancel/X close it; clicks on the modal or backdrop do not navigate to the case",
+    "Admin case detail: admin-temp-password-btn opens modal; Generate shows a password in XXXX-XXXX-XXXX format; copy button and Done work",
+    "Client login with temp password shows force-password-change-screen; /portal, /account, /intake/{id} and /portal/new all show the force screen with no app header",
+    "Force-screen validations: mismatch, under 8 chars, same as current, wrong temp ('Current password is incorrect.')",
+    "Successful change shows the 'Password updated.' toast and the normal app",
+    "portal-change-password-link goes to /account#password and scrolls to change-password-section",
+    "Account change password: wrong current shows an error; success shows a toast and clears the fields; old password is rejected and the new one works on next login",
+    "Regression: name and email forms render on /account; admin list email Change runs both prompts and shows the 'Courtesy email sent.' success toast"
+  ],
+  "seed_data_creation": "Test client test_pwui_1793318144@igchq-test.com (email later changed by the regression test to test_pwui_renamed_1793318144@igchq-test.com), current password Another12345, case 89cc010e-06cf-40f6-b04d-75c999588df8 (TEST PwUI Trust). The pwtest account was not touched.",
+  "test_credentials": "Admin support@igcfirm.com / Wllorenzo03! (from /app/memory/test_credentials.md)",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Use /app/tests/seed_pw_client.py to create a fresh client with a case. The courtesy_email_sent=false warning path was not exercised (the email send succeeded)."
+}
