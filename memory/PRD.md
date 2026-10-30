@@ -536,3 +536,4 @@ See `/app/memory/test_credentials.md` — admin: support@igcfirm.com / Wllorenzo
 - Admin emails for these 7 alerts are suppressed when admin_email_alerts_enabled=false (PATCH /api/admin/notification-settings). Still TRUE — flip after user confirms WhatsApp delivery.
 - Test endpoint: POST /api/admin/notification-settings/test-whatsapp {message}.
 - View-as logout no longer logs a client logout.
+- Template: admin alerts now send template `igc_admin_alert` (named params status/client_name/case_name, en_US; overridable via settings admin_alert_template / admin_alert_template_language), falling back to plain text if the template send fails. As of last test Meta returns 132001 "template does not exist in en_US" for phone 1238058182731272 → template not on that number's WABA yet. NOT yet published.

@@ -19,13 +19,21 @@ def normalize_phone(phone: str) -> str:
 
 
 def send_template(to: str, name: str, params: list, lang: str = "en_US") -> dict:
-    """Send an approved template (delivers outside WhatsApp's 24-hour window)."""
+    """Send an approved template (delivers outside WhatsApp's 24-hour window).
+    `params` is a list of values or (parameter_name, value) pairs for named templates."""
     if not is_configured():
         return {"ok": False, "error": "WhatsApp Cloud API not configured"}
     to_n = normalize_phone(to)
     if not to_n:
         return {"ok": False, "error": "No recipient phone"}
-    comps = [{"type": "body", "parameters": [{"type": "text", "text": (str(p) or "-")[:500]} for p in params]}]
+    parameters = []
+    for p in params:
+        k, v = p if isinstance(p, tuple) else (None, p)
+        item = {"type": "text", "text": (str(v) or "-")[:500]}
+        if k:
+            item["parameter_name"] = k
+        parameters.append(item)
+    comps = [{"type": "body", "parameters": parameters}]
     try:
         r = requests.post(
             f"https://graph.facebook.com/{GRAPH_API_VERSION}/{os.environ['WHATSAPP_PHONE_NUMBER_ID'].strip()}/messages",

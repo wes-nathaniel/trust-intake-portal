@@ -10,6 +10,7 @@ logger = logging.getLogger("trust-portal")
 
 SETTINGS_ID = "notifications"
 DEFAULT_ADMIN_PHONE = "+19545983681"
+DEFAULT_TEMPLATE = "igc_admin_alert"
 _bg = set()
 
 
@@ -33,15 +34,21 @@ async def admin_email_enabled(db) -> bool:
 async def send_admin_alert(db, title: str, client_name: str, case_name: str, extra: str = "") -> dict:
     s = await get_settings(db)
     phone = s.get("admin_notification_phone") or ""
-    template = s.get("admin_alert_template") or ""
-    if template:
-        res = await asyncio.to_thread(whatsapp_utils.send_template, phone, template,
-                                      [title, client_name or "-", case_name or "-"])
-    else:
+    template = s.get("admin_alert_template") or DEFAULT_TEMPLATE
+    res = await asyncio.to_thread(
+        whatsapp_utils.send_template, phone, template,
+        [("status", title), ("client_name", client_name or "-"), ("case_name", case_name or "-")],
+        s.get("admin_alert_template_language") or "en_US")
+    res["via"] = "template"
+    if not res.get("ok"):
+        # Fallback: plain text (delivers only inside WhatsApp's 24-hour window)
+        tmpl_err = res.get("error", "")
         body = f"IGC Alert: {title}\nClient: {client_name or '—'}\nCase: {case_name or '—'}" + (f"\n{extra}" if extra else "")
         res = await asyncio.to_thread(whatsapp_utils.send_text, phone, body)
+        res.update({"via": "text", "template_error": tmpl_err})
     await db.admin_whatsapp_log.insert_one({
         "title": title, "client_name": client_name, "case_name": case_name, "ok": res.get("ok"),
+        "via": res.get("via", ""), "template_error": res.get("template_error", ""),
         "message_id": res.get("message_id", ""), "error": res.get("error", ""),
         "created_at": datetime.now(timezone.utc).isoformat(),
     })

@@ -1821,9 +1821,7 @@ class TestAlertReq(BaseModel):
 
 @api_router.post("/admin/notification-settings/test-whatsapp")
 async def test_admin_whatsapp(body: TestAlertReq, _: dict = Depends(require_admin)):
-    s = await whatsapp_alerts.get_settings(db)
-    res = await asyncio.to_thread(whatsapp_utils.send_text, s.get("admin_notification_phone", ""), body.message)
-    return res
+    return await whatsapp_alerts.send_admin_alert(db, body.message, "TEST Client", "TEST Case")
 
 
 @api_router.get("/admin/signalhouse/status")
