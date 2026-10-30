@@ -15,6 +15,7 @@ import AssetStep from "@/pages/intake/AssetStep";
 import EINStep from "@/pages/intake/EINStep";
 import DocumentsStep from "@/pages/intake/DocumentsStep";
 import ReviewStep from "@/pages/intake/ReviewStep";
+import { isStepComplete } from "@/lib/intakeProgress";
 
 const STEP_DEFS = [
   { key: "grantors", label: "Grantors", Component: GrantorStep },
@@ -34,39 +35,6 @@ function stepsForCase(trustCase) {
   const path = trustCase?.intake_path || "new";
   if (path === "review") return STEP_DEFS.filter((s) => REVIEW_PATH_STEP_KEYS.has(s.key));
   return STEP_DEFS;
-}
-
-function isStepComplete(key, trustCase) {
-  if (!trustCase) return false;
-  const maxGrantors = trustCase.trust_type === "joint" ? 2 : 1;
-  switch (key) {
-    case "grantors": return (trustCase.grantors?.length || 0) >= maxGrantors;
-    case "trustee":  return (trustCase.trustees?.length || 0) >= 1;
-    case "successor":return (trustCase.successor_trustees?.length || 0) >= 1;
-    case "beneficiaries": return (trustCase.beneficiaries?.length || 0) >= 1;
-    case "assets": {
-      const manual = (trustCase.assets?.length || 0) >= 1;
-      const docs = (trustCase.documents || []).filter(d => !d.is_deleted);
-      const ASSET_DOC_TYPES = new Set(["bank_statement","deed","title","insurance_policy","business_document"]);
-      const uploaded = docs.some(d => ASSET_DOC_TYPES.has(d.doc_type));
-      // Assets are optional. Clients with nothing to add can tick "I have
-      // no assets to add" on the Assets step to signal completion instead.
-      const noAssets = !!trustCase.acknowledgments?.no_assets_ack;
-      return manual || uploaded || noAssets;
-    }
-    case "ein":      return trustCase.ein?.authorized === true;
-    case "documents":{
-      const docs = trustCase.documents || [];
-      const types = new Set(docs.filter(d => !d.is_deleted).map(d => d.doc_type));
-      const baseDone = types.has("government_id") && types.has("proof_of_address");
-      // Review path also requires the existing trust upload
-      if ((trustCase.intake_path || "new") === "review") {
-        return baseDone && types.has("existing_trust");
-      }
-      return baseDone;
-    }
-    default: return false;
-  }
 }
 
 export default function IntakeWizard() {
@@ -95,12 +63,7 @@ export default function IntakeWizard() {
     if (!qsStep) return;
     const steps = stepsForCase(trustCase);
     const idx = steps.findIndex((s) => s.key === qsStep);
-    if (idx >= 0 && idx !== stepIdx) {
-      const locked = idx > 0 && steps.slice(0, idx).some(
-        (p) => p.key !== "review" && !isStepComplete(p.key, trustCase)
-      );
-      if (!locked) setStepIdx(idx);
-    }
+    if (idx >= 0 && idx !== stepIdx) setStepIdx(idx);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trustCase?.id, searchParams]);
 
@@ -112,17 +75,10 @@ export default function IntakeWizard() {
   const safeStepIdx = Math.min(stepIdx, steps.length - 1);
   const StepComp = steps[safeStepIdx].Component;
   const stepKey = steps[safeStepIdx].key;
-  const currentDone = stepKey === "review" ? true : isStepComplete(stepKey, trustCase);
 
   const gotoStep = (i) => {
-    // Hard stop: cannot go to step beyond first incomplete one
-    for (let k = 0; k < i; k++) {
-      if (steps[k].key === "review") continue;
-      if (!isStepComplete(steps[k].key, trustCase)) {
-        toast.error(`Complete "${steps[k].label}" before proceeding.`);
-        return;
-      }
-    }
+    // Free navigation: any step can be opened; final submit still requires all steps (see ReviewStep)
+    if (i < 0 || i >= steps.length) return;
     setStepIdx(i);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -168,7 +124,7 @@ export default function IntakeWizard() {
             <div className="flex gap-2 min-w-max pb-2">
               {steps.map((s, i) => {
                 const done = s.key === "review" ? false : isStepComplete(s.key, trustCase);
-                const locked = i > 0 && steps.slice(0, i).some((p) => p.key !== "review" && !isStepComplete(p.key, trustCase));
+                const locked = false;
                 const active = i === safeStepIdx;
                 return (
                   <button key={s.key} onClick={() => gotoStep(i)} disabled={locked}
@@ -187,7 +143,7 @@ export default function IntakeWizard() {
           <div className="hidden lg:block lg:space-y-1">
             {steps.map((s, i) => {
               const done = s.key === "review" ? false : isStepComplete(s.key, trustCase);
-              const locked = i > 0 && steps.slice(0, i).some((p) => p.key !== "review" && !isStepComplete(p.key, trustCase));
+              const locked = false;
               const active = i === safeStepIdx;
               return (
                 <button key={s.key} onClick={() => gotoStep(i)} disabled={locked}
@@ -215,7 +171,7 @@ export default function IntakeWizard() {
               <ArrowLeft className="h-4 w-4 inline mr-1" /> Previous
             </button>
             {safeStepIdx < steps.length - 1 ? (
-              <button onClick={() => gotoStep(safeStepIdx + 1)} disabled={!currentDone}
+              <button onClick={() => gotoStep(safeStepIdx + 1)}
                 className="btn-primary flex-1 sm:flex-none" data-testid="wizard-next-btn">
                 Next <ArrowRight className="h-4 w-4 inline ml-1" />
               </button>

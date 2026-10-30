@@ -31,6 +31,7 @@ import esign
 import sms
 import whatsapp
 import notify
+import client_messaging
 import whatsapp_commands
 import extract_jobs
 import page_explanation_jobs
@@ -794,6 +795,30 @@ def _has_any_intake_data(case: dict) -> bool:
     )
 
 
+_ASSET_DOC_TYPES = {"bank_statement", "deed", "title", "insurance_policy", "business_document"}
+
+
+def _intake_missing_steps(case: dict) -> list:
+    """Mirror of frontend lib/intakeProgress.js — labels of required steps not yet complete."""
+    missing = []
+    if (case.get("intake_path") or "new") != "review":
+        max_g = 2 if case.get("trust_type") == "joint" else 1
+        docs = [d for d in (case.get("documents") or []) if not d.get("is_deleted")]
+        checks = [
+            ("Grantors", len(case.get("grantors") or []) >= max_g),
+            ("Trustee", len(case.get("trustees") or []) >= 1),
+            ("Successor Trustees", len(case.get("successor_trustees") or []) >= 1),
+            ("Beneficiaries", len(case.get("beneficiaries") or []) >= 1),
+            ("Assets", bool(case.get("assets")) or any(d.get("doc_type") in _ASSET_DOC_TYPES for d in docs)
+             or bool((case.get("acknowledgments") or {}).get("no_assets_ack"))),
+            ("EIN Workflow", (case.get("ein") or {}).get("authorized") is True),
+        ]
+        missing = [label for label, ok in checks if not ok]
+    if not _has_required_intake_docs(case):
+        missing.append("Documents")
+    return missing
+
+
 def _has_required_intake_docs(case: dict) -> bool:
     docs = (case.get("documents") or [])
     types = {d.get("doc_type") for d in docs if not d.get("is_deleted")}
@@ -912,6 +937,13 @@ async def _notify_status_change(case: dict, prev_status: str, new_status: str, s
             )
         except Exception as e:
             logger.error(f"client status-change email failed: {e}")
+        try:
+            await client_messaging.notify_client_text(
+                _resolve_case_phone(case),
+                f"{biz}: your trust case status is now \"{new_status}\". Details: {FRONTEND_URL}/portal",
+                bool(case.get("whatsapp_opt_in")))
+        except Exception as e:
+            logger.error(f"client status-change text failed: {e}")
 
 class StatusUpdate(BaseModel):
     status: str
@@ -1687,19 +1719,15 @@ async def _send_password_alert(event_id: str, user: dict, kind: str):
         line = _PASSWORD_ALERT_TEXT[kind].format(biz=biz)
         case = await db.trust_cases.find_one(
             {"client_id": user["id"], "client_phone": {"$nin": [None, ""]}},
-            {"_id": 0, "client_phone": 1}, sort=[("updated_at", -1)])
+            {"_id": 0, "client_phone": 1, "whatsapp_opt_in": 1}, sort=[("updated_at", -1)])
         phone = (case or {}).get("client_phone", "")
-        if phone and whatsapp.is_enabled() and whatsapp.CLIENT_WHATSAPP_ENABLED:
+        if phone and client_messaging.SIGNALHOUSE_ACTIVE:
             alert["whatsapp_attempted"] = True
             text = (f"Hi {first}, {line} If this wasn't you, contact us right away at {REPLY_TO_EMAIL}. "
                     f"We will never ask for your password.")
-            sid = await asyncio.to_thread(whatsapp.send_whatsapp_sid, phone, text)
-            if sid:
-                await asyncio.sleep(12)
-                st = await asyncio.to_thread(whatsapp.message_status, sid)
-                if st in ("sent", "delivered", "read"):
-                    alert.update({"channel": "whatsapp", "status": st or "sent"})
-        if alert["channel"] != "whatsapp":
+            if await client_messaging.notify_client_text(phone, text, bool(case.get("whatsapp_opt_in"))):
+                alert.update({"channel": "text", "status": "sent"})
+        if alert["channel"] != "text":
             inner = f"""
 <p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Security notice</p>
 <p>Hi {first},</p>
@@ -1746,6 +1774,11 @@ async def admin_view_as_client(case_id: str, request: Request, response: Respons
         "ip": (request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "")), "created_at": now_iso(),
     })
     return {"ok": True, "client_name": client.get("name") or case.get("client_name") or ""}
+
+
+@api_router.get("/admin/signalhouse/status")
+async def admin_signalhouse_status(_: dict = Depends(require_admin)):
+    return client_messaging.status()
 
 
 @api_router.post("/auth/view-as/exit")
@@ -2445,6 +2478,10 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
     case = await get_case(case_id, user)
     current = dict(case.get("acknowledgments") or {})
     incoming = body.model_dump(exclude_none=True)
+    if incoming.get("intake_submitted_ack") and not current.get("intake_submitted_ack") and user.get("role") != "admin":
+        missing = _intake_missing_steps(case)
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Please complete these steps before submitting: {', '.join(missing)}.")
     cur_status = case.get("status") or ""
     has_draft = bool((case.get("trust_draft") or {}).get("storage_path"))
 

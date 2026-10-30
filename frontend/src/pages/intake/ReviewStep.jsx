@@ -4,6 +4,8 @@ import { CheckCircle2, ShieldCheck, Download, Scale, Building2, Stamp } from "lu
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import { Checkbox } from "@/components/ui/checkbox";
+import { useNavigate } from "react-router-dom";
+import { missingSteps, STEP_LABELS } from "@/lib/intakeProgress";
 
 const LINE = ({ l, v }) => (
   <div className="flex justify-between border-b border-dashed border-[#E2E0DA] py-1.5 text-sm">
@@ -13,6 +15,7 @@ const LINE = ({ l, v }) => (
 );
 
 export default function ReviewStep({ trustCase, caseId, reload }) {
+  const navigate = useNavigate();
   const g = trustCase.grantors || [];
   const t = trustCase.trustees?.[0];
   const sct = trustCase.successor_trustees || [];
@@ -65,11 +68,16 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
       };
       await api.put(`/trust-cases/${caseId}/acknowledgments`, payload);
       reload?.();
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+      return true;
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); return false; }
     finally { setSaving(false); }
   };
 
   const submitReviewCompleted = async () => {
+    if (missing.length) {
+      toast.error(`Please complete: ${missing.map((k) => STEP_LABELS[k]).join(", ")}.`);
+      return;
+    }
     if (!disclosureAck || !stateLawsAck || !notarizationAck) {
       toast.error("Please acknowledge all required disclosures first.");
       return;
@@ -87,9 +95,11 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
     // "client approved the drafted trust". The latter is only settable
     // AFTER the admin uploads a trust draft and moves the case status to
     // "Ready for Client Review".
-    await saveAcks({ intake_submitted_ack: true });
+    if (!(await saveAcks({ intake_submitted_ack: true }))) return;
     toast.success("Thank you for submitting your intake. Your agent will review and contact you shortly.");
   };
+
+  const missing = missingSteps(trustCase);
 
   const reviewCompleted = !!acks.intake_submitted_ack || !!acks.review_completed_ack;
   const isReviewPath = (trustCase.intake_path || "new") === "review";
@@ -298,9 +308,23 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
       {/* ----- Complete Review / Post-review CTAs ----- */}
       {!reviewCompleted ? (
         <div className="mt-10" data-testid="review-completed-section">
+          {missing.length > 0 && (
+            <div className="mb-4 p-4 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-sm" data-testid="review-missing-steps">
+              <p className="font-semibold mb-2">Before you can submit, please finish these steps:</p>
+              <div className="flex flex-wrap gap-2">
+                {missing.map((k) => (
+                  <button key={k} type="button" onClick={() => navigate(`/intake/${caseId}?step=${k}`)}
+                    className="px-3 py-1.5 rounded-full bg-white border border-amber-400 hover:bg-amber-100 text-amber-900 text-xs font-semibold"
+                    data-testid={`review-missing-${k}`}>
+                    {STEP_LABELS[k]} →
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <button
             onClick={submitReviewCompleted}
-            disabled={saving}
+            disabled={saving || missing.length > 0}
             className="w-full py-5 sm:py-6 rounded-xl text-white text-xl sm:text-2xl font-bold shadow-lg transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ backgroundColor: "#28a745", minHeight: 64 }}
             data-testid="review-completed-btn">

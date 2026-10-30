@@ -11,11 +11,12 @@ const KIND_LABEL = {
 function AlertBadge({ alert }) {
   const a = alert || {};
   if (a.channel === "pending") return <span className="text-[#94A3B8]">sending…</span>;
+  if (a.channel === "text") return <span className="inline-flex items-center gap-1 text-emerald-700"><MessageCircle className="h-3 w-3" /> Text sent</span>;
   if (a.channel === "whatsapp") return <span className="inline-flex items-center gap-1 text-emerald-700"><MessageCircle className="h-3 w-3" /> WhatsApp {a.status}</span>;
   if (a.channel === "email") {
     return (
       <span className={`inline-flex items-center gap-1 ${a.status === "sent" ? "text-emerald-700" : "text-red-700"}`}>
-        <Mail className="h-3 w-3" /> Email {a.status}{a.whatsapp_attempted ? " (WhatsApp failed)" : ""}
+        <Mail className="h-3 w-3" /> Email {a.status}{a.whatsapp_attempted ? " (text failed)" : ""}
       </span>
     );
   }
