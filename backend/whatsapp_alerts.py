@@ -31,9 +31,15 @@ async def admin_email_enabled(db) -> bool:
 
 
 async def send_admin_alert(db, title: str, client_name: str, case_name: str, extra: str = "") -> dict:
-    phone = (await get_settings(db)).get("admin_notification_phone") or ""
-    body = f"IGC Alert: {title}\nClient: {client_name or '—'}\nCase: {case_name or '—'}" + (f"\n{extra}" if extra else "")
-    res = await asyncio.to_thread(whatsapp_utils.send_text, phone, body)
+    s = await get_settings(db)
+    phone = s.get("admin_notification_phone") or ""
+    template = s.get("admin_alert_template") or ""
+    if template:
+        res = await asyncio.to_thread(whatsapp_utils.send_template, phone, template,
+                                      [title, client_name or "-", case_name or "-"])
+    else:
+        body = f"IGC Alert: {title}\nClient: {client_name or '—'}\nCase: {case_name or '—'}" + (f"\n{extra}" if extra else "")
+        res = await asyncio.to_thread(whatsapp_utils.send_text, phone, body)
     await db.admin_whatsapp_log.insert_one({
         "title": title, "client_name": client_name, "case_name": case_name, "ok": res.get("ok"),
         "message_id": res.get("message_id", ""), "error": res.get("error", ""),

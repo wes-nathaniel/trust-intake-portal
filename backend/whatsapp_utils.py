@@ -18,6 +18,33 @@ def normalize_phone(phone: str) -> str:
     return f"1{d}" if len(d) == 10 else d
 
 
+def send_template(to: str, name: str, params: list, lang: str = "en_US") -> dict:
+    """Send an approved template (delivers outside WhatsApp's 24-hour window)."""
+    if not is_configured():
+        return {"ok": False, "error": "WhatsApp Cloud API not configured"}
+    to_n = normalize_phone(to)
+    if not to_n:
+        return {"ok": False, "error": "No recipient phone"}
+    comps = [{"type": "body", "parameters": [{"type": "text", "text": (str(p) or "-")[:500]} for p in params]}]
+    try:
+        r = requests.post(
+            f"https://graph.facebook.com/{GRAPH_API_VERSION}/{os.environ['WHATSAPP_PHONE_NUMBER_ID'].strip()}/messages",
+            headers={"Authorization": f"Bearer {os.environ['WHATSAPP_ACCESS_TOKEN'].strip()}"},
+            json={"messaging_product": "whatsapp", "to": to_n, "type": "template",
+                  "template": {"name": name, "language": {"code": lang}, "components": comps}},
+            timeout=15,
+        )
+        data = r.json() if r.content else {}
+        if r.ok and data.get("messages"):
+            return {"ok": True, "message_id": data["messages"][0].get("id", "")}
+        err = (data.get("error") or {}).get("message") or r.text[:300]
+        logger.error(f"WhatsApp template send failed ({r.status_code}): {err}")
+        return {"ok": False, "error": err}
+    except Exception as e:
+        logger.error(f"WhatsApp template send error: {type(e).__name__}: {e}")
+        return {"ok": False, "error": str(e)[:300]}
+
+
 def send_text(to: str, body: str) -> dict:
     """Send a plain-text WhatsApp message. Returns {"ok", "message_id"|"error"}."""
     if not is_configured():

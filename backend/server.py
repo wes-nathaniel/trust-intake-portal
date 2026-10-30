@@ -1799,6 +1799,7 @@ async def admin_view_as_client(case_id: str, request: Request, response: Respons
 class NotificationSettingsReq(BaseModel):
     admin_notification_phone: Optional[str] = Field(default=None, max_length=30)
     admin_email_alerts_enabled: Optional[bool] = None
+    admin_alert_template: Optional[str] = Field(default=None, max_length=100)
 
 
 @api_router.get("/admin/notification-settings")
