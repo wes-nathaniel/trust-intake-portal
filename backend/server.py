@@ -880,6 +880,9 @@ async def maybe_auto_advance_intake(case_id: str) -> Optional[str]:
     return new_status
 
 
+ADMIN_WHATSAPP_STATUS_ALERTS = {"Waiting on Documents", "In Review"}
+
+
 async def _notify_status_change(case: dict, prev_status: str, new_status: str, source: str = "admin"):
     """Centralized status-change notifications. Fires:
        - Admin email to ADMIN_NOTIFY_EMAIL for every change
@@ -887,6 +890,18 @@ async def _notify_status_change(case: dict, prev_status: str, new_status: str, s
     """
     if new_status == prev_status:
         return
+    if new_status in ADMIN_WHATSAPP_STATUS_ALERTS:
+        try:
+            ok = await asyncio.to_thread(
+                whatsapp.send_admin_whatsapp,
+                f"IGC alert: case moved to \"{new_status}\".\n"
+                f"Client: {case.get('client_name') or case.get('client_email') or '—'}\n"
+                f"Case: {case.get('trust_name') or 'Untitled'} (#{(case.get('id') or '')[:8].upper()})\n"
+                f"{FRONTEND_URL}/admin/cases/{case.get('id')}")
+            if not ok:
+                logger.error(f"admin WhatsApp status alert NOT sent ({new_status}) case={case.get('id')}")
+        except Exception as e:
+            logger.error(f"admin WhatsApp status alert failed: {e}")
     branding = await _branding_doc()
     biz = branding.get("business_name", "Trust Portal")
     accent = branding.get("accent_color", "#C5A880")
