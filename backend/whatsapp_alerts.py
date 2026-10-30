@@ -37,7 +37,7 @@ async def send_admin_alert(db, title: str, client_name: str, case_name: str, ext
     template = s.get("admin_alert_template") or DEFAULT_TEMPLATE
     res = await asyncio.to_thread(
         whatsapp_utils.send_template, phone, template,
-        [("status", title), ("client_name", client_name or "-"), ("case_name", case_name or "-")],
+        [title, client_name or "-", case_name or "-"],
         s.get("admin_alert_template_language") or "en_US")
     res["via"] = "template"
     if not res.get("ok"):
