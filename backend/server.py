@@ -1202,8 +1202,12 @@ async def reset_password(body: ResetReq):
         expires_at = datetime.fromisoformat(expires_at)
     if expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="Token expired")
+    _require_strong_password(body.password)
     await db.users.update_one({"id": rec["user_id"]}, {"$set": {"password_hash": hash_password(body.password), "requires_password_change": False}})
     await db.password_reset_tokens.update_one({"token": body.token}, {"$set": {"used": True}})
+    reset_user = await db.users.find_one({"id": rec["user_id"]}, {"_id": 0, "password_hash": 0})
+    if reset_user:
+        await _record_password_event(reset_user, "forgot_reset", reset_user["email"])
     return {"ok": True}
 
 
@@ -1597,6 +1601,103 @@ def _generate_temp_password() -> str:
             return f"{raw[:4]}-{raw[4:8]}-{raw[8:]}"
 
 
+_COMMON_PASSWORDS = {"password", "password1", "password123", "12345678", "123456789", "1234567890",
+                     "qwerty123", "qwertyuiop", "iloveyou", "welcome1", "letmein1", "abc12345", "trustno1"}
+
+
+def _password_score(pw: str) -> int:
+    """0=too short, 1=weak, 2=fair, 3=good, 4=strong. Mirrors frontend lib/passwordStrength.js."""
+    pw = pw or ""
+    if len(pw) < 8:
+        return 0
+    score = 1
+    if len(pw) >= 12:
+        score += 1
+    if re.search(r"[a-z]", pw) and re.search(r"[A-Z]", pw):
+        score += 1
+    if re.search(r"\d", pw):
+        score += 1
+    if re.search(r"[^A-Za-z0-9]", pw):
+        score += 1
+    if pw.lower() in _COMMON_PASSWORDS or len(set(pw)) < 4:
+        score = 1
+    return min(score, 4)
+
+
+def _require_strong_password(pw: str):
+    if _password_score(pw) < 3:
+        raise HTTPException(status_code=400, detail="Password is too weak. Use at least 8 characters with upper and lower case letters and a number (longer is better).")
+
+
+_PASSWORD_ALERT_TEXT = {
+    "client_changed": "the password on your {biz} account was just changed.",
+    "forgot_reset": "the password on your {biz} account was just reset using the Forgot Password link.",
+    "temp_password_set": "our support team set a temporary password on your {biz} account. They will share it with you directly, and you'll choose a new password when you sign in.",
+}
+_bg_tasks = set()
+
+
+async def _record_password_event(user: dict, kind: str, actor_email: str):
+    event = {
+        "id": new_id(), "user_id": user["id"], "user_email": user.get("email", ""),
+        "kind": kind, "actor_email": actor_email, "created_at": now_iso(),
+        "alert": {"channel": "pending", "status": "pending"},
+    }
+    await db.password_events.insert_one(dict(event))
+    task = asyncio.create_task(_send_password_alert(event["id"], user, kind))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
+async def _send_password_alert(event_id: str, user: dict, kind: str):
+    alert = {"channel": "none", "status": "failed", "whatsapp_attempted": False}
+    try:
+        branding = await _branding_doc()
+        biz = branding.get("business_name") or "Trust Portal"
+        first = _first_name(user.get("name", "")) or "there"
+        line = _PASSWORD_ALERT_TEXT[kind].format(biz=biz)
+        case = await db.trust_cases.find_one(
+            {"client_id": user["id"], "client_phone": {"$nin": [None, ""]}},
+            {"_id": 0, "client_phone": 1}, sort=[("updated_at", -1)])
+        phone = (case or {}).get("client_phone", "")
+        if phone and whatsapp.is_enabled():
+            alert["whatsapp_attempted"] = True
+            text = (f"Hi {first}, {line} If this wasn't you, contact us right away at {REPLY_TO_EMAIL}. "
+                    f"We will never ask for your password.")
+            sid = await asyncio.to_thread(whatsapp.send_whatsapp_sid, phone, text)
+            if sid:
+                await asyncio.sleep(12)
+                st = await asyncio.to_thread(whatsapp.message_status, sid)
+                if st not in ("failed", "undelivered"):
+                    alert.update({"channel": "whatsapp", "status": st or "sent"})
+        if alert["channel"] != "whatsapp":
+            inner = f"""
+<p style="font-size:22px;margin:0 0 12px 0;font-family:Georgia,serif;">Security notice</p>
+<p>Hi {first},</p>
+<p>This is a quick note to let you know {line}</p>
+<p style="color:#64748B;font-size:13px;">If this wasn't you, contact <a href="mailto:{REPLY_TO_EMAIL}">{REPLY_TO_EMAIL}</a> immediately. We will never ask for your password.</p>
+"""
+            ok = await send_email_notification(
+                user["email"], f"{biz}: password security notice",
+                _email_shell(biz, branding.get("primary_color") or "#1C252E", branding.get("accent_color") or "#C5A880", inner))
+            alert.update({"channel": "email", "status": "sent" if ok else "failed"})
+    except Exception as e:
+        logger.error(f"password alert failed ({kind}) for {user.get('email')}: {type(e).__name__}: {e}")
+    await db.password_events.update_one({"id": event_id}, {"$set": {"alert": alert}})
+
+
+@api_router.get("/admin/trust-cases/{case_id}/password-history")
+async def admin_case_password_history(case_id: str, _: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "client_id": 1})
+    if not case:
+        raise HTTPException(status_code=404, detail="Not found")
+    rows = await db.password_events.find(
+        {"user_id": case.get("client_id")},
+        {"_id": 0, "kind": 1, "actor_email": 1, "created_at": 1, "alert": 1},
+    ).sort("created_at", -1).to_list(25)
+    return {"rows": rows}
+
+
 class AdminTempPasswordReq(BaseModel):
     email: EmailStr
 
@@ -1617,11 +1718,7 @@ async def admin_set_temp_password(body: AdminTempPasswordReq, admin: dict = Depe
         "updated_at": now_iso(),
     }})
     await db.login_attempts.delete_many({"identifier": {"$regex": f":{re.escape(email)}$"}})
-    await db.password_admin_log.insert_one({
-        "id": new_id(), "user_id": user["id"], "user_email": email,
-        "admin_id": admin["id"], "admin_email": admin["email"],
-        "action": "temp_password_set", "created_at": now_iso(),
-    })
+    await _record_password_event(user, "temp_password_set", admin["email"])
     return {"ok": True, "email": email, "name": user.get("name") or "", "temp_password": temp}
 
 
@@ -1637,6 +1734,7 @@ async def change_password(body: ChangePasswordReq, user: dict = Depends(get_curr
         raise HTTPException(status_code=401, detail="Current password is incorrect.")
     if body.current_password == body.new_password:
         raise HTTPException(status_code=400, detail="New password must be different from your current password.")
+    _require_strong_password(body.new_password)
     await db.users.update_one({"id": user["id"]}, {"$set": {
         "password_hash": hash_password(body.new_password),
         "requires_password_change": False,
@@ -1644,6 +1742,7 @@ async def change_password(body: ChangePasswordReq, user: dict = Depends(get_curr
         "updated_at": now_iso(),
     }})
     refreshed = await db.users.find_one({"id": user["id"]})
+    await _record_password_event(refreshed, "client_changed", refreshed["email"])
     return {"ok": True, "user": public_user(refreshed)}
 
 

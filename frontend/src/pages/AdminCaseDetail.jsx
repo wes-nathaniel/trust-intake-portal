@@ -13,6 +13,7 @@ import { displaySSN } from "@/pages/intake/_shared";
 import DocRequestsPanel from "@/components/DocRequestsPanel";
 import SSNReveal from "@/components/SSNReveal";
 import TempPasswordDialog from "@/components/TempPasswordDialog";
+import PasswordHistory from "@/components/PasswordHistory";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
                   "Drafting Trust", "Ready for Client Review", "Ready for Payment", "Pending Payment Verification", "Payment Verified", "Completed"];
@@ -57,6 +58,7 @@ export default function AdminCaseDetail() {
   // `client_email` move.
   const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [tempPwOpen, setTempPwOpen] = useState(false);
+  const [pwHistoryKey, setPwHistoryKey] = useState(0);
   const [newEmail, setNewEmail] = useState("");
   const [confirmEmail, setConfirmEmail] = useState("");
   const [changingEmail, setChangingEmail] = useState(false);
@@ -489,6 +491,7 @@ export default function AdminCaseDetail() {
               )}
             </div>
           )}
+          <PasswordHistory caseId={caseId} refreshKey={pwHistoryKey} />
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -1008,7 +1011,7 @@ export default function AdminCaseDetail() {
         </div>
       )}
       {tempPwOpen && (
-        <TempPasswordDialog email={c.client_email} label={c.client_name || c.client_email} onClose={() => setTempPwOpen(false)} />
+        <TempPasswordDialog email={c.client_email} label={c.client_name || c.client_email} onClose={() => { setTempPwOpen(false); setPwHistoryKey((k) => k + 1); }} />
       )}
     </Layout>
   );

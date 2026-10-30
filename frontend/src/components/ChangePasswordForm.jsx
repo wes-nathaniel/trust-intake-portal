@@ -3,6 +3,8 @@ import { KeyRound, Lock } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "@/lib/api";
 import PasswordInput from "@/components/PasswordInput";
+import PasswordStrengthMeter from "@/components/PasswordStrengthMeter";
+import { passwordScore, MIN_GOOD_SCORE } from "@/lib/passwordStrength";
 
 const labelCls = "text-xs uppercase tracking-wide text-[#64748B] font-semibold flex items-center gap-1 mb-1";
 
@@ -12,11 +14,12 @@ export default function ChangePasswordForm({ currentLabel = "Current password", 
   const [confirm, setConfirm] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const canSave = !!current && passwordScore(next) >= MIN_GOOD_SCORE && next === confirm;
 
   const submit = async (e) => {
     e.preventDefault();
     setError("");
-    if (next.length < 8) return setError("New password must be at least 8 characters.");
+    if (passwordScore(next) < MIN_GOOD_SCORE) return setError("Choose a stronger password (at least “Good”).");
     if (next !== confirm) return setError("The new passwords don't match.");
     if (next === current) return setError("New password must be different from the current one.");
     setSaving(true);
@@ -46,13 +49,17 @@ export default function ChangePasswordForm({ currentLabel = "Current password", 
         <label className={labelCls}><Lock className="h-3 w-3" /> New password (min 8 characters)</label>
         <PasswordInput value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password"
           required data-testid={`${testPrefix}-new`} />
+        <PasswordStrengthMeter password={next} testId={`${testPrefix}-strength`} />
       </div>
       <div>
         <label className={labelCls}><Lock className="h-3 w-3" /> Confirm new password</label>
         <PasswordInput value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password"
           required data-testid={`${testPrefix}-confirm`} />
+        {confirm && confirm !== next && (
+          <p className="text-xs text-red-700 mt-1" data-testid={`${testPrefix}-mismatch`}>Passwords don't match</p>
+        )}
       </div>
-      <button type="submit" disabled={saving} className="btn-primary px-5 py-2.5 inline-flex items-center gap-2 disabled:opacity-50"
+      <button type="submit" disabled={saving || !canSave} className="btn-primary px-5 py-2.5 inline-flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
         data-testid={`${testPrefix}-submit-btn`}>
         <KeyRound className="h-4 w-4" />
         {saving ? "Saving…" : submitLabel}

@@ -57,6 +57,29 @@ def send_whatsapp(to: str, body: str) -> bool:
         return False
 
 
+def send_whatsapp_sid(to: str, body: str):
+    """Send and return the Twilio message SID (None if disabled/failed)."""
+    if not is_enabled() or not (to or "").strip():
+        return None
+    try:
+        from twilio.rest import Client
+        msg = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN).messages.create(
+            body=body, from_=_wa(TWILIO_WHATSAPP_FROM), to=_wa(to))
+        return msg.sid
+    except Exception as e:
+        logger.error(f"Twilio WhatsApp send failed: {e}")
+        return None
+
+
+def message_status(sid: str) -> str:
+    try:
+        from twilio.rest import Client
+        return Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN).messages(sid).fetch().status or ""
+    except Exception as e:
+        logger.error(f"Twilio status fetch failed: {e}")
+        return ""
+
+
 def send_admin_whatsapp(body: str) -> bool:
     if not ADMIN_WHATSAPP_NUMBER:
         logger.info(f"[whatsapp-mock:no-admin-whatsapp] body={body[:120]}")

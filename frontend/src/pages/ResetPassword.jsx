@@ -7,6 +7,8 @@ import { Shield, AlertCircle, ArrowLeft, CheckCircle2 } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
 import PasswordInput from "@/components/PasswordInput";
+import PasswordStrengthMeter from "@/components/PasswordStrengthMeter";
+import { passwordScore, MIN_GOOD_SCORE } from "@/lib/passwordStrength";
 
 export default function ResetPassword() {
   const { branding } = useAuth();
@@ -22,14 +24,11 @@ export default function ResetPassword() {
 
   const issues = useMemo(() => {
     const list = [];
-    if (pw.length > 0 && pw.length < 8) list.push("At least 8 characters");
-    if (pw && !/[A-Za-z]/.test(pw)) list.push("Must contain a letter");
-    if (pw && !/[0-9]/.test(pw)) list.push("Must contain a number");
     if (pw && confirm && pw !== confirm) list.push("Passwords don't match");
     return list;
   }, [pw, confirm]);
 
-  const canSubmit = !!token && pw.length >= 8 && /[A-Za-z]/.test(pw) && /[0-9]/.test(pw) && pw === confirm && !loading;
+  const canSubmit = !!token && passwordScore(pw) >= MIN_GOOD_SCORE && pw === confirm && !loading;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -147,6 +146,7 @@ export default function ResetPassword() {
                     className="mt-1 bg-white"
                     data-testid="reset-password-input"
                   />
+                  <PasswordStrengthMeter password={pw} testId="reset-password-strength" />
                 </div>
                 <div>
                   <Label htmlFor="confirm" className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Confirm new password</Label>
@@ -168,7 +168,7 @@ export default function ResetPassword() {
                   </ul>
                 )}
                 {pw.length === 0 && (
-                  <p className="text-xs text-[#64748B]">Use at least 8 characters with a letter and a number.</p>
+                  <p className="text-xs text-[#64748B]">Use at least 8 characters with upper and lower case letters and a number.</p>
                 )}
               </div>
 
