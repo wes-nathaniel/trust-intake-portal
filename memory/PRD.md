@@ -529,3 +529,10 @@ See `/app/memory/test_credentials.md` — admin: support@igcfirm.com / Wllorenzo
 - client_messaging.py: Signal House SMS (POST https://v2.signalhouse.io/message/sms, Bearer SIGNALHOUSE_API_KEY, SIGNALHOUSE_FROM_NUMBER) + WhatsApp for opted-in; SIGNALHOUSE_ACTIVE=False (do not activate until user says). Wired into client status-change + password alerts. GET /api/admin/signalhouse/status.
 - KNOWN BLOCKER: Twilio WhatsApp From = sandbox (…8886) → every send fails 63007; Twilio SMS all undelivered 30034 (A2P 10DLC not registered). No admin texts/WhatsApp are being delivered; email works.
 - Tested: iteration_31 (backend 100%, frontend fixes applied: chip re-click, banner text, mobile overflow, chat bubble overlap).
+
+## 2026-06 — Admin alerts via WhatsApp Cloud API (Meta), no Twilio
+- whatsapp_utils.py (Graph v21.0, WHATSAPP_ACCESS_TOKEN + WHATSAPP_PHONE_NUMBER_ID — shared with main IGC portal; sender currently Meta "Test Number" +1 555-199-5987). whatsapp_alerts.py: settings doc {id:"notifications", admin_notification_phone:"+19545983681", admin_email_alerts_enabled}. Log: admin_whatsapp_log.
+- Alerts: Intake Started (replaced Twilio notify_admin Stage 1), Government ID / Proof of Address uploaded, Client logged in/out (skipped in View-as), Waiting on Documents, In Review.
+- Admin emails for these 7 alerts are suppressed when admin_email_alerts_enabled=false (PATCH /api/admin/notification-settings). Still TRUE — flip after user confirms WhatsApp delivery.
+- Test endpoint: POST /api/admin/notification-settings/test-whatsapp {message}.
+- View-as logout no longer logs a client logout.

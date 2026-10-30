@@ -32,6 +32,8 @@ import sms
 import whatsapp
 import notify
 import client_messaging
+import whatsapp_alerts
+import whatsapp_utils
 import whatsapp_commands
 import extract_jobs
 import page_explanation_jobs
@@ -891,17 +893,10 @@ async def _notify_status_change(case: dict, prev_status: str, new_status: str, s
     if new_status == prev_status:
         return
     if new_status in ADMIN_WHATSAPP_STATUS_ALERTS:
-        try:
-            ok = await asyncio.to_thread(
-                whatsapp.send_admin_whatsapp,
-                f"IGC alert: case moved to \"{new_status}\".\n"
-                f"Client: {case.get('client_name') or case.get('client_email') or '—'}\n"
-                f"Case: {case.get('trust_name') or 'Untitled'} (#{(case.get('id') or '')[:8].upper()})\n"
-                f"{FRONTEND_URL}/admin/cases/{case.get('id')}")
-            if not ok:
-                logger.error(f"admin WhatsApp status alert NOT sent ({new_status}) case={case.get('id')}")
-        except Exception as e:
-            logger.error(f"admin WhatsApp status alert failed: {e}")
+        whatsapp_alerts.fire(db, f"Case status changed to {new_status}",
+                             case.get("client_name") or case.get("client_email") or "",
+                             case.get("trust_name") or f"#{(case.get('id') or '')[:8].upper()}",
+                             f"{FRONTEND_URL}/admin/cases/{case.get('id')}")
     branding = await _branding_doc()
     biz = branding.get("business_name", "Trust Portal")
     accent = branding.get("accent_color", "#C5A880")
@@ -920,11 +915,12 @@ async def _notify_status_change(case: dict, prev_status: str, new_status: str, s
 <p style="color:#94A3B8;font-size:12px;">Triggered by: {source}</p>
 """
         admin_html = _email_shell(biz, primary, accent, admin_inner)
-        await send_email_notification(
-            ADMIN_NOTIFY_EMAIL,
-            f"[{biz}] {new_status} — {case.get('client_name') or case.get('client_email')}",
-            admin_html,
-        )
+        if new_status not in ADMIN_WHATSAPP_STATUS_ALERTS or await whatsapp_alerts.admin_email_enabled(db):
+            await send_email_notification(
+                ADMIN_NOTIFY_EMAIL,
+                f"[{biz}] {new_status} — {case.get('client_name') or case.get('client_email')}",
+                admin_html,
+            )
     except Exception as e:
         logger.error(f"admin status-change email failed: {e}")
 
@@ -1054,6 +1050,14 @@ async def _log_login_activity(user: dict, request: Request, kind: str):
     except Exception as e:
         logger.error(f"login_activity case lookup failed: {e}")
         case_label = "(case lookup failed)"
+        case = None
+    # Admin WhatsApp alert (Meta Cloud API) — skipped while an admin is in View-as-Client mode
+    if not user.get("view_as_admin"):
+        verb = "logged in" if kind == "login" else "logged out"
+        whatsapp_alerts.fire(db, f"Client {verb}", user.get("name") or user.get("email") or "",
+                             (case or {}).get("trust_name") or case_label)
+    if not await whatsapp_alerts.admin_email_enabled(db):
+        return
     # Email admin
     try:
         branding = await _branding_doc()
@@ -1157,7 +1161,8 @@ async def login(body: LoginReq, request: Request, response: Response):
 @api_router.post("/auth/logout")
 async def logout(request: Request, response: Response, user: dict = Depends(get_current_user)):
     clear_auth_cookies(response)
-    await _log_login_activity(user, request, "logout")
+    if not user.get("view_as_admin"):
+        await _log_login_activity(user, request, "logout")
     return {"ok": True}
 
 @api_router.get("/auth/me")
@@ -1791,6 +1796,35 @@ async def admin_view_as_client(case_id: str, request: Request, response: Respons
     return {"ok": True, "client_name": client.get("name") or case.get("client_name") or ""}
 
 
+class NotificationSettingsReq(BaseModel):
+    admin_notification_phone: Optional[str] = Field(default=None, max_length=30)
+    admin_email_alerts_enabled: Optional[bool] = None
+
+
+@api_router.get("/admin/notification-settings")
+async def get_notification_settings(_: dict = Depends(require_admin)):
+    return {**(await whatsapp_alerts.get_settings(db)), "whatsapp_configured": whatsapp_utils.is_configured()}
+
+
+@api_router.patch("/admin/notification-settings")
+async def update_notification_settings(body: NotificationSettingsReq, _: dict = Depends(require_admin)):
+    sets = body.model_dump(exclude_none=True)
+    if sets:
+        await db.settings.update_one({"id": whatsapp_alerts.SETTINGS_ID}, {"$set": sets}, upsert=True)
+    return await whatsapp_alerts.get_settings(db)
+
+
+class TestAlertReq(BaseModel):
+    message: str = Field(min_length=1, max_length=500)
+
+
+@api_router.post("/admin/notification-settings/test-whatsapp")
+async def test_admin_whatsapp(body: TestAlertReq, _: dict = Depends(require_admin)):
+    s = await whatsapp_alerts.get_settings(db)
+    res = await asyncio.to_thread(whatsapp_utils.send_text, s.get("admin_notification_phone", ""), body.message)
+    return res
+
+
 @api_router.get("/admin/signalhouse/status")
 async def admin_signalhouse_status(_: dict = Depends(require_admin)):
     return client_messaging.status()
@@ -2212,7 +2246,7 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
     await db.trust_cases.insert_one(case)
     case.pop("_id", None)
 
-    # --- NEO Stage 1: Intake started — WhatsApp Wes so he sees a new deal in the pipeline ---
+    # --- NEO Stage 1: Intake started — WhatsApp Wes (Meta Cloud API) ---
     try:
         who = case["client_name"] or case["client_email"]
         deal_type = (
@@ -2220,10 +2254,8 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
             else ("Joint Trust" if body.trust_type == "joint" else "Single Trust")
         )
         ref_note = f" · Ref: {rep_snapshot['rep_name']} ({rep_snapshot['rep_code']})" if rep_snapshot else ""
-        notify.notify_admin(
-            f"[IGC · Stage 1 · New Intake] {who} started a {deal_type} intake. "
-            f"Case #{case['id'][:8].upper()}{ref_note}"
-        )
+        whatsapp_alerts.fire(db, "Intake Started", who, case.get("trust_name") or f"#{case['id'][:8].upper()}",
+                             f"{deal_type} · Case #{case['id'][:8].upper()}{ref_note}")
     except Exception as e:
         logger.error(f"NEO stage-1 WhatsApp alert failed: {e}")
     # Branded welcome email
@@ -2843,7 +2875,13 @@ async def upload_document(case_id: str,
     await update_case(case_id, updates)
 
     # Admin notification when a CLIENT uploads a new document
-    if user.get("role") == "client":
+    if user.get("role") == "client" and doc_type in ("government_id", "proof_of_address"):
+        whatsapp_alerts.fire(db, f"{_doc_label(doc_type)} uploaded",
+                             case.get("client_name") or case.get("client_email") or "",
+                             case.get("trust_name") or f"#{case_id[:8].upper()}",
+                             f"File: {file.filename or 'file'}")
+    email_on = await whatsapp_alerts.admin_email_enabled(db) or doc_type not in ("government_id", "proof_of_address")
+    if user.get("role") == "client" and email_on:
         try:
             admin_rec = await db.users.find_one({"role": "admin"})
             if admin_rec:
@@ -6350,6 +6388,11 @@ async def startup():
             await coll.create_index(spec, **kwargs)
         except Exception as e:
             logger.warning(f"Index create skipped on {coll.name}({spec}): {e}")
+
+    try:
+        await whatsapp_alerts.ensure_settings(db)
+    except Exception as e:
+        logger.warning(f"notification settings seed failed: {e}")
 
     # --- Stuck-job sweep ---
     try:
