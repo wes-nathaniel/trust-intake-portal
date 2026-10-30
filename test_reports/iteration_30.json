@@ -1,0 +1,53 @@
+{
+  "summary": "Tested the admin 'Edit case details' panel, 'View as Client', disabled client WhatsApp, and regressions for temp password, the strength meter and the admin dashboard. Used only test case 562399a8 (PW Tester). Backend: 23 of 23 pytest tests pass (12 new for iteration 30 plus 11 from iteration 29). Frontend: all requested UI flows work and the browser showed no page errors. One functional gap: the client's Trustee step supports only one trustee, so trustees the admin adds can't be seen and get deleted when the client saves the Trustee step.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "PUT /api/trust-cases/{id}/trustee (interaction with PATCH /api/admin/trust-cases/{id}/fields)", "issue": "The admin editor lets you append several trustees, but set_trustee overwrites the list with a single entry ({'trustees': [t]}). When the client next saves the Trustee step, every admin-added trustee after the first is silently deleted. This breaks the 'never remove entries' rule. TrusteeStep.jsx also only shows trustees[0], so the client never sees the added trustees.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "PATCH /api/admin/trust-cases/{id}/fields", "issue": "No limits are enforced. The admin can append more than 3 successor trustees (the client endpoint caps this at 3), and the client then can't add more or may hit inconsistent validation."},
+      {"endpoint": "PATCH /api/admin/trust-cases/{id}/fields", "issue": "Admin-added beneficiaries get percentage 0, so the beneficiary percentage total won't add up until the client fixes it. There's no hint to the admin about this."},
+      {"endpoint": "PATCH /api/admin/trust-cases/{id}/fields", "issue": "Edits use positional paths like grantors.{i}.field, computed from a read taken before the update. If the client deletes an entry between that read and the write, the change can land on the wrong entry. Matching on the entry id inside the update (arrayFilters) would avoid this."},
+      {"endpoint": "PATCH /api/admin/trust-cases/{id}/fields", "issue": "A name of only spaces passes min_length=1, then gets trimmed to an empty string, so the backend can store a blank name. The UI filters these out first."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "TrusteeStep", "issue": "Shows only trustees[0]. Trustees added by the admin (e.g. TEST_Admin Trustee) don't appear in the client's Trustee step, whether viewing as client or logged in as the client.", "selector": "[data-testid='trustee-form']", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AdminCaseFieldsEditor", "issues": ["The asset type dropdown shows raw values (bank) instead of labels (Bank Account).", "The admin can't remove a duplicate name that was added by mistake (by design, but there's no warning before adding)."]},
+      {"screen": "View-as banner", "issues": ["Sonner toasts at the top-right cover the 'Exit / Return to Admin' button for a few seconds."]},
+      {"screen": "Register", "issues": ["The hint says 'Minimum 6 characters' and there's no strength meter, which doesn't match the strength rules used on change and reset password (this predates this iteration)."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_iteration30_admin_edit_view_as.py", "/app/backend/tests/test_iteration29_password_strength_events.py", "/app/test_reports/pytest/iteration30.xml"],
+  "action_items": [
+    "HIGH: Make the client Trustee step safe for several trustees. Either change PUT /trust-cases/{id}/trustee to update trustees[0] in place and keep the rest, or make TrusteeStep show and edit all trustees like the Successor step. Otherwise trustees added by the admin are lost.",
+    "Cap admin-added successor trustees at 3, or otherwise make it consistent with the client limit.",
+    "Optional: update entries by id (arrayFilters) instead of by position in admin_edit_case_fields.",
+    "Optional: move toasts or offset them so they don't cover the view-as exit button."
+  ],
+  "critical_code_review_comments": [
+    "set_trustee replaces the whole trustees array, which conflicts with the admin editor appending trustees.",
+    "While view-as is active, get_current_user returns the client for every route, so admin GET APIs return 403 'Admin access required'. That is intended, and the frontend redirects /admin to /portal. Exit is allowed through VIEW_AS_WRITE_ALLOWED_PATHS.",
+    "Any GET endpoint with side effects would still run while viewing as the client. I found none during testing, but it's worth noting.",
+    "View-as JWT checks: type, admin id match and a 60-minute expiry are all enforced. Each start is logged in admin_view_as_log."
+  ],
+  "verified": [
+    "PATCH /fields: renames by id, appends name-only entries with blank details and added_by_admin=true, never removes omitted entries, and logs to admin_edits. Returns 422 for a bad path or empty name, 404 for an unknown case, and 403 for a non-admin.",
+    "UI editor: open, edit, add, save shows the toast 'Saved 5 changes.'; the badge changes to EXISTING TRUST REVIEW and back to NEW TRUST; the trust name updates; the history lists the changes; Cancel discards edits.",
+    "Switching path review -> new keeps every list the same length.",
+    "View as Client from the case page button and from the admin list row: lands on /portal with the banner showing 'PW Tester'. /admin redirects to /portal. Intake shows all 8 steps for path 'new'. Admin-added names show in the Grantors, Successor, Beneficiaries and Assets steps with no crash. Deleting a grantor shows the read-only toast and nothing is deleted. Exit returns to /admin/cases/{id} with the banner gone.",
+    "Real client in a separate browser context: no banner. Edited the admin-added grantor (TEST_Admin Grantor), completed DOB, SSN, address etc. and saved ('Grantor saved'). The data persisted with the SSN encrypted.",
+    "POST /send-whatsapp returns 400 'Client WhatsApp messaging is turned off...'. Password events show alert channel=email and whatsapp_attempted=false.",
+    "Regression: temp password and forced change work, the strength meter shows weak and strong correctly on ChangePasswordForm, and the admin dashboard loads."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration30_admin_edit_view_as.py", "/app/backend/tests/test_iteration29_password_strength_events.py (changed the whatsapp_attempted assertion to False because client WhatsApp is now intentionally disabled)"],
+  "success_rate": {"backend": "100% (23/23 pytest); 1 design-level bug found (trustee overwrite)", "frontend": "~95% (all requested flows pass; admin-added trustees not shown to the client)"},
+  "seed_data_creation": "On test case 562399a8 I added entries prefixed TEST_ (TEST_Admin Grantor/Trustee/Successor/Beneficiary/Bank, TEST_UI Beneficiary, TEST_UI Wells) and renamed the trust to 'Peace Lover Trust UI'. Running the iteration 30 test again appends more TEST_ entries each time. The pwtest password is reset to NewPass12345 by the tests.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Use only case 562399a8 (owner pwtest_1793318071@igchq-test.com / NewPass12345). Admin login: support@igcfirm.com / Wllorenzo03!. Retest the trustee step once it's fixed: add 2 trustees through the admin editor, save the Trustee step as the client, then check the DB still has both trustees."
+}

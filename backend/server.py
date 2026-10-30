@@ -1797,7 +1797,8 @@ async def admin_edit_case_fields(case_id: str, body: AdminCaseFieldsReq, admin: 
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Not found")
-    sets, pushes, changes = {}, {}, []
+    sets, pushes, changes, filters = {}, {}, [], []
+    limits = {"grantors": 2, "trustees": 1, "successor_trustees": 3}
     for f in ("intake_path", "trust_type", "trust_name"):
         v = getattr(body, f)
         if v is None:
@@ -1810,29 +1811,38 @@ async def admin_edit_case_fields(case_id: str, body: AdminCaseFieldsReq, admin: 
         entries = getattr(body, key)
         if entries is None:
             continue
-        existing = {x.get("id"): (i, x) for i, x in enumerate(case.get(key) or [])}
+        existing = {x.get("id"): x for x in (case.get(key) or [])}
         new_items = []
         for e in entries:
             vals = e.model_dump(exclude={"id"})
             if key != "assets":
                 vals["full_legal_name"] = vals["full_legal_name"].strip()
+                if not vals["full_legal_name"]:
+                    raise HTTPException(status_code=400, detail="Names can't be blank.")
             if e.id and e.id in existing:
-                i, old = existing[e.id]
+                old = existing[e.id]
+                tag = f"e{len(filters)}"
+                used = False
                 for fk, fv in vals.items():
                     if fv != old.get(fk):
-                        sets[f"{key}.{i}.{fk}"] = fv
+                        sets[f"{key}.$[{tag}].{fk}"] = fv
                         changes.append({"field": f"{key}.{fk}", "from": old.get(fk), "to": fv})
+                        used = True
+                if used:
+                    filters.append({f"{tag}.id": e.id})
             elif not e.id:
                 item = {"id": new_id(), **_ADMIN_ADD_DEFAULTS[key](), **vals, "added_by_admin": True}
                 new_items.append(item)
                 changes.append({"field": f"{key}+", "from": None, "to": vals.get("full_legal_name") or vals.get("institution_name") or vals.get("asset_type")})
+        if new_items and key in limits and len(existing) + len(new_items) > limits[key]:
+            raise HTTPException(status_code=400, detail=f"Too many {key.replace('_', ' ')} (max {limits[key]}).")
         if new_items:
             pushes[key] = {"$each": new_items}
     if not changes:
         return {"ok": True, "changes": 0}
     log = {"id": new_id(), "admin_email": admin["email"], "at": now_iso(), "changes": changes}
     update = {"$set": {**sets, "updated_at": now_iso()}, "$push": {**pushes, "admin_edits": log}}
-    await db.trust_cases.update_one({"id": case_id}, update)
+    await db.trust_cases.update_one({"id": case_id}, update, array_filters=filters or None)
     return {"ok": True, "changes": len(changes)}
 
 

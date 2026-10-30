@@ -110,7 +110,8 @@ class TestTempAndHistory:
         ev, dt = _wait_alert(ev["id"], 45)
         print("invalid-phone alert", ev["alert"], f"{dt:.1f}s")
         assert ev["alert"]["channel"] == "email", ev["alert"]
-        assert ev["alert"]["whatsapp_attempted"] is True
+        # Iteration 30: client WhatsApp disabled (CLIENT_WHATSAPP_ENABLED=False) -> never attempted
+        assert ev["alert"]["whatsapp_attempted"] is False
 
     def test_history_rows_newest_first(self, admin):
         r = admin.get(f"{API}/admin/trust-cases/{STATE['case_id']}/password-history")

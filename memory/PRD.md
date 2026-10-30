@@ -515,3 +515,10 @@ See `/app/memory/test_credentials.md` — admin: support@igcfirm.com / Wllorenzo
 - KNOWN: Twilio returns 63007 for TWILIO_WHATSAPP_FROM in preview (sender not WhatsApp-enabled) → alerts fall back to email. Verify prod sender.
 - Stripe: still TEST mode. App keys are platform-managed (Manage → Payments). User must complete the go-live/claim step; platform swaps live keys and redeploys.
 - Tested: iteration_29 (backend 11/11, frontend 100%).
+
+## 2026-06 — Admin field override + View as Client (urgent, for Rose call)
+- PATCH /api/admin/trust-cases/{id}/fields: intake_path (new=Brand New Trust / review=Existing Trust), trust_type, trust_name, names of grantors(max2)/trustee(max1)/successors(max3)/beneficiaries, assets. Edits by id via arrayFilters, appends name-only entries (added_by_admin), never deletes. Logged in case.admin_edits (shown in editor). No client notification. UI: components/AdminCaseFieldsEditor.jsx on AdminCaseDetail.
+- View as Client: POST /api/admin/trust-cases/{id}/view-as-client sets httponly `view_as` JWT cookie (60 min); get_current_user returns the client with view_as_admin; all non-GET → 403 except exit/logout/refresh. POST /api/auth/view-as/exit. Log in admin_view_as_log. UI: ViewAsBanner in ProtectedRoute; buttons on admin list rows + case header.
+- Client WhatsApp OFF: whatsapp.CLIENT_WHATSAPP_ENABLED=False (password alerts → email, admin manual send → 400, opt-in welcome skipped). Admin WhatsApp (notify_admin, commissions, admin command replies) unchanged.
+- Tested: iteration_30 (backend 23/23); trustee-overwrite issue fixed by capping trustee at 1.
+- NOT PUBLISHED — user must approve.

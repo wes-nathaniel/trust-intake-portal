@@ -10,11 +10,13 @@ const PATHS = [
 const TYPES = [{ value: "single", label: "Single Trust" }, { value: "joint", label: "Joint Trust" }];
 const ASSET_TYPES = ["bank", "real_estate", "vehicle", "life_insurance", "investment", "business", "digital"];
 const PEOPLE = [
-  { key: "grantors", label: "Grantor(s)" },
-  { key: "trustees", label: "Trustee(s)" },
-  { key: "successor_trustees", label: "Successor Trustee(s)" },
+  { key: "grantors", label: "Grantor(s)", max: 2 },
+  { key: "trustees", label: "Trustee", max: 1 },
+  { key: "successor_trustees", label: "Successor Trustee(s)", max: 3 },
   { key: "beneficiaries", label: "Beneficiary(ies)" },
 ];
+const ASSET_LABELS = { bank: "Bank Account", real_estate: "Real Estate", vehicle: "Vehicle", life_insurance: "Life Insurance",
+  investment: "Investment", business: "Business", digital: "Digital Asset" };
 const inputCls = "w-full border border-[#E2E0DA] rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-bronze/40";
 const labelCls = "text-xs uppercase tracking-wide text-[#64748B] font-semibold mb-1 block";
 
@@ -26,7 +28,7 @@ const initForm = (c) => ({
   assets: (c.assets || []).map((a) => ({ id: a.id, asset_type: a.asset_type || "bank", institution_name: a.institution_name || "", estimated_value: a.estimated_value ?? "" })),
 });
 
-function NameList({ k, label, rows, setRows }) {
+function NameList({ k, label, rows, setRows, max }) {
   const update = (i, v) => setRows(rows.map((r, j) => (j === i ? { ...r, full_legal_name: v } : r)));
   return (
     <div data-testid={`admin-edit-${k}`}>
@@ -38,10 +40,12 @@ function NameList({ k, label, rows, setRows }) {
             onChange={(e) => update(i, e.target.value)} data-testid={`admin-edit-${k}-name-${i}`} />
         ))}
       </div>
-      <button type="button" onClick={() => setRows([...rows, { full_legal_name: "" }])}
-        className="mt-2 text-xs text-bronze hover:text-navy inline-flex items-center gap-1" data-testid={`admin-edit-${k}-add-btn`}>
-        <Plus className="h-3 w-3" /> Add
-      </button>
+      {(!max || rows.length < max) && (
+        <button type="button" onClick={() => setRows([...rows, { full_legal_name: "" }])}
+          className="mt-2 text-xs text-bronze hover:text-navy inline-flex items-center gap-1" data-testid={`admin-edit-${k}-add-btn`}>
+          <Plus className="h-3 w-3" /> Add
+        </button>
+      )}
     </div>
   );
 }
@@ -57,7 +61,7 @@ function AssetList({ rows, setRows }) {
           <div key={r.id || `new-${i}`} className="grid grid-cols-1 sm:grid-cols-[140px_1fr_120px] gap-2">
             <select className={inputCls} value={r.asset_type} onChange={(e) => update(i, { asset_type: e.target.value })}
               data-testid={`admin-edit-asset-type-${i}`}>
-              {ASSET_TYPES.map((t) => <option key={t} value={t}>{t.replace("_", " ")}</option>)}
+              {ASSET_TYPES.map((t) => <option key={t} value={t}>{ASSET_LABELS[t]}</option>)}
             </select>
             <input className={inputCls} value={r.institution_name} placeholder="Institution / description"
               onChange={(e) => update(i, { institution_name: e.target.value })} data-testid={`admin-edit-asset-name-${i}`} />
@@ -147,14 +151,14 @@ export default function AdminCaseFieldsEditor({ c, onSaved }) {
             </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {PEOPLE.map(({ key, label }) => (
-              <NameList key={key} k={key} label={label} rows={form[key]} setRows={set(key)} />
+            {PEOPLE.map(({ key, label, max }) => (
+              <NameList key={key} k={key} label={label} rows={form[key]} setRows={set(key)} max={max} />
             ))}
           </div>
           <AssetList rows={form.assets} setRows={set("assets")} />
           <p className="text-xs text-[#94A3B8]">
-            Names added here show up in the client's intake; they complete the remaining details (date of birth, SSN, contact info).
-            Nothing is deleted, and documents and progress stay as they are. The client isn't notified.
+            Names added here show up in the client's intake; they complete the remaining details (date of birth, SSN, contact info,
+            beneficiary percentages). Nothing is deleted, and documents and progress stay as they are. The client isn't notified.
           </p>
           <div className="flex gap-2 justify-end">
             <button type="button" onClick={() => setOpen(false)} className="px-4 py-2 text-sm text-[#64748B] hover:text-navy inline-flex items-center gap-1"
