@@ -14,6 +14,10 @@ import DocRequestsPanel from "@/components/DocRequestsPanel";
 import SSNReveal from "@/components/SSNReveal";
 import TempPasswordDialog from "@/components/TempPasswordDialog";
 import PasswordHistory from "@/components/PasswordHistory";
+import AdminCaseFieldsEditor from "@/components/AdminCaseFieldsEditor";
+import { startViewAsClient } from "@/components/ViewAsBanner";
+import { useAuth } from "@/context/AuthContext";
+import { Eye } from "lucide-react";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
                   "Drafting Trust", "Ready for Client Review", "Ready for Payment", "Pending Payment Verification", "Payment Verified", "Completed"];
@@ -37,6 +41,7 @@ const KV = ({ k, v }) => (
 export default function AdminCaseDetail() {
   const { caseId } = useParams();
   const navigate = useNavigate();
+  const { refresh } = useAuth();
   const [c, setC] = useState(null);
   const [note, setNote] = useState("");
   const einInputRef = useRef();
@@ -430,6 +435,14 @@ export default function AdminCaseDetail() {
               title="Set a temporary password for this client">
               Temp password
             </button>
+            <button
+              type="button"
+              onClick={() => startViewAsClient(c.id, refresh, navigate, (e) => toast.error(formatApiError(e.response?.data?.detail)))}
+              className="ml-2 inline-flex items-center gap-1 text-xs text-bronze hover:text-navy underline underline-offset-4"
+              data-testid="admin-view-as-client-btn"
+              title="See the portal exactly as this client sees it (read-only)">
+              <Eye className="h-3 w-3" /> View as Client
+            </button>
             {c.client_phone && (
               <>
                 {" · "}
@@ -530,6 +543,8 @@ export default function AdminCaseDetail() {
       <div className="mb-6">
         <StatusTracker status={c.status} />
       </div>
+
+      <AdminCaseFieldsEditor key={c.updated_at} c={c} onSaved={load} />
 
       {c.pending_invite && (
         <div className="mb-6 bg-amber-50 border border-amber-300 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 justify-between" data-testid="pending-invite-banner">

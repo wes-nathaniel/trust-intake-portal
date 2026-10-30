@@ -3,6 +3,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Loader2 } from "lucide-react";
 import ForcePasswordChange from "@/components/ForcePasswordChange";
+import ViewAsBanner from "@/components/ViewAsBanner";
 
 export default function ProtectedRoute({ children, adminOnly = false }) {
   const { user } = useAuth();
@@ -18,11 +19,11 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
   if (user === false) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
-  if (user.requires_password_change) {
+  if (user.requires_password_change && !user.view_as_admin) {
     return <ForcePasswordChange />;
   }
   if (adminOnly && user.role !== "admin") {
     return <Navigate to="/portal" replace />;
   }
-  return children;
+  return <><ViewAsBanner />{children}</>;
 }

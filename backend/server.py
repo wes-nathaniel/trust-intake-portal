@@ -181,8 +181,32 @@ def set_auth_cookies(response: Response, access: str, refresh: str):
 def clear_auth_cookies(response: Response):
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("refresh_token", path="/")
+    response.delete_cookie("view_as", path="/", secure=True, samesite="none")
 
 PASSWORD_CHANGE_ALLOWED_PATHS = {"/api/auth/me", "/api/auth/change-password", "/api/auth/logout"}
+VIEW_AS_WRITE_ALLOWED_PATHS = {"/api/auth/view-as/exit", "/api/auth/logout", "/api/auth/refresh"}
+VIEW_AS_TTL_MIN = 60
+
+
+async def _view_as_client(request: Request, admin: dict) -> Optional[dict]:
+    """If an admin has an active read-only 'View as Client' cookie, return the client user."""
+    tok = request.cookies.get("view_as")
+    if not tok or admin.get("role") != "admin":
+        return None
+    try:
+        p = jwt.decode(tok, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+    except jwt.InvalidTokenError:
+        return None
+    if p.get("type") != "view_as" or p.get("admin") != admin["id"]:
+        return None
+    client = await db.users.find_one({"id": p["sub"]}, {"_id": 0, "password_hash": 0})
+    if not client:
+        return None
+    if request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path not in VIEW_AS_WRITE_ALLOWED_PATHS:
+        raise HTTPException(status_code=403, detail="Read-only: you're viewing this portal as the client. Make changes from the admin case screen.")
+    client["view_as_admin"] = admin["email"]
+    client["view_as_case_id"] = p.get("case_id", "")
+    return client
 
 
 async def get_current_user(request: Request) -> dict:
@@ -225,6 +249,9 @@ async def get_current_user(request: Request) -> dict:
         raise
     except Exception as e:
         logger.warning(f"idle-timeout check DB error (allowing request): {e}")
+    viewed = await _view_as_client(request, user)
+    if viewed:
+        return viewed
     if user.get("requires_password_change") and request.url.path not in PASSWORD_CHANGE_ALLOWED_PATHS:
         raise HTTPException(status_code=403, detail="Password change required. Please set a new password to continue.")
     return user
@@ -1017,6 +1044,8 @@ def public_user(u: dict) -> dict:
         "is_first_login": not bool(u.get("has_logged_in_before")),
         "has_seen_tour": bool(u.get("has_seen_tour")),
         "requires_password_change": bool(u.get("requires_password_change")),
+        "view_as_admin": u.get("view_as_admin") or "",
+        "view_as_case_id": u.get("view_as_case_id") or "",
     }
 
 @api_router.post("/auth/register")
@@ -1660,7 +1689,7 @@ async def _send_password_alert(event_id: str, user: dict, kind: str):
             {"client_id": user["id"], "client_phone": {"$nin": [None, ""]}},
             {"_id": 0, "client_phone": 1}, sort=[("updated_at", -1)])
         phone = (case or {}).get("client_phone", "")
-        if phone and whatsapp.is_enabled():
+        if phone and whatsapp.is_enabled() and whatsapp.CLIENT_WHATSAPP_ENABLED:
             alert["whatsapp_attempted"] = True
             text = (f"Hi {first}, {line} If this wasn't you, contact us right away at {REPLY_TO_EMAIL}. "
                     f"We will never ask for your password.")
@@ -1696,6 +1725,115 @@ async def admin_case_password_history(case_id: str, _: dict = Depends(require_ad
         {"_id": 0, "kind": 1, "actor_email": 1, "created_at": 1, "alert": 1},
     ).sort("created_at", -1).to_list(25)
     return {"rows": rows}
+
+
+@api_router.post("/admin/trust-cases/{case_id}/view-as-client")
+async def admin_view_as_client(case_id: str, request: Request, response: Response,
+                               admin: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "client_id": 1, "client_name": 1})
+    if not case:
+        raise HTTPException(status_code=404, detail="Not found")
+    client = await db.users.find_one({"id": case.get("client_id")}, {"_id": 0, "id": 1, "name": 1, "role": 1})
+    if not client or client.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="This case has no client account to view.")
+    tok = jwt.encode({"type": "view_as", "sub": client["id"], "admin": admin["id"], "case_id": case_id,
+                      "exp": datetime.now(timezone.utc) + timedelta(minutes=VIEW_AS_TTL_MIN)},
+                     get_jwt_secret(), algorithm=JWT_ALGORITHM)
+    response.set_cookie("view_as", tok, httponly=True, secure=True, samesite="none",
+                        max_age=VIEW_AS_TTL_MIN * 60, path="/")
+    await db.admin_view_as_log.insert_one({
+        "id": new_id(), "admin_email": admin["email"], "client_id": client["id"], "case_id": case_id,
+        "ip": (request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "")), "created_at": now_iso(),
+    })
+    return {"ok": True, "client_name": client.get("name") or case.get("client_name") or ""}
+
+
+@api_router.post("/auth/view-as/exit")
+async def exit_view_as(response: Response):
+    response.delete_cookie("view_as", path="/", secure=True, samesite="none")
+    return {"ok": True}
+
+
+class AdminNameEntry(BaseModel):
+    id: Optional[str] = None
+    full_legal_name: str = Field(min_length=1, max_length=200)
+
+
+class AdminAssetEntry(BaseModel):
+    id: Optional[str] = None
+    asset_type: AssetType = "bank"
+    institution_name: Optional[str] = Field(default="", max_length=200)
+    estimated_value: Optional[float] = None
+
+
+class AdminCaseFieldsReq(BaseModel):
+    intake_path: Optional[IntakePath] = None
+    trust_type: Optional[TrustType] = None
+    trust_name: Optional[str] = Field(default=None, max_length=200)
+    grantors: Optional[List[AdminNameEntry]] = None
+    trustees: Optional[List[AdminNameEntry]] = None
+    successor_trustees: Optional[List[AdminNameEntry]] = None
+    beneficiaries: Optional[List[AdminNameEntry]] = None
+    assets: Optional[List[AdminAssetEntry]] = None
+
+
+_ADMIN_ADD_DEFAULTS = {
+    "grantors": lambda: {"middle_name": "", "date_of_birth": "", "ssn": "", "phone": "", "secondary_phone": "",
+                         "email": "", "address": Address().model_dump(), "marital_status": "", "citizenship": "", "notes": ""},
+    "trustees": lambda: {"relationship": "", "phone": "", "email": "", "address": Address().model_dump(), "notes": ""},
+    "successor_trustees": lambda: {"relationship": "", "phone": "", "email": "", "address": Address().model_dump(), "notes": ""},
+    "beneficiaries": lambda: {"date_of_birth": "", "relationship": "", "percentage": 0, "address": Address().model_dump(),
+                              "phone": "", "email": "", "special_instructions": "", "contingent_name": "",
+                              "contingent_relationship": "", "contingent_phone": "", "notes": ""},
+    "assets": lambda: {"property_address": "", "account_number": "", "institution_address": "", "notes": ""},
+}
+
+
+@api_router.patch("/admin/trust-cases/{case_id}/fields")
+async def admin_edit_case_fields(case_id: str, body: AdminCaseFieldsReq, admin: dict = Depends(require_admin)):
+    """Admin-only correction of intake fields. Only touches the provided values — never
+    deletes list entries, documents, or other progress. Edits existing entries by id
+    (name/asset fields only) and appends new entries with blank details for the client to complete."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Not found")
+    sets, pushes, changes = {}, {}, []
+    for f in ("intake_path", "trust_type", "trust_name"):
+        v = getattr(body, f)
+        if v is None:
+            continue
+        v = v.strip() if isinstance(v, str) else v
+        if v != (case.get(f) or ""):
+            sets[f] = v
+            changes.append({"field": f, "from": case.get(f) or "", "to": v})
+    for key in ("grantors", "trustees", "successor_trustees", "beneficiaries", "assets"):
+        entries = getattr(body, key)
+        if entries is None:
+            continue
+        existing = {x.get("id"): (i, x) for i, x in enumerate(case.get(key) or [])}
+        new_items = []
+        for e in entries:
+            vals = e.model_dump(exclude={"id"})
+            if key != "assets":
+                vals["full_legal_name"] = vals["full_legal_name"].strip()
+            if e.id and e.id in existing:
+                i, old = existing[e.id]
+                for fk, fv in vals.items():
+                    if fv != old.get(fk):
+                        sets[f"{key}.{i}.{fk}"] = fv
+                        changes.append({"field": f"{key}.{fk}", "from": old.get(fk), "to": fv})
+            elif not e.id:
+                item = {"id": new_id(), **_ADMIN_ADD_DEFAULTS[key](), **vals, "added_by_admin": True}
+                new_items.append(item)
+                changes.append({"field": f"{key}+", "from": None, "to": vals.get("full_legal_name") or vals.get("institution_name") or vals.get("asset_type")})
+        if new_items:
+            pushes[key] = {"$each": new_items}
+    if not changes:
+        return {"ok": True, "changes": 0}
+    log = {"id": new_id(), "admin_email": admin["email"], "at": now_iso(), "changes": changes}
+    update = {"$set": {**sets, "updated_at": now_iso()}, "$push": {**pushes, "admin_edits": log}}
+    await db.trust_cases.update_one({"id": case_id}, update)
+    return {"ok": True, "changes": len(changes)}
 
 
 class AdminTempPasswordReq(BaseModel):
@@ -5733,6 +5871,8 @@ async def admin_send_case_whatsapp(case_id: str, body: WhatsAppSendReq,
         raise HTTPException(status_code=400, detail="Message body is empty")
     if len(text) > 1500:
         raise HTTPException(status_code=400, detail="Message exceeds 1500 characters")
+    if not whatsapp.CLIENT_WHATSAPP_ENABLED:
+        raise HTTPException(status_code=400, detail="Client WhatsApp messaging is turned off. Please email the client instead.")
     ok = whatsapp.send_whatsapp(to_number, text)
 
     stamp = now_iso()
@@ -5945,7 +6085,7 @@ async def client_whatsapp_opt_in(case_id: str, body: WhatsAppOptInReq, user: dic
 
     welcomed = bool(case.get("whatsapp_welcomed_at"))
     sent = False
-    if body.opt_in and phone and not welcomed:
+    if body.opt_in and phone and not welcomed and whatsapp.CLIENT_WHATSAPP_ENABLED:
         biz = "IGC Trust Portal"
         try:
             branding = await _branding_doc()

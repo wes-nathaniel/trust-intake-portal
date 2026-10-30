@@ -9,6 +9,9 @@ import DiagnosticsPanel from "@/components/DiagnosticsPanel";
 import StorageRollupCard from "@/components/StorageRollupCard";
 import ExportCsvControl from "@/components/ExportCsvControl";
 import TempPasswordDialog from "@/components/TempPasswordDialog";
+import { startViewAsClient } from "@/components/ViewAsBanner";
+import { useAuth } from "@/context/AuthContext";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 const STATUSES = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review",
@@ -25,6 +28,8 @@ export default function AdminDashboard() {
   const [selected, setSelected] = useState(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [tempTarget, setTempTarget] = useState(null);
+  const { refresh } = useAuth();
+  const navigate = useNavigate();
 
   const toggleRow = (id) => {
     setSelected((prev) => {
@@ -375,6 +380,14 @@ export default function AdminDashboard() {
                         title="Set a temporary password for this client"
                         data-testid={`admin-list-temp-password-${c.id}`}>
                         Temp password
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); startViewAsClient(c.id, refresh, navigate, (err) => toast.error(formatApiError(err.response?.data?.detail))); }}
+                        className="ml-2 text-[11px] text-bronze hover:text-navy underline underline-offset-4"
+                        title="See the portal exactly as this client sees it (read-only)"
+                        data-testid={`admin-list-view-as-${c.id}`}>
+                        View as Client
                       </button>
                     </p>
                     {c.client_phone && (

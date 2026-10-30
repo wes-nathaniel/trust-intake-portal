@@ -15,6 +15,9 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
 TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM", "").strip()
 ADMIN_WHATSAPP_NUMBER = os.environ.get("ADMIN_WHATSAPP_NUMBER", "").strip()
+# Client-facing WhatsApp is OFF until the Signal House provider is connected.
+# Admin (Wes) stage alerts and commission approvals are unaffected.
+CLIENT_WHATSAPP_ENABLED = False
 
 
 def _wa(number: str) -> str:
