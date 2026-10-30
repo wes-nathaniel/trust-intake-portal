@@ -507,3 +507,11 @@ See `/app/memory/test_credentials.md` — admin: support@igcfirm.com / Wllorenzo
 - Login no longer redirects a client to a stale /admin "from" route.
 - Tested: curl (backend) + testing agent iteration_28 (frontend 100%, modal portal fix applied).
 - Pending: Stripe live keys before Tuesday demo; igchq.com meta tags live in the separate IGC Website project; split server.py into routers.
+
+## 2026-06 — Password enhancements
+- Strength meter (Too short/Weak/Fair/Good/Strong) on Account Settings, forced-change screen and /reset-password; Save disabled below "Good". Backend `_password_score` mirrors `frontend/src/lib/passwordStrength.js`; enforced on /auth/change-password and /auth/reset-password (NOT on register/accept-invite yet).
+- `password_events` collection + "Password reset history" panel on /admin/cases/{id} (GET /api/admin/trust-cases/{id}/password-history).
+- Client alerts on temp_password_set / client_changed / forgot_reset: WhatsApp to latest case client_phone, status checked after 12s (only sent/delivered/read = success), else email fallback. No password in messages.
+- KNOWN: Twilio returns 63007 for TWILIO_WHATSAPP_FROM in preview (sender not WhatsApp-enabled) → alerts fall back to email. Verify prod sender.
+- Stripe: still TEST mode. App keys are platform-managed (Manage → Payments). User must complete the go-live/claim step; platform swaps live keys and redeploys.
+- Tested: iteration_29 (backend 11/11, frontend 100%).

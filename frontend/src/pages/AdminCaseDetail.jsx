@@ -393,7 +393,7 @@ export default function AdminCaseDetail() {
         <ArrowLeft className="h-4 w-4" /> Back to cases
       </Link>
 
-      <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+      <div className="mb-6 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-bronze font-semibold mb-1">Case #{c.id.slice(0, 8).toUpperCase()}
             {c.archived && <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px]" data-testid="archived-badge">ARCHIVED</span>}

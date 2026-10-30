@@ -602,7 +602,7 @@ class ForgotReq(BaseModel):
 
 class ResetReq(BaseModel):
     token: str
-    password: str = Field(min_length=6)
+    password: str = Field(min_length=1, max_length=200)
 
 class RequestEmailChangeReq(BaseModel):
     new_email: EmailStr
@@ -1668,7 +1668,7 @@ async def _send_password_alert(event_id: str, user: dict, kind: str):
             if sid:
                 await asyncio.sleep(12)
                 st = await asyncio.to_thread(whatsapp.message_status, sid)
-                if st not in ("failed", "undelivered"):
+                if st in ("sent", "delivered", "read"):
                     alert.update({"channel": "whatsapp", "status": st or "sent"})
         if alert["channel"] != "whatsapp":
             inner = f"""
