@@ -443,6 +443,18 @@ export default function AdminCaseDetail() {
               title="See the portal exactly as this client sees it (read-only)">
               <Eye className="h-3 w-3" /> View as Client
             </button>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!window.confirm(`Re-send the "${c.status}" status email to ${c.client_email}?`)) return;
+                try { await api.post(`/admin/trust-cases/${c.id}/resend-status-email`); toast.success(`Status email sent to ${c.client_email}.`); }
+                catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+              }}
+              className="ml-2 inline-flex items-center gap-1 text-xs text-bronze hover:text-navy underline underline-offset-4"
+              data-testid="admin-resend-status-email-btn"
+              title="Re-send the client's status-update email for the current status">
+              Resend status email
+            </button>
             {c.client_phone && (
               <>
                 {" · "}

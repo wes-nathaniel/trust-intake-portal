@@ -959,6 +959,27 @@ async def _notify_status_change(case: dict, prev_status: str, new_status: str, s
 class StatusUpdate(BaseModel):
     status: str
 
+
+@api_router.post("/admin/trust-cases/{case_id}/resend-status-email")
+async def admin_resend_status_email(case_id: str, _: dict = Depends(require_admin)):
+    """Re-send the client's status-update email for the case's CURRENT status (no status change)."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Not found")
+    status = case.get("status") or ""
+    branding = await _branding_doc()
+    biz = branding.get("business_name", "Trust Portal")
+    pending = _compute_pending(case) if status == "Waiting on Documents" else None
+    link = f"{FRONTEND_URL}/intake/{case_id}?step=documents" if pending else f"{FRONTEND_URL}/portal"
+    html = _status_change_email_html(
+        business=biz, accent=branding.get("accent_color", "#C5A880"), primary=branding.get("primary_color", "#1C252E"),
+        client_name=case.get("client_name") or case.get("client_email"), status=status,
+        case_id=case_id[:8].upper(), link=link, pending_items=pending)
+    ok = bool(await send_email_notification(case.get("client_email"), f"Status update: {status} — {biz}", html))
+    if not ok:
+        raise HTTPException(status_code=502, detail="The email provider rejected the message. Check the sender domain in Resend.")
+    return {"ok": True, "status": status, "to": case.get("client_email")}
+
 class NoteCreate(BaseModel):
     note: str
 
