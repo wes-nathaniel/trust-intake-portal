@@ -548,3 +548,10 @@ See `/app/memory/test_credentials.md` — admin: support@igcfirm.com / Wllorenzo
 - POST /api/admin/trust-cases/{id}/release-trust-draft ("Ready for client review" button in Trust Draft card): released=true, status → Ready for Client Review, same client status email (sent directly if status already Ready for Client Review).
 - Legacy drafts without `released` stay visible. Re-upload hides again.
 - Live sender confirmed via Resend API: support@igchq.com (verified, delivering). User skipped changing to portal@.
+
+## 2026-11-07 — Explainer reliability + wording
+- Cause (prod RCA, case ABBD2CC2): batches for pages 7-10 returned EMPTY model output (no timeout/429/provider error). Batches are SEQUENTIAL, 2 pages per call.
+- trust_page_explainer: _run_batch_with_retries (5 attempts, pauses 5/15/30/60s, retries only missing pages), 2s pause between calls, logs unparseable output; single_page_jobs MAX_ATTEMPTS=5 with pauses.
+- Explainer status derived in GET /trust-cases/{id}/trust-page-explanations: "needs_attention" + failed_pages when any page missing. POST /admin/trust-cases/{id}/trust-page-explanations/regenerate-failed (page_explanation_jobs.start_failed_pages_job, sequential).
+- Admin: ExplainerHealthBadge in Trust Draft card (writing X/N, red "N pages need attention" + Regenerate failed pages, green complete). Client panel missing-page text: "This page failed to generate. Click Regenerate."
+- Prompt: no em/en dashes or hyphen separators; people only by trust names/roles, no family relationships unless in intake; _scrub_dashes post-filter. Applies to newly written explanations only.

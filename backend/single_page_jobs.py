@@ -36,7 +36,8 @@ _locks: Dict[str, asyncio.Lock] = {}
 # LLM_CALL_TIMEOUT_SEC from trust_page_explainer (85s). Two attempts fit
 # comfortably under the Cloudflare 524 window because the ADMIN endpoint
 # returns immediately — the retries happen in the background task.
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = 5
+RETRY_PAUSES_SEC = [5, 15, 30, 60]
 
 
 def _now_iso() -> str:
@@ -119,6 +120,8 @@ async def start_single_page_regenerate(
                 last_error = None
                 for attempt in range(1, MAX_ATTEMPTS + 1):
                     job["attempt"] = attempt
+                    if attempt > 1:
+                        await asyncio.sleep(RETRY_PAUSES_SEC[attempt - 2])
                     try:
                         text = await trust_page_explainer.explain_single_page(
                             pages[page_num - 1], page_num, case_context

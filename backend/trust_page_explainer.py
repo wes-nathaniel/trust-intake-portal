@@ -29,6 +29,8 @@ LLM_CALL_TIMEOUT_SEC = 85
 PAGES_PER_BATCH = 2
 MAX_PAGE_CHARS = 6000       # per-page text cap to keep prompts tight
 MIN_PAGE_CHARS = 40         # skip near-blank pages
+RETRY_PAUSES_SEC = [5, 15, 30, 60]   # waits before retries 1-4 (5 attempts total)
+BETWEEN_CALL_PAUSE_SEC = 2           # unhurried pacing between LLM calls
 
 
 def extract_page_texts(pdf_bytes: bytes) -> List[str]:
@@ -94,7 +96,14 @@ SYSTEM_PROMPT = (
     "no-contest rule that says anyone who challenges the trust loses their share'; "
     "spendthrift→'protects the money so creditors can't take it'; hereinafter/"
     "aforementioned→omit; fiduciary→'the person in charge (like a manager)'.\n\n"
-    "Warm, first-name direct address. Return VALID JSON only, no code fences."
+    "Warm, first-name direct address. Return VALID JSON only, no code fences.\n\n"
+    "PUNCTUATION RULE — ABSOLUTE: Never use em dashes, en dashes, or hyphens as "
+    "separators between words or phrases. Use commas or periods instead. "
+    "(Hyphens inside a normal word like 'co-trustee' are fine.)\n\n"
+    "PEOPLE RULE — ABSOLUTE: Refer to people only by the names and roles that "
+    "appear in the trust (e.g. Grantor, Trustee, Successor Trustee, Beneficiary). "
+    "Do NOT add family relationships (daughter, son, brother, wife, etc.) unless "
+    "that relationship is listed in the client intake context provided."
 )
 
 # The one canonical sentence we substitute in place of any suggestion the
@@ -194,6 +203,17 @@ def _scrub_attorney_advice(text: str) -> str:
     return out
 
 
+def _scrub_dashes(text: str) -> str:
+    """Replace em/en dashes and spaced hyphens used as separators with commas."""
+    text = re.sub(r"(\d)\s*[–—]\s*(\d)", r"\1 to \2", text)
+    text = re.sub(r"\s*[–—]\s*", ", ", text)
+    text = re.sub(r"\s+-\s+", ", ", text)
+    text = re.sub(r",\s*([,.;:!?])", r"\1", text)
+    text = re.sub(r"(<(?:p|li)>)\s*,\s*", r"\1", text)
+    text = re.sub(r",\s*(</(?:p|li|strong|em)>)", r"\1", text)
+    return text
+
+
 def _fmt_people(rows) -> str:
     if not rows:
         return "(none listed)"
@@ -212,9 +232,9 @@ def _fmt_people(rows) -> str:
         if share not in (None, ""):
             try:
                 pct = float(share)
-                parts.append(f"— {pct:g}% share")
+                parts.append(f", {pct:g}% share")
             except Exception:
-                parts.append(f"— {share} share")
+                parts.append(f", {share} share")
         role = r.get("role")
         if role:
             parts.append(f"[{role}]")
@@ -329,13 +349,16 @@ PAGES:
             timeout=LLM_CALL_TIMEOUT_SEC,
         )
     except asyncio.TimeoutError:
-        logger.error(f"trust_page_explainer batch timed out (pages {[b['page'] for b in batch]})")
+        logger.error(f"trust_page_explainer batch timed out after {LLM_CALL_TIMEOUT_SEC}s (pages {[b['page'] for b in batch]})")
         return []
     except Exception as e:
-        logger.error(f"trust_page_explainer batch failed: {e}")
+        logger.error(f"trust_page_explainer batch failed (pages {[b['page'] for b in batch]}): {type(e).__name__}: {e}")
         return []
     parsed = _parse_json_lenient(raw if isinstance(raw, str) else str(raw))
     if not parsed or not isinstance(parsed.get("pages"), list):
+        raw_s = raw if isinstance(raw, str) else str(raw)
+        logger.error(f"trust_page_explainer unparseable/empty LLM output (pages {[b['page'] for b in batch]}): "
+                     f"len={len(raw_s or '')} head={(raw_s or '')[:120]!r}")
         return []
     out = []
     for p in parsed["pages"]:
@@ -350,8 +373,36 @@ PAGES:
             continue
         txt = _scrub_jargon(txt)
         txt = _scrub_attorney_advice(txt)
+        txt = _scrub_dashes(txt)
         out.append({"page": n, "text": txt})
     return out
+
+
+async def _run_batch_with_retries(api_key: str, ctx_brief: str, batch: List[Dict]) -> List[Dict]:
+    """Retry until every page in the batch has text, up to 5 attempts with growing pauses."""
+    want = {b["page"] for b in batch}
+    got: Dict[int, Dict] = {}
+    for attempt in range(len(RETRY_PAUSES_SEC) + 1):
+        if attempt:
+            await asyncio.sleep(RETRY_PAUSES_SEC[attempt - 1])
+        todo = [b for b in batch if b["page"] not in got]
+        for r in await _run_batch(api_key, ctx_brief, todo):
+            if r.get("page") in want:
+                got.setdefault(r["page"], r)
+        if len(got) == len(want):
+            break
+        logger.warning(f"trust_page_explainer attempt {attempt + 1}: pages "
+                       f"{sorted(want - set(got))} still missing")
+    return [got[p] for p in sorted(got)]
+
+
+async def explain_single_page_with_retries(page_text: str, page_num: int, case_context: dict) -> str:
+    api_key = os.environ.get("EMERGENT_LLM_KEY", "").strip()
+    if not api_key:
+        return ""
+    res = await _run_batch_with_retries(api_key, _context_brief(case_context or {}),
+                                        [{"page": page_num, "text": (page_text or "").strip()}])
+    return str(res[0].get("text") or "") if res else ""
 
 
 async def explain_single_page(page_text: str, page_num: int, case_context: dict) -> str:
@@ -422,7 +473,8 @@ async def explain_pages(pages: List[str], case_context: dict,
                 except Exception as e:
                     logger.warning(f"progress_cb (skip) failed: {e}")
             continue
-        result = await _run_batch(api_key, ctx_brief, batch)
+        result = await _run_batch_with_retries(api_key, ctx_brief, batch)
+        await asyncio.sleep(BETWEEN_CALL_PAUSE_SEC)
         # Filter out any duplicates we already have (from prior)
         fresh = [r for r in result if r.get("page") not in seen_pages]
         for r in fresh:

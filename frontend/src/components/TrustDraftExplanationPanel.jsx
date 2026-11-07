@@ -186,9 +186,9 @@ export default function TrustDraftExplanationPanel({ caseId, clientName, current
           </div>
         )}
 
-        {!state.loading && !html && state.status === "completed" && (
-          <div className="text-sm text-[#64748B] italic" data-testid="explanation-page-missing">
-            No plain-English note was generated for this page (may be blank or a signature page).
+        {!state.loading && !html && (state.status === "completed" || state.status === "needs_attention") && (
+          <div className="text-sm text-red-700 italic" data-testid="explanation-page-missing">
+            This page failed to generate. Click Regenerate.
           </div>
         )}
 

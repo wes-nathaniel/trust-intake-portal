@@ -15,6 +15,7 @@ import SSNReveal from "@/components/SSNReveal";
 import TempPasswordDialog from "@/components/TempPasswordDialog";
 import PasswordHistory from "@/components/PasswordHistory";
 import AdminCaseFieldsEditor from "@/components/AdminCaseFieldsEditor";
+import ExplainerHealthBadge from "@/components/ExplainerHealthBadge";
 import { startViewAsClient } from "@/components/ViewAsBanner";
 import { useAuth } from "@/context/AuthContext";
 import { Eye } from "lucide-react";
@@ -896,6 +897,7 @@ export default function AdminCaseDetail() {
               <KV k="Uploaded" v={c.trust_draft.uploaded_at?.slice(0, 19).replace("T", " ")} />
               <KV k="Review completed by client" v={c.acknowledgments?.review_completed_ack ? "Yes" : "No"} />
               <KV k="Final unlocked" v={c.trust_unlocked ? "Yes" : "No"} />
+              <ExplainerHealthBadge key={c.trust_draft.id} caseId={caseId} />
               <div className={`mt-3 p-3 rounded-md border text-sm flex flex-wrap items-center justify-between gap-3 ${c.trust_draft.released === false ? "bg-amber-50 border-amber-300 text-amber-900" : "bg-emerald-50 border-emerald-300 text-emerald-900"}`}
                 data-testid="trust-draft-release-status">
                 <span>

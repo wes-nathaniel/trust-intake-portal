@@ -185,6 +185,55 @@ async def start_page_explain_job(
     return {"task_id": task_id, "status": "pending", "already_running": False}
 
 
+async def start_failed_pages_job(*, case_id: str, pdf_bytes: bytes, page_nums: List[int],
+                                 case_context: dict, admin_id: str, db,
+                                 update_case_fn: Callable[[str, dict], Awaitable[None]]) -> Dict:
+    """Regenerate only `page_nums`, one page at a time (with retries), merging each
+    result into trust_page_explanations as it finishes."""
+    existing = _jobs.get(case_id)
+    if existing and existing.get("status") == "pending":
+        return {"task_id": existing["task_id"], "status": "pending", "already_running": True}
+    doc = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "trust_page_job": 1})
+    prev = (doc or {}).get("trust_page_job") or {}
+    task_id = uuid.uuid4().hex[:12]
+    job = {**prev, "task_id": task_id, "status": "pending", "started_at": _now_iso(),
+           "last_progress_at": _now_iso(), "finished_at": None, "error": None,
+           "admin_id": admin_id, "mode": "failed_pages", "retry_pages": list(page_nums)}
+    _jobs[case_id] = job
+    await _persist(db, case_id, job, update_case_fn)
+
+    async def _runner():
+        import trust_page_explainer
+        async with _get_lock(case_id):
+            try:
+                pages = await asyncio.to_thread(trust_page_explainer.extract_page_texts, pdf_bytes)
+                for n in page_nums:
+                    if n < 1 or n > len(pages):
+                        continue
+                    text = await trust_page_explainer.explain_single_page_with_retries(
+                        pages[n - 1], n, case_context or {})
+                    if text:
+                        d = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "trust_page_explanations": 1})
+                        merged = [e for e in ((d or {}).get("trust_page_explanations") or []) if e.get("page") != n]
+                        merged.append({"page": n, "text": text})
+                        merged.sort(key=lambda r: r.get("page") or 0)
+                        await update_case_fn(case_id, {"trust_page_explanations": merged,
+                                                       "trust_page_explanations_updated_at": _now_iso()})
+                    job["last_progress_at"] = _now_iso()
+                    await _persist(db, case_id, job, update_case_fn)
+                    await asyncio.sleep(trust_page_explainer.BETWEEN_CALL_PAUSE_SEC)
+                job["status"] = "completed"
+            except Exception as e:
+                logger.exception(f"failed-pages job {task_id} for case {case_id}: crashed")
+                job["status"] = "failed"
+                job["error"] = str(e)[:400]
+            job["finished_at"] = _now_iso()
+            await _persist(db, case_id, job, update_case_fn)
+
+    asyncio.create_task(_runner())
+    return {"task_id": task_id, "status": "pending", "already_running": False}
+
+
 async def get_status(case_id: str, db) -> Optional[Dict]:
     job = _jobs.get(case_id)
     if job:

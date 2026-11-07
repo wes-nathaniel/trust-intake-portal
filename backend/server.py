@@ -4214,16 +4214,49 @@ async def client_trust_page_explanations(case_id: str, user: dict = Depends(get_
     case = await get_case(case_id, user)
     explanations = case.get("trust_page_explanations") or []
     job = case.get("trust_page_job") or {}
+    status = job.get("status") or ("completed" if explanations else "idle")
+    pages_total = job.get("pages_total") or (case.get("trust_draft") or {}).get("pages") or 0
+    done = {e.get("page") for e in explanations if str(e.get("text") or "").strip()}
+    failed_pages = []
+    if status == "completed" and pages_total:
+        failed_pages = [p for p in range(1, int(pages_total) + 1) if p not in done]
+        if failed_pages:
+            status = "needs_attention"
     return {
         "ok": True,
         "explanations": explanations,
-        "status": job.get("status") or ("completed" if explanations else "idle"),
-        "pages_done": job.get("pages_done") or len(explanations),
-        "pages_total": job.get("pages_total") or 0,
+        "status": status,
+        "failed_pages": failed_pages,
+        "pages_done": len(done),
+        "pages_total": pages_total,
         "batches_done": job.get("batches_done") or 0,
         "batches_total": job.get("batches_total") or 0,
         "error": job.get("error"),
     }
+
+
+@api_router.post("/admin/trust-cases/{case_id}/trust-page-explanations/regenerate-failed")
+async def admin_regenerate_failed_pages(case_id: str, admin: dict = Depends(require_admin)):
+    """Re-run ONLY the pages that have no explanation, one at a time, with retries."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    draft = case.get("trust_draft") or {}
+    if not draft.get("storage_path"):
+        raise HTTPException(status_code=400, detail="No trust draft PDF uploaded yet.")
+    total = int((case.get("trust_page_job") or {}).get("pages_total") or draft.get("pages") or 0)
+    done = {e.get("page") for e in (case.get("trust_page_explanations") or []) if str(e.get("text") or "").strip()}
+    failed = [p for p in range(1, total + 1) if p not in done]
+    if not failed:
+        return {"ok": True, "failed_pages": [], "status": "completed"}
+    try:
+        data, _ct = get_object(draft["storage_path"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not read PDF from storage: {e}")
+    job = await page_explanation_jobs.start_failed_pages_job(
+        case_id=case_id, pdf_bytes=data, page_nums=failed, case_context=_build_case_context(case),
+        admin_id=admin["id"], db=db, update_case_fn=update_case)
+    return {"ok": True, "failed_pages": failed, **job}
 
 
 @api_router.post("/admin/trust-cases/{case_id}/trust-page-explanations/regenerate")
