@@ -542,3 +542,9 @@ See `/app/memory/test_credentials.md` — admin: support@igcfirm.com / Wllorenzo
 - Prod Resend rejected all sends: "igcfirm.com domain is not verified" (live SENDER_EMAIL was @igcfirm.com). User set live SENDER_EMAIL=portal@igchq.com (igchq.com verified in Resend). Redeployed.
 - New: POST /api/admin/trust-cases/{id}/resend-status-email + "Resend status email" button on admin case header (re-sends client email for current status). Use for Rose Nabhan (Drafting Trust) after deploy.
 - Gap noted (not fixed, awaiting user OK): dropdown change to "Pending Payment Verification"/"Payment Verified" sends no client email.
+
+## 2026-11-07 — Manual hold on trust drafts
+- Upload sets trust_draft.released=false → hidden from clients (get_case strips trust_draft/trust_page_explanations/trust_page_job for non-admins; /trust-cases/mine too). Explainer job unchanged.
+- POST /api/admin/trust-cases/{id}/release-trust-draft ("Ready for client review" button in Trust Draft card): released=true, status → Ready for Client Review, same client status email (sent directly if status already Ready for Client Review).
+- Legacy drafts without `released` stay visible. Re-upload hides again.
+- Live sender confirmed via Resend API: support@igchq.com (verified, delivering). User skipped changing to portal@.

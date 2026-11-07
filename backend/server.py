@@ -960,25 +960,52 @@ class StatusUpdate(BaseModel):
     status: str
 
 
+async def _send_client_status_email(case: dict) -> bool:
+    status = case.get("status") or ""
+    branding = await _branding_doc()
+    biz = branding.get("business_name", "Trust Portal")
+    pending = _compute_pending(case) if status == "Waiting on Documents" else None
+    link = f"{FRONTEND_URL}/intake/{case['id']}?step=documents" if pending else f"{FRONTEND_URL}/portal"
+    html = _status_change_email_html(
+        business=biz, accent=branding.get("accent_color", "#C5A880"), primary=branding.get("primary_color", "#1C252E"),
+        client_name=case.get("client_name") or case.get("client_email"), status=status,
+        case_id=case["id"][:8].upper(), link=link, pending_items=pending)
+    return bool(await send_email_notification(case.get("client_email"), f"Status update: {status} — {biz}", html))
+
+
+@api_router.post("/admin/trust-cases/{case_id}/release-trust-draft")
+async def admin_release_trust_draft(case_id: str, admin: dict = Depends(require_admin)):
+    """'Ready for client review': make the current draft + explainer visible to the client,
+    set status to Ready for Client Review, and send the client the same status email."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not (case.get("trust_draft") or {}).get("storage_path"):
+        raise HTTPException(status_code=400, detail="Upload a trust draft first.")
+    prev = case.get("status")
+    new_status = "Ready for Client Review"
+    await db.trust_cases.update_one({"id": case_id}, {"$set": {
+        "trust_draft.released": True, "trust_draft.released_at": now_iso(),
+        "trust_draft.released_by": admin["email"], "status": new_status, "updated_at": now_iso()}})
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if prev != new_status:
+        await _notify_status_change(case, prev_status=prev, new_status=new_status)
+        emailed = True
+    else:
+        emailed = await _send_client_status_email(case)
+    return {"ok": True, "status": new_status, "emailed": emailed}
+
+
 @api_router.post("/admin/trust-cases/{case_id}/resend-status-email")
 async def admin_resend_status_email(case_id: str, _: dict = Depends(require_admin)):
     """Re-send the client's status-update email for the case's CURRENT status (no status change)."""
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Not found")
-    status = case.get("status") or ""
-    branding = await _branding_doc()
-    biz = branding.get("business_name", "Trust Portal")
-    pending = _compute_pending(case) if status == "Waiting on Documents" else None
-    link = f"{FRONTEND_URL}/intake/{case_id}?step=documents" if pending else f"{FRONTEND_URL}/portal"
-    html = _status_change_email_html(
-        business=biz, accent=branding.get("accent_color", "#C5A880"), primary=branding.get("primary_color", "#1C252E"),
-        client_name=case.get("client_name") or case.get("client_email"), status=status,
-        case_id=case_id[:8].upper(), link=link, pending_items=pending)
-    ok = bool(await send_email_notification(case.get("client_email"), f"Status update: {status} — {biz}", html))
+    ok = await _send_client_status_email(case)
     if not ok:
         raise HTTPException(status_code=502, detail="The email provider rejected the message. Check the sender domain in Resend.")
-    return {"ok": True, "status": status, "to": case.get("client_email")}
+    return {"ok": True, "status": case.get("status"), "to": case.get("client_email")}
 
 class NoteCreate(BaseModel):
     note: str
@@ -2176,7 +2203,23 @@ async def get_case(case_id: str, user: dict) -> dict:
         raise HTTPException(status_code=404, detail="Trust case not found")
     if user.get("role") != "admin" and case["client_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
+    if user.get("role") != "admin":
+        case = _hide_unreleased_draft(case)
     return case
+
+
+def _draft_hidden(case: dict) -> bool:
+    """A trust draft stays admin-only until the admin clicks "Ready for client review".
+    Drafts uploaded before this hold existed (no `released` field) remain visible."""
+    draft = case.get("trust_draft") or {}
+    return bool(draft) and draft.get("released") is False
+
+
+def _hide_unreleased_draft(case: dict) -> dict:
+    if not _draft_hidden(case):
+        return case
+    return {k: v for k, v in case.items()
+            if k not in ("trust_draft", "trust_page_explanations", "trust_page_job")}
 
 
 async def get_case_raw(case_id: str) -> Optional[dict]:
@@ -2313,7 +2356,7 @@ async def my_cases(user: dict = Depends(get_current_user)):
         {"client_id": user["id"], "archived": {"$ne": True}},
         {"_id": 0},
     ).sort("created_at", -1).to_list(100)
-    return [_attach_pending(c) for c in cases]
+    return [_attach_pending(_hide_unreleased_draft(c)) for c in cases]
 
 @api_router.get("/trust-cases/{case_id}")
 async def get_case_endpoint(case_id: str, user: dict = Depends(get_current_user)):
@@ -4012,6 +4055,7 @@ async def admin_upload_trust_draft(case_id: str,
         "uploaded_by": admin["id"],
         "uploaded_at": now_iso(),
         "version": int((case.get("trust_draft") or {}).get("version", 0)) + 1,
+        "released": False,
     }
     updates = {"trust_draft": draft}
     # A newly-uploaded draft has NOT yet been reviewed by the client. Clear

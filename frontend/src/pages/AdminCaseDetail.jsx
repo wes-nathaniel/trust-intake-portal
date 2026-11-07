@@ -64,6 +64,7 @@ export default function AdminCaseDetail() {
   const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [tempPwOpen, setTempPwOpen] = useState(false);
   const [pwHistoryKey, setPwHistoryKey] = useState(0);
+  const [releasing, setReleasing] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [confirmEmail, setConfirmEmail] = useState("");
   const [changingEmail, setChangingEmail] = useState(false);
@@ -220,6 +221,17 @@ export default function AdminCaseDetail() {
       toast.success("Trust draft deleted. Case is reset — upload a new PDF when ready.");
       await load();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
+  const releaseDraft = async () => {
+    if (!window.confirm(`Make this trust draft and its explainer visible to ${c.client_name || c.client_email}, set the status to "Ready for Client Review", and email them that their trust is ready?`)) return;
+    setReleasing(true);
+    try {
+      const { data } = await api.post(`/admin/trust-cases/${caseId}/release-trust-draft`);
+      toast.success(data.emailed ? "Released — the client can now review it and has been emailed." : "Released, but the email could not be sent. Use Resend status email.");
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setReleasing(false); }
   };
 
   const createInvoice = async () => {
@@ -884,6 +896,19 @@ export default function AdminCaseDetail() {
               <KV k="Uploaded" v={c.trust_draft.uploaded_at?.slice(0, 19).replace("T", " ")} />
               <KV k="Review completed by client" v={c.acknowledgments?.review_completed_ack ? "Yes" : "No"} />
               <KV k="Final unlocked" v={c.trust_unlocked ? "Yes" : "No"} />
+              <div className={`mt-3 p-3 rounded-md border text-sm flex flex-wrap items-center justify-between gap-3 ${c.trust_draft.released === false ? "bg-amber-50 border-amber-300 text-amber-900" : "bg-emerald-50 border-emerald-300 text-emerald-900"}`}
+                data-testid="trust-draft-release-status">
+                <span>
+                  {c.trust_draft.released === false
+                    ? "Hidden from client — only you can see this draft and its explainer."
+                    : `Visible to client${c.trust_draft.released_at ? ` since ${c.trust_draft.released_at.slice(0, 16).replace("T", " ")}` : ""}.`}
+                </span>
+                {c.trust_draft.released === false && (
+                  <button onClick={releaseDraft} disabled={releasing} className="btn-primary text-sm disabled:opacity-50" data-testid="ready-for-client-review-btn">
+                    {releasing ? "Releasing…" : "Ready for client review"}
+                  </button>
+                )}
+              </div>
               <div className="flex flex-wrap gap-2 mt-4">
                 <a href={`/portal/trust-preview/${caseId}`} target="_blank" rel="noreferrer" className="btn-secondary text-sm" data-testid="admin-open-preview-btn">
                   <ExternalLink className="h-4 w-4 inline mr-1" /> Open client preview
