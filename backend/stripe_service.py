@@ -10,10 +10,10 @@ Two products are exposed by lookup key:
 
 The setup_catalog() helper is idempotent — safe to call at every startup.
 
-Checkout mode: Embedded Checkout (ui_mode=embedded).
+Checkout mode: Embedded Checkout (ui_mode=embedded_page, Stripe SDK v15+).
 Debit-only restriction uses payment_method_options.card.restrictions.funding_types_blocked.
-Requires Stripe API version 2026-08-26 or later on the connected account.
 Apple Pay and Google Pay are disabled by passing payment_method_types=["card"].
+No fallback: if debit enforcement fails the session creation fails.
 """
 from __future__ import annotations
 
@@ -167,52 +167,45 @@ def create_checkout_session(
     metadata: Optional[Dict[str, str]] = None,
     customer_email: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create an Embedded Checkout Session (debit-only, no Apple Pay / Google Pay).
+    """Create an Embedded Checkout Session (strict debit-only, no Apple Pay / Google Pay, no ACH).
 
-    Returns client_secret for the EmbeddedCheckout component on the frontend.
-    If funding_types_blocked is not supported by the account API version,
-    the session is created without it (card-only still enforced via payment_method_types).
+    payment_method_types=["card"] disables Apple Pay, Google Pay, and all wallets.
+    funding_types_blocked=["credit","prepaid"] blocks credit and prepaid cards.
+    There is NO fallback: if debit enforcement fails we raise so a payment link
+    is never handed to a client without the restriction active.
     """
     _apply_key()
     price = price_for_lookup(lookup_key)
     md = {k: (v or "") for k, v in (metadata or {}).items()}
-    base_kwargs = dict(
+    kwargs = dict(
         line_items=[{"price": price.id, "quantity": 1}],
         mode="subscription" if price.recurring else "payment",
-        ui_mode="embedded",
-        payment_method_types=["card"],   # disables Apple Pay and Google Pay
+        ui_mode="embedded_page",   # Stripe SDK v15+ (was "embedded" in v14)
+        payment_method_types=["card"],   # disables Apple Pay, Google Pay, and all digital wallets
         return_url=f"{origin_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
         metadata=md,
+        payment_method_options={
+            "card": {
+                "restrictions": {
+                    "funding_types_blocked": ["credit", "prepaid"]
+                }
+            }
+        },
     )
     if customer_email:
-        base_kwargs["customer_email"] = customer_email
+        kwargs["customer_email"] = customer_email
 
-    # Attempt debit-only restriction (requires Stripe API version 2026-08-26+)
-    try:
-        session = stripe.checkout.Session.create(
-            **base_kwargs,
-            payment_method_options={
-                "card": {
-                    "restrictions": {
-                        "funding_types_blocked": ["credit", "prepaid"]
-                    }
-                }
-            },
-        )
-        debit_enforced = True
-    except Exception as e:
-        logger.warning(f"Debit-only restriction not supported by API version, creating without it: {e}")
-        session = stripe.checkout.Session.create(**base_kwargs)
-        debit_enforced = False
+    # No try/except fallback: if Stripe rejects the debit restriction the caller
+    # gets the exception. We never create a session without it.
+    session = stripe.checkout.Session.create(**kwargs)
 
     return {
         "session_id": session.id,
         "client_secret": session.client_secret,
-        # Keep checkout_url for backward compat (None for embedded sessions)
         "checkout_url": getattr(session, "url", None),
         "amount_cents": (price.unit_amount or 0),
         "currency": price.currency,
-        "debit_enforced": debit_enforced,
+        "debit_enforced": True,  # always true — no fallback path exists
     }
 
 

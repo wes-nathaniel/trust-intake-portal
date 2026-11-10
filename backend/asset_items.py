@@ -26,14 +26,30 @@ ANY_STATE = "ANY"
 METHOD_OTHER = "__other__"
 METHOD_UNSURE = "__unsure__"
 
+VEHICLE_GENERIC_WORDING = (
+    "Title application filed with your state's motor vehicle office, naming the trust or the trustee as owner. "
+    "Bring the trust paperwork your state asks for."
+)
+LIFE_INSURANCE_GENERIC_WORDING = (
+    "Change of owner form from your insurance company, signed and sent to them, naming the trust or the trustee as owner. "
+    "Then ask them to confirm in writing who your beneficiary is."
+)
+
+# Rows in this dict have been reviewed and are marked confirmed.
+# State-specific rows the admin adds remain needs_check until they confirm them.
+GENERIC_CONFIRMED_METHODS = {
+    "vehicle": VEHICLE_GENERIC_WORDING,
+    "life_insurance": LIFE_INSURANCE_GENERIC_WORDING,
+}
+
 GENERIC_METHODS = {
     "house_land": ["Deed recorded with the county where the property is located"],
     "bank": ["Bank form changing the name on the account to the trust"],
     "investment": ["Brokerage form retitling the account to the trust"],
-    "vehicle": ["Vehicle title application filed with your state's motor vehicle office, naming the trust or the trustee as owner"],
+    "vehicle": [VEHICLE_GENERIC_WORDING],
     "business": ["Signed ownership transfer form (called an assignment)"],
     "belongings": ["Signed General Assignment of personal property"],
-    "life_insurance": ["Change of owner form naming the trust"],
+    "life_insurance": [LIFE_INSURANCE_GENERIC_WORDING],
     "cash": ["Deposit into the trust bank account"],
     "other": ["Signed assignment form", "Account retitled in the trust name"],
 }
@@ -47,24 +63,61 @@ def now_iso():
 
 
 async def seed_library(db):
+    """Upsert generic transfer-method rows.
+
+    * Confirmed rows (vehicle, life_insurance generic defaults): delete any old
+      wording for the same kind/state=ANY so stale rows don't appear to clients,
+      then upsert the new wording with status='confirmed'.
+    * All other generic rows: insert-only (needs_check), never overwritten.
+    * State-specific rows added by the admin are untouched.
+    """
+    # 1. Migrate confirmed generic rows
+    for kind, new_wording in GENERIC_CONFIRMED_METHODS.items():
+        # Remove old generic rows for this kind (preserves state-specific rows)
+        await db.transfer_methods.delete_many(
+            {"kind": kind, "state": ANY_STATE, "wording": {"$ne": new_wording}}
+        )
+        # Upsert new confirmed row — $set runs on both insert and update so an
+        # existing confirmed row that already has the right wording still gets
+        # status=confirmed in case someone manually downgraded it.
+        await db.transfer_methods.update_one(
+            {"kind": kind, "state": ANY_STATE, "wording": new_wording},
+            {
+                "$setOnInsert": {"id": uuid.uuid4().hex, "kind": kind, "state": ANY_STATE,
+                                 "wording": new_wording, "created_at": now_iso()},
+                "$set": {"status": "confirmed"},
+            },
+            upsert=True,
+        )
+
+    # 2. Seed remaining generic rows (needs_check, insert-only)
     for kind, rows in GENERIC_METHODS.items():
+        if kind in GENERIC_CONFIRMED_METHODS:
+            continue  # already handled above
         for wording in rows:
             await db.transfer_methods.update_one(
                 {"kind": kind, "state": ANY_STATE, "wording": wording},
                 {"$setOnInsert": {"id": uuid.uuid4().hex, "kind": kind, "state": ANY_STATE, "wording": wording,
                                   "status": "needs_check", "created_at": now_iso()}},
-                upsert=True)
+                upsert=True,
+            )
 
 
 async def methods_for(db, kind: str, state: str) -> list:
-    """Library rows for this kind + state; falls back to generic rows (always 'needs_check')."""
+    """Library rows for this kind + state; falls back to generic rows.
+
+    State-specific rows are returned as-is (admin controls their status).
+    Generic fallback rows preserve their stored status so confirmed rows
+    (vehicle, life_insurance) don't get incorrectly downgraded to needs_check.
+    """
     lib_kind = kind if kind in GENERIC_METHODS else "other"
     rows = []
     if state:
         rows = await db.transfer_methods.find({"kind": lib_kind, "state": state}, {"_id": 0}).to_list(50)
     if not rows:
         rows = await db.transfer_methods.find({"kind": lib_kind, "state": ANY_STATE}, {"_id": 0}).to_list(50)
-        rows = [{**r, "status": "needs_check"} for r in rows]
+        # Preserve stored status; only default to needs_check when not set
+        rows = [{**r, "status": r.get("status") or "needs_check"} for r in rows]
     return rows
 
 
