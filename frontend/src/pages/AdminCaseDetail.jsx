@@ -7,7 +7,7 @@ import AdminDocumentsManager from "@/components/AdminDocumentsManager";
 import MessageThread from "@/components/MessageThread";
 import WhatsAppPanel from "@/components/WhatsAppPanel";
 import { toast } from "sonner";
-import { ArrowLeft, Upload, Download, FileText, StickyNote, RefreshCw, MailPlus, Clock, BellRing, ExternalLink, Trash2, ShieldCheck, Send, CreditCard, Smartphone, ChevronDown } from "lucide-react";
+import { ArrowLeft, Upload, Download, FileText, StickyNote, RefreshCw, MailPlus, Clock, BellRing, ExternalLink, Trash2, Send, CreditCard, Smartphone, ChevronDown } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { displaySSN } from "@/pages/intake/_shared";
 import DocRequestsPanel from "@/components/DocRequestsPanel";
@@ -306,28 +306,6 @@ export default function AdminCaseDetail() {
         a.href = url; a.download = `schedule-a-${caseId.slice(0, 8)}.json`; a.click();
         URL.revokeObjectURL(url);
       }
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-  };
-
-  const releaseCreditRepair = async () => {
-    if (!window.confirm(
-      "Release the Free Credit Review for this client?\n\n" +
-      "This unlocks a 'Start Your Free Credit Review' button INSIDE their portal only. " +
-      "The link is never emailed or texted. Click OK only after you've called the client and confirmed everything."
-    )) return;
-    try {
-      await api.post(`/admin/trust-cases/${caseId}/release-credit-repair`);
-      toast.success("Credit Review released — visible inside the client's portal.");
-      await load();
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-  };
-
-  const revokeCreditRepair = async () => {
-    if (!window.confirm("Revoke credit-review access? The client will no longer see the button in their portal.")) return;
-    try {
-      await api.post(`/admin/trust-cases/${caseId}/revoke-credit-repair`);
-      toast.success("Credit Review access revoked.");
-      await load();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
@@ -648,63 +626,6 @@ export default function AdminCaseDetail() {
           <span className="text-xs text-[#64748B]" data-testid="admin-status-internal-note">Internal only. The client does not see this or get an email until you press Release.</span>
         </div>
 
-        {/* Credit Repair release — admin-gated unlock that surfaces a button in the client's portal */}
-        {(c.status === "Completed" || c.status === "Payment Verified") && (
-          <div className="mt-4 p-4 rounded-lg border border-bronze/30 bg-bronze/5" data-testid="credit-repair-admin-block">
-            <div className="flex items-start gap-3">
-              <ShieldCheck className="h-5 w-5 text-bronze shrink-0 mt-0.5" />
-              <div className="flex-1 min-w-0">
-                <p className="font-serif text-lg text-navy">Free Credit Review</p>
-                {c.credit_repair_released ? (
-                  <p className="text-sm text-[#334155]">
-                    <span className="font-semibold text-green-700">Released.</span> The client now sees a
-                    "Start Your Free Credit Review" button inside their portal. The link is never emailed or texted.
-                    {c.credit_repair_released_at && <span className="text-[#94A3B8]"> · Released {new Date(c.credit_repair_released_at).toLocaleString()}</span>}
-                  </p>
-                ) : (
-                  <p className="text-sm text-[#334155]">
-                    Release access after you've <b>called the client</b> and confirmed everything in person.
-                    The link will appear in their portal only — never emailed or texted.
-                  </p>
-                )}
-              </div>
-              {c.credit_repair_released ? (
-                <button onClick={revokeCreditRepair} className="btn-secondary text-sm shrink-0" data-testid="revoke-credit-repair-btn">
-                  Revoke access
-                </button>
-              ) : (
-                <button onClick={releaseCreditRepair} className="btn-primary text-sm shrink-0" data-testid="release-credit-repair-btn">
-                  Release Credit Repair
-                </button>
-              )}
-            </div>
-
-            {/* Audit Log — append-only history of release/revoke actions */}
-            {(c.credit_repair_log || []).length > 0 && (
-              <div className="mt-4 pt-4 border-t border-bronze/20" data-testid="credit-repair-audit-log">
-                <p className="text-[10px] uppercase tracking-wide text-[#64748B] font-semibold mb-2">Audit log</p>
-                <ul className="space-y-1.5">
-                  {[...c.credit_repair_log].reverse().map((entry, i) => {
-                    const isRelease = entry.action === "released";
-                    return (
-                      <li key={i} className="flex items-center gap-2 text-xs" data-testid={`credit-repair-audit-entry-${i}`}>
-                        <span className={`inline-block w-2 h-2 rounded-full ${isRelease ? "bg-green-600" : "bg-red-500"}`} />
-                        <span className={`font-semibold ${isRelease ? "text-green-700" : "text-red-700"} uppercase tracking-wide`}>
-                          {entry.action}
-                        </span>
-                        <span className="text-[#64748B]">
-                          by <b className="text-navy">{entry.admin_name || entry.admin_email || "admin"}</b>
-                        </span>
-                        <span className="text-[#94A3B8]">·</span>
-                        <span className="text-[#94A3B8]">{new Date(entry.at).toLocaleString()}</span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
         {c.acknowledgments?.review_completed_ack && (
           <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-md text-sm flex items-start gap-2" data-testid="admin-review-completed-banner">
             <span className="text-green-700 font-semibold">Client marked review as completed.</span>

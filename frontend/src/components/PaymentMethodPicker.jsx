@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { CreditCard, Smartphone, Send, X, Copy, Loader2, CheckCircle2, ShieldCheck } from "lucide-react";
+import { CreditCard, Smartphone, Send, X, Copy, Loader2, CheckCircle2, ShieldCheck, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "@/lib/api";
 
-const ZELLE = { phone: "954-598-3681", name: "Wesley Nathaniel" };
 const CASHAPP_URL = "https://cash.app/$WNate1971";
 
 function fmtAmount(cents) {
@@ -41,6 +40,9 @@ const PRODUCTS = [
 export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed, defaultLookupKey }) {
   const navigate = useNavigate();
   const [zelleOpen, setZelleOpen] = useState(false);
+  const [zelleContact, setZelleContact] = useState("support@igchq.com");
+  const [copiedContact, setCopiedContact] = useState(false);
+  const [copiedRef, setCopiedRef] = useState(false);
   const [chosenMethod, setChosenMethod] = useState(null);
   const [claiming, setClaiming] = useState(false);
   const [stripeLoading, setStripeLoading] = useState(false);
@@ -49,6 +51,14 @@ export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed, d
   useEffect(() => {
     if (payment.lookup_key) setTier(payment.lookup_key);
   }, [payment.lookup_key]);
+
+  useEffect(() => {
+    api.get("/payments/zelle-config").then(r => {
+      if (r.data?.contact) setZelleContact(r.data.contact);
+    }).catch(() => {});
+  }, []);
+
+  const caseRef = caseId ? `IGC-${caseId.slice(0, 8).toUpperCase()}` : "";
 
   const selectedProduct = PRODUCTS.find((p) => p.lookup_key === tier) || PRODUCTS[0];
   const amountCents = payment.amount_cents ?? selectedProduct.price_cents;
@@ -229,51 +239,70 @@ export default function PaymentMethodPicker({ caseId, payment = {}, onClaimed, d
           className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4"
           onClick={() => setZelleOpen(false)}
           data-testid="zelle-modal">
-          <div className="bg-white rounded-xl p-6 sm:p-8 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-start justify-between mb-4">
-              <div>
-                <p className="text-xs uppercase tracking-[0.2em] font-bold text-[#6f00ff]">Pay with Zelle</p>
-                <p className="font-serif text-2xl text-navy mt-1">Send your payment</p>
-              </div>
-              <button onClick={() => setZelleOpen(false)} className="text-[#64748B] hover:text-navy" aria-label="Close" data-testid="zelle-close-btn">
+          <div className="bg-white rounded-xl p-6 max-w-md w-full space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between">
+              <p className="font-serif text-2xl text-navy">Pay with Zelle</p>
+              <button onClick={() => setZelleOpen(false)} className="text-[#64748B] hover:text-navy min-h-[44px] min-w-[44px] flex items-center justify-center" aria-label="Close" data-testid="zelle-close-btn">
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="space-y-3">
-              <div className="rounded-lg border border-[#E2E0DA] p-3">
-                <p className="text-[10px] uppercase text-[#64748B] font-bold tracking-wide">Send to</p>
-                <div className="flex items-center justify-between mt-1">
-                  <p className="text-lg font-mono text-navy" data-testid="zelle-phone">{ZELLE.phone}</p>
-                  <button onClick={() => copy(ZELLE.phone, "Phone")} className="text-[#64748B] hover:text-navy" title="Copy" data-testid="zelle-copy-phone">
-                    <Copy className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-              <div className="rounded-lg border border-[#E2E0DA] p-3">
-                <p className="text-[10px] uppercase text-[#64748B] font-bold tracking-wide">Name</p>
-                <div className="flex items-center justify-between mt-1">
-                  <p className="text-lg text-navy" data-testid="zelle-name">{ZELLE.name}</p>
-                  <button onClick={() => copy(ZELLE.name, "Name")} className="text-[#64748B] hover:text-navy" title="Copy" data-testid="zelle-copy-name">
-                    <Copy className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-              <div className="rounded-lg border-2 border-bronze/40 bg-bronze/5 p-3">
-                <p className="text-[10px] uppercase text-bronze font-bold tracking-wide">Amount</p>
-                <div className="flex items-center justify-between mt-1">
-                  <p className="text-2xl font-bold text-navy font-mono" data-testid="zelle-amount">{amountStr}</p>
-                  <button onClick={() => copy((amountCents / 100).toFixed(2), "Amount")} className="text-[#64748B] hover:text-navy" title="Copy" data-testid="zelle-copy-amount">
-                    <Copy className="h-4 w-4" />
-                  </button>
-                </div>
+
+            {/* Send-to */}
+            <div>
+              <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold mb-2">Send your Zelle payment to:</p>
+              <div className="flex items-center gap-3 bg-[#F6F4F0] rounded-xl border border-[#E2E0DA] px-4 py-4">
+                <span className="font-mono text-lg font-bold text-navy flex-1 break-all" data-testid="zelle-contact">{zelleContact}</span>
+                <button
+                  onClick={async () => {
+                    try { await navigator.clipboard.writeText(zelleContact); setCopiedContact(true); setTimeout(() => setCopiedContact(false), 2000); }
+                    catch (_) { toast.error("Could not copy. Long-press to copy manually."); }
+                  }}
+                  className="shrink-0 min-h-[48px] min-w-[48px] flex items-center justify-center rounded-lg bg-navy text-white active:scale-95 transition-transform"
+                  data-testid="zelle-copy-contact" aria-label="Copy email">
+                  {copiedContact ? <CheckCircle className="h-5 w-5" /> : <Copy className="h-5 w-5" />}
+                </button>
               </div>
             </div>
-            <p className="text-xs text-[#64748B] mt-4 leading-relaxed">
-              Open your bank's app or website, find the Zelle option, and send the exact amount to the phone number above.
-              When done, close this window and press <b>"I Made My Payment"</b>.
-            </p>
-            <button onClick={() => setZelleOpen(false)} className="mt-5 w-full py-3 rounded-md bg-navy text-white font-semibold" data-testid="zelle-done-btn">
-              I've sent the Zelle payment
+
+            {/* Case reference */}
+            {caseRef && (
+              <div>
+                <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold mb-2">Put this in the memo or note:</p>
+                <div className="flex items-center gap-3 bg-[#F6F4F0] rounded-xl border-2 border-bronze/40 px-4 py-4">
+                  <span className="font-mono text-lg font-bold text-bronze flex-1" data-testid="zelle-case-ref">{caseRef}</span>
+                  <button
+                    onClick={async () => {
+                      try { await navigator.clipboard.writeText(caseRef); setCopiedRef(true); setTimeout(() => setCopiedRef(false), 2000); }
+                      catch (_) { toast.error("Could not copy. Long-press to copy manually."); }
+                    }}
+                    className="shrink-0 min-h-[48px] min-w-[48px] flex items-center justify-center rounded-lg bg-bronze text-white active:scale-95 transition-transform"
+                    data-testid="zelle-copy-ref" aria-label="Copy case number">
+                    {copiedRef ? <CheckCircle className="h-5 w-5" /> : <Copy className="h-5 w-5" />}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Amount */}
+            <div className="rounded-lg border border-[#E2E0DA] bg-[#F6F4F0] px-4 py-3">
+              <p className="text-[10px] uppercase text-[#64748B] font-bold tracking-wide mb-1">Amount</p>
+              <p className="text-2xl font-bold text-navy font-mono" data-testid="zelle-amount">{amountStr}</p>
+            </div>
+
+            {/* Steps */}
+            <div className="bg-[#F6F4F0] rounded-xl border border-[#E2E0DA] px-4 py-4">
+              <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold mb-3">How to send it:</p>
+              <ol className="space-y-1.5 text-sm text-navy list-none">
+                <li>1. Open your bank app.</li>
+                <li>2. Choose Send money with Zelle.</li>
+                <li>3. Enter the email above.</li>
+                <li>4. Type the case number in the note.</li>
+                <li>5. Send it.</li>
+              </ol>
+            </div>
+
+            <button onClick={() => setZelleOpen(false)} className="w-full py-3 rounded-xl bg-navy text-white font-semibold min-h-[48px]" data-testid="zelle-done-btn">
+              Done
             </button>
           </div>
         </div>

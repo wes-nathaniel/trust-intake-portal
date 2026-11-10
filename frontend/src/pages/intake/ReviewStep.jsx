@@ -120,8 +120,7 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
             <div>
               <p className="font-serif text-xl sm:text-2xl text-navy mb-1">Existing Trust Review</p>
               <p className="text-sm sm:text-base text-[#334155] leading-relaxed">
-                Your existing trust will be reviewed by our legal team at no additional charge. Your enrollment also
-                covers our free credit repair program and your 90-day cash settlement process. We'll be in touch with
+                Your existing trust will be reviewed by our legal team at no additional charge. We'll be in touch with
                 next steps after your trust is reviewed.
               </p>
             </div>

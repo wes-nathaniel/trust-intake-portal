@@ -125,8 +125,7 @@ export default function StartNew() {
           <div className="mt-4 mb-2 rounded-lg border-2 border-bronze/40 bg-bronze/5 p-4" data-testid="review-path-note">
             <p className="font-serif text-lg text-navy mb-1">Existing Trust Review</p>
             <p className="text-sm text-[#334155] leading-relaxed">
-              Your existing trust will be reviewed by our legal team at no additional charge. Your enrollment also
-              covers our free credit repair program and your 90-day cash settlement process. Upload your trust on
+              Your existing trust will be reviewed by our legal team at no additional charge. Upload your trust on
               the next step and we'll take it from there.
             </p>
           </div>

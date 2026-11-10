@@ -10,7 +10,7 @@ import { loadStripe } from "@stripe/stripe-js";
 import { EmbeddedCheckout, EmbeddedCheckoutProvider } from "@stripe/react-stripe-js";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { CreditCard, Smartphone, CheckCircle, AlertCircle, RefreshCw } from "lucide-react";
+import { CreditCard, Smartphone, CheckCircle, AlertCircle, RefreshCw, Copy } from "lucide-react";
 
 let _stripePromise = null;
 function getStripe(pk) {
@@ -18,27 +18,82 @@ function getStripe(pk) {
   return _stripePromise;
 }
 
-function ZelleInstructions({ phone, caseRef }) {
+function ZelleInstructions({ contact, caseRef }) {
+  const [copiedContact, setCopiedContact] = useState(false);
+  const [copiedRef, setCopiedRef] = useState(false);
+  const displayContact = contact || "support@igchq.com";
+
+  const copyContact = async () => {
+    try {
+      await navigator.clipboard.writeText(displayContact);
+      setCopiedContact(true);
+      setTimeout(() => setCopiedContact(false), 2000);
+    } catch (_) { toast.error("Could not copy. Long-press to copy manually."); }
+  };
+
+  const copyRef = async () => {
+    try {
+      await navigator.clipboard.writeText(caseRef);
+      setCopiedRef(true);
+      setTimeout(() => setCopiedRef(false), 2000);
+    } catch (_) { toast.error("Could not copy. Long-press to copy manually."); }
+  };
+
   return (
-    <div className="rounded-xl border border-[#E2E0DA] bg-[#F6F4F0] p-4 space-y-3" data-testid="zelle-instructions">
-      <div className="flex items-center gap-2">
-        <Smartphone className="h-5 w-5 text-[#4A90D9]" />
-        <span className="font-semibold text-navy text-sm">Pay by Zelle</span>
-      </div>
-      <div className="text-sm text-navy space-y-2">
-        <p>Open your bank app and send payment via Zelle to:</p>
-        <div className="bg-white border border-[#E2E0DA] rounded-lg px-4 py-3 font-mono text-lg font-bold text-navy tracking-wide" data-testid="zelle-phone">
-          {phone || "9545983681"}
-        </div>
-        <p>In the memo field, put your case number:</p>
-        <div className="bg-white border border-[#E2E0DA] rounded-lg px-4 py-2 font-mono font-bold text-bronze text-base" data-testid="zelle-case-ref">
-          {caseRef}
-        </div>
-        <p className="text-xs text-[#64748B]">
-          After you send payment, your advisor will confirm receipt and reach out about next steps.
-          You do not need to do anything else.
+    <div className="rounded-xl border border-[#E2E0DA] bg-[#F6F4F0] p-5 space-y-4" data-testid="zelle-instructions">
+
+      {/* Send-to */}
+      <div>
+        <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold mb-2">
+          Send your Zelle payment to:
         </p>
+        <div className="flex items-center gap-3 bg-white rounded-xl border border-[#E2E0DA] px-4 py-4">
+          <span className="font-mono text-xl font-bold text-navy flex-1 break-all" data-testid="zelle-contact">
+            {displayContact}
+          </span>
+          <button
+            type="button"
+            onClick={copyContact}
+            className="shrink-0 min-h-[48px] min-w-[48px] flex items-center justify-center rounded-lg bg-navy text-white active:scale-95 transition-transform"
+            data-testid="zelle-copy-contact"
+            aria-label="Copy email">
+            {copiedContact ? <CheckCircle className="h-5 w-5" /> : <Copy className="h-5 w-5" />}
+          </button>
+        </div>
       </div>
+
+      {/* Case number */}
+      <div>
+        <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold mb-2">
+          Put this in the memo or note:
+        </p>
+        <div className="flex items-center gap-3 bg-white rounded-xl border-2 border-bronze/40 px-4 py-4">
+          <span className="font-mono text-xl font-bold text-bronze flex-1" data-testid="zelle-case-ref">
+            {caseRef}
+          </span>
+          <button
+            type="button"
+            onClick={copyRef}
+            className="shrink-0 min-h-[48px] min-w-[48px] flex items-center justify-center rounded-lg bg-bronze text-white active:scale-95 transition-transform"
+            data-testid="zelle-copy-ref"
+            aria-label="Copy case number">
+            {copiedRef ? <CheckCircle className="h-5 w-5" /> : <Copy className="h-5 w-5" />}
+          </button>
+        </div>
+      </div>
+
+      {/* Steps */}
+      <div className="bg-white rounded-xl border border-[#E2E0DA] px-4 py-4">
+        <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold mb-3">How to send it:</p>
+        <ol className="space-y-2 text-sm text-navy list-none">
+          <li>1. Open your bank app.</li>
+          <li>2. Choose Send money with Zelle.</li>
+          <li>3. Enter the email above.</li>
+          <li>4. Type the case number in the note.</li>
+          <li>5. Send it.</li>
+        </ol>
+      </div>
+
     </div>
   );
 }
@@ -46,7 +101,7 @@ function ZelleInstructions({ phone, caseRef }) {
 export default function PaymentCard({ caseId }) {
   const [session, setSession] = useState(null);   // { has_session, client_secret, amount_cents, already_paid, status }
   const [stripeConfig, setStripeConfig] = useState(null);  // { publishable_key }
-  const [zelleConfig, setZelleConfig] = useState(null);    // { phone }
+  const [zelleConfig, setZelleConfig] = useState(null);    // { contact }
   const [tab, setTab] = useState("card");  // "card" | "zelle"
   const [loading, setLoading] = useState(true);
   const caseRef = `IGC-${(caseId || "").slice(0, 8).toUpperCase()}`;
@@ -137,7 +192,7 @@ export default function PaymentCard({ caseId }) {
 
       {/* Zelle */}
       {tab === "zelle" && (
-        <ZelleInstructions phone={zelleConfig?.phone} caseRef={caseRef} />
+        <ZelleInstructions contact={zelleConfig?.contact} caseRef={caseRef} />
       )}
 
       {/* No Stripe session yet — show Zelle only */}

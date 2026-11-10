@@ -3,6 +3,10 @@
 ## Problem Statement
 Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facing 8-step intake wizard, admin dashboard, secure page-by-page trust draft preview (watermarked, anti-copy/print), Stripe-powered payment workflow (Basic Living Trust $1,497 / Private Trust $2,497), final trust unlock with notarization instructions, legal disclosures + acknowledgments, business asset SOS advisory, EIN admin-filing, branding, and messaging.
 
+## Removed Features (no longer in codebase)
+- **Credit Review / Credit Repair** (removed Feb 2026): Backend endpoints `/release-credit-repair`, `/revoke-credit-repair`, `/credit-repair-link`, Zoho URL, frontend admin block, client portal block, CSV export columns, `StartNew.jsx` wording, `ReviewStep.jsx` wording — all removed. Existing DB records with `credit_repair_released` fields left intact (no data deleted).
+- **Zelle phone `9545983681`** (replaced Feb 2026): Now stores `support@igchq.com`. Admin setting field renamed to "Zelle Contact Email". New client UI: send-to label + large email + tap-copy button + case ref + tap-copy button + 5-step plain-language instructions.
+
 ---
 
 ## Changelog — 2026-10-19 (Email-change self-service + admin force-change for locked-out clients)

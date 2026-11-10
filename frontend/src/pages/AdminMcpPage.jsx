@@ -12,7 +12,7 @@ export default function AdminMcpPage() {
   const [generating, setGenerating] = useState(false);
   const [revoking, setRevoking] = useState(false);
   const [newKey, setNewKey] = useState(null);
-  const [zellePhone, setZellePhone] = useState("");
+  const [zelleContact, setZelleContact] = useState("");
   const [savingZelle, setSavingZelle] = useState(false);
   const [oauthTokens, setOauthTokens] = useState([]);
   const [revokingToken, setRevokingToken] = useState(null);
@@ -25,7 +25,7 @@ export default function AdminMcpPage() {
         api.get("/admin/mcp/oauth-tokens"),
       ]);
       setStatus(mcpRes.data);
-      setZellePhone(zelleRes.data.phone || "");
+      setZelleContact(zelleRes.data.contact || "");
       setOauthTokens(tokensRes.data.tokens || []);
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail));
@@ -84,8 +84,8 @@ export default function AdminMcpPage() {
   const saveZelle = async () => {
     setSavingZelle(true);
     try {
-      await api.patch("/admin/settings/zelle-phone", { phone: zellePhone });
-      toast.success("Zelle number saved.");
+      await api.patch("/admin/settings/zelle-phone", { contact: zelleContact });
+      toast.success("Zelle email saved.");
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
     finally { setSavingZelle(false); }
   };
@@ -268,14 +268,14 @@ export default function AdminMcpPage() {
           </Link>
         </section>
 
-        {/* Zelle phone setting */}
+        {/* Zelle contact setting */}
         <section className="bg-white border border-[#E2E0DA] rounded-xl p-6 space-y-4" data-testid="zelle-settings">
-          <h2 className="font-serif text-xl text-navy">Zelle Phone Number</h2>
-          <p className="text-sm text-[#64748B]">This number is shown to clients in the payment card when they choose Zelle.</p>
+          <h2 className="font-serif text-xl text-navy">Zelle Contact</h2>
+          <p className="text-sm text-[#64748B]">This email is shown to clients in the payment card when they choose Zelle.</p>
           <div className="flex gap-3 items-center">
-            <input type="tel" value={zellePhone} onChange={e => setZellePhone(e.target.value)}
-              placeholder="9545983681" className="rounded-lg border border-input bg-white px-3 py-2 text-sm flex-1 min-h-[44px]"
-              data-testid="zelle-phone-input" />
+            <input type="email" value={zelleContact} onChange={e => setZelleContact(e.target.value)}
+              placeholder="support@igchq.com" className="rounded-lg border border-input bg-white px-3 py-2 text-sm flex-1 min-h-[44px]"
+              data-testid="zelle-contact-input" />
             <button type="button" onClick={saveZelle} disabled={savingZelle}
               className="btn-primary min-h-[44px] text-sm" data-testid="save-zelle-btn">
               {savingZelle ? "Saving…" : "Save"}

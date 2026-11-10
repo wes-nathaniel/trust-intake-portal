@@ -605,7 +605,7 @@ IntakePath = Literal["new", "review"]
 # Suggested invoice amount (in cents) per intake path. Admin can override.
 INTAKE_PATH_PRICE_CENTS = {
     "new": 99700,    # $997.00 — full new-trust drafting
-    "review": 29700, # $297.00 — existing trust review + credit repair + 90-day cash settlement
+    "review": 29700, # $297.00 — existing trust review
 }
 
 class TrustCaseCreate(BaseModel):
@@ -3721,8 +3721,7 @@ async def admin_export_cases_csv(
     w.writerow([
         "case_id", "client_name", "client_email", "client_phone",
         "trust_name", "intake_path", "trust_type", "status",
-        "amount_usd", "payment_status", "credit_repair_released",
-        "credit_repair_released_at", "created_at", "updated_at",
+        "amount_usd", "payment_status", "created_at", "updated_at",
     ])
     for c in cases:
         p = c.get("payment") or {}
@@ -3739,8 +3738,6 @@ async def admin_export_cases_csv(
             c.get("status", ""),
             amt_usd,
             p.get("status", ""),
-            "yes" if c.get("credit_repair_released") else "no",
-            c.get("credit_repair_released_at", ""),
             c.get("created_at", ""),
             c.get("updated_at", ""),
         ])
@@ -4049,98 +4046,6 @@ async def export_pdf(case_id: str, user: dict = Depends(get_current_user)):
             "Content-Disposition": f'attachment; filename="trust-intake-{case_id[:8]}.pdf"'
         },
     )
-
-
-# ---------- CREDIT REPAIR RELEASE (admin-gated, portal-only) ----------
-
-CREDIT_REPAIR_URL = (
-    "https://forms.zohopublic.com/WBCGROUP/form/"
-    "ConsumerLawAttorneyReferralNetworkIGCFIRM/formperma/"
-    "qS39YSrNGsYAh6hDKZS1mu1Ys1SF2SP0C-Vea2l2ah8"
-)
-
-
-def _split_client_name(case: dict) -> tuple[str, str]:
-    """Best-effort first/last from client_name or grantors[0].full_legal_name."""
-    name = (case.get("client_name") or "").strip()
-    if not name:
-        g0 = (case.get("grantors") or [{}])[0] or {}
-        name = (g0.get("full_legal_name") or "").strip()
-    if not name:
-        return ("", "")
-    parts = name.split()
-    if len(parts) == 1:
-        return (parts[0], "")
-    return (parts[0], " ".join(parts[1:]))
-
-
-@api_router.post("/admin/trust-cases/{case_id}/release-credit-repair")
-async def admin_release_credit_repair(case_id: str, admin: dict = Depends(require_admin)):
-    """Admin-gated unlock. After admin has manually called the client and confirmed
-    everything, this flips a boolean that surfaces the 'Start Your Free Credit Review'
-    button inside the client's portal. The Zoho URL is never emailed; it is only
-    returned via /credit-repair-link, behind the client's session.
-
-    Maintains an append-only `credit_repair_log` of every release/revoke action."""
-    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
-    if not case:
-        raise HTTPException(status_code=404, detail="Not found")
-    if case.get("credit_repair_released"):
-        return {"ok": True, "already_released": True}
-    stamp = now_iso()
-    log = list(case.get("credit_repair_log") or [])
-    log.append({
-        "action": "released",
-        "at": stamp,
-        "admin_id": admin["id"],
-        "admin_email": admin.get("email"),
-        "admin_name": admin.get("name") or admin.get("email"),
-    })
-    await update_case(case_id, {
-        "credit_repair_released": True,
-        "credit_repair_released_at": stamp,
-        "credit_repair_released_by": admin["id"],
-        "credit_repair_log": log,
-    })
-    return {"ok": True, "released_at": stamp}
-
-
-@api_router.post("/admin/trust-cases/{case_id}/revoke-credit-repair")
-async def admin_revoke_credit_repair(case_id: str, admin: dict = Depends(require_admin)):
-    """Reverses release_credit_repair in case it was clicked by mistake."""
-    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
-    if not case:
-        raise HTTPException(status_code=404, detail="Not found")
-    stamp = now_iso()
-    log = list(case.get("credit_repair_log") or [])
-    log.append({
-        "action": "revoked",
-        "at": stamp,
-        "admin_id": admin["id"],
-        "admin_email": admin.get("email"),
-        "admin_name": admin.get("name") or admin.get("email"),
-    })
-    await update_case(case_id, {
-        "credit_repair_released": False,
-        "credit_repair_log": log,
-    })
-    return {"ok": True, "revoked_at": stamp}
-
-
-@api_router.get("/trust-cases/{case_id}/credit-repair-link")
-async def client_credit_repair_link(case_id: str, user: dict = Depends(get_current_user)):
-    """Returns the Zoho referral URL with ONLY first/last name pre-populated.
-    Gated on: case ownership AND admin having released access. Never exposed
-    by email or SMS — only behind the client's portal session."""
-    case = await get_case(case_id, user)
-    if not case.get("credit_repair_released"):
-        raise HTTPException(status_code=403, detail="Credit repair has not been released for this case yet.")
-    first, last = _split_client_name(case)
-    # Zoho form prefill uses ?FirstName=&LastName= encoded params.
-    from urllib.parse import urlencode
-    qs = urlencode({"FirstName": first, "LastName": last})
-    return {"url": f"{CREDIT_REPAIR_URL}?{qs}"}
-
 
 
 # ---------- TRUST DRAFT PREVIEW (locked, page-by-page, watermarked) ----------
@@ -6726,27 +6631,28 @@ async def mcp_send_approved_message(proposal_id: str, admin: dict = Depends(requ
 @api_router.get("/admin/settings/zelle-phone")
 async def get_zelle_phone(_: dict = Depends(require_admin)):
     doc = await db.admin_settings.find_one({"key": "zelle_phone"}, {"_id": 0})
-    return {"phone": (doc or {}).get("value", "9545983681")}
+    return {"contact": (doc or {}).get("value", "support@igchq.com")}
 
 
 @api_router.patch("/admin/settings/zelle-phone")
 async def set_zelle_phone(body: dict, _: dict = Depends(require_admin)):
-    phone = str(body.get("phone", "")).strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
-    if not phone:
-        raise HTTPException(400, "phone required")
+    # Accept either "contact" (new) or "phone" (legacy) field
+    contact = str(body.get("contact") or body.get("phone", "")).strip()
+    if not contact:
+        raise HTTPException(400, "contact required")
     await db.admin_settings.update_one(
         {"key": "zelle_phone"},
-        {"$set": {"key": "zelle_phone", "value": phone, "updated_at": now_iso()}},
+        {"$set": {"key": "zelle_phone", "value": contact, "updated_at": now_iso()}},
         upsert=True,
     )
-    return {"ok": True, "phone": phone}
+    return {"ok": True, "contact": contact}
 
 
 @api_router.get("/payments/zelle-config")
 async def zelle_config_public(user: dict = Depends(get_current_user)):
-    """Returns Zelle phone for payment card — authenticated clients only."""
+    """Returns Zelle contact for payment card — authenticated clients only."""
     doc = await db.admin_settings.find_one({"key": "zelle_phone"}, {"_id": 0})
-    return {"phone": (doc or {}).get("value", "9545983681")}
+    return {"contact": (doc or {}).get("value", "support@igchq.com")}
 
 
 @api_router.post("/admin/trust-cases/{case_id}/mark-zelle-received")
@@ -6983,7 +6889,7 @@ async def startup():
         existing_zelle = await db.admin_settings.find_one({"key": "zelle_phone"})
         if not existing_zelle:
             await db.admin_settings.insert_one({
-                "key": "zelle_phone", "value": "9545983681", "created_at": now_iso()
+                "key": "zelle_phone", "value": "support@igchq.com", "created_at": now_iso()
             })
             logger.info("Zelle phone seeded with default value.")
     except Exception as e:
@@ -7057,8 +6963,7 @@ async def _build_and_send_monthly_summary(year: int, month: int) -> dict:
     w.writerow([
         "case_id", "client_name", "client_email", "client_phone",
         "trust_name", "intake_path", "trust_type", "status",
-        "amount_usd", "payment_status", "credit_repair_released",
-        "credit_repair_released_at", "created_at", "updated_at",
+        "amount_usd", "payment_status", "created_at", "updated_at",
     ])
     for c in cases:
         p = c.get("payment") or {}
@@ -7069,8 +6974,6 @@ async def _build_and_send_monthly_summary(year: int, month: int) -> dict:
             c.get("client_phone", ""), c.get("trust_name", ""),
             c.get("intake_path", "new"), c.get("trust_type", ""), c.get("status", ""),
             amt_usd, p.get("status", ""),
-            "yes" if c.get("credit_repair_released") else "no",
-            c.get("credit_repair_released_at", ""),
             c.get("created_at", ""), c.get("updated_at", ""),
         ])
     csv_bytes = buf.getvalue().encode("utf-8")
