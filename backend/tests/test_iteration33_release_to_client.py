@@ -226,3 +226,36 @@ class TestClientLeak:
         admin.put(f"{API}/trust-cases/{cid}/asset-items/{iid}", json={"description": "TEST car HELD EDIT", "kind": "vehicle", "state": "FL"})
         c = cs.get(f"{API}/trust-cases/{cid}").json()
         assert "HELD EDIT" not in str(c.get("asset_items")), "held admin asset edit (pending_admin) leaks in client case JSON"
+
+
+# --- Iteration 34 retest: release_history leak, schedule with send_email false, send-for-signing no client email
+class TestIter34:
+    def test_no_release_history_leak_after_release(self, admin):
+        cs, cid, _ = _new_client()
+        _set_status(admin, cid, "Drafting Trust")
+        r = admin.post(f"{API}/admin/trust-cases/{cid}/release", json={"mode": "silent"})
+        assert r.status_code == 200, r.text
+        assert admin.get(f"{API}/trust-cases/{cid}").json().get("release_history"), "admin should see history"
+        c = cs.get(f"{API}/trust-cases/{cid}").json()
+        mine = [x for x in cs.get(f"{API}/trust-cases/mine").json() if x["id"] == cid][0]
+        assert c["status"] == "Drafting Trust"
+        for d in (c, mine):
+            assert "release_history" not in d and "scheduled_release" not in d
+
+    def test_schedule_without_email(self, admin):
+        cs, cid, _ = _new_client()
+        _set_status(admin, cid, "Drafting Trust")
+        fut = (datetime.now(NY) + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M")
+        r = admin.post(f"{API}/admin/trust-cases/{cid}/release", json={"mode": "schedule", "release_at": fut, "send_email": False})
+        assert r.status_code == 200, r.text
+        sr = admin.get(f"{API}/admin/trust-cases/{cid}/release").json()["scheduled_release"]
+        assert sr and sr.get("send_email") is False
+        assert cs.get(f"{API}/trust-cases/{cid}").json()["status"] != "Drafting Trust"
+        admin.delete(f"{API}/admin/trust-cases/{cid}/release/scheduled")
+
+    def test_send_for_signing_no_crash(self, admin):
+        cs, cid, email = _new_client()
+        r = admin.post(f"{API}/admin/trust-cases/{cid}/send-for-signing",
+                       data={"signer_email": email, "signer_name": "TEST"},
+                       files={"file": ("t.pdf", _pdf(), "application/pdf")})
+        assert r.status_code in (200, 400, 422, 503), r.text

@@ -1,0 +1,21 @@
+{
+  "summary": "Retested the 6 fixes from iteration 33. All are verified. Backend: 22/22 pytest pass (19 from iteration 33, including the 2 TestClientLeak tests that failed before, plus 3 new TestIter34 tests). Client GET /trust-cases/{id} and /mine no longer contain scheduled_release, release_history or asset_items[].pending_admin. A code review confirmed that send-for-signing now calls _client_auto_email_off and not send_email_notification. The post-sign completion email is also suppressed. Frontend at 390x844: scrollWidth is 390 with and without a schedule, and admin-status-select is 44px. The collapsible release-scheduled-toggle is 44px and shows the time plus '(no email)'. release-scheduled-details is hidden until tapped. The changed warning appears after a status change. Update (btn-primary, rgb(28,37,46) background with white text, 44px) clears the warning and keeps send_email false. Cancel removes the schedule. The schedule checkbox is checked by default, and unchecking it hides the email editor. The scheduled release is saved with send_email false. Regression: Release now changed the client status only after release. Release without email and schedule both pass in pytest.",
+  "backend_issues": {"critical": [], "minor": [
+    {"endpoint": "POST /release mode=schedule", "issue": "Carried over: times that do not exist or happen twice on DST change days are not handled. Edge case only."}
+  ]},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": [
+    {"screen": "Admin case page mobile, scheduled notice expanded", "issues": ["When expanded with the changed warning, the sticky bar is about 403px of the 844px viewport. This is acceptable because the admin opens it by tapping, and collapsed it is compact."]}
+  ]},
+  "test_report_links": ["/app/backend/tests/test_iteration33_release_to_client.py", "/app/test_reports/pytest/pytest_iter34.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_client_view still uses a deny-list (scheduled_release, release_history, pending_admin). An allow-list would be safer against future admin-only fields.",
+    "server.py is 7083 lines. Consider moving the release logic into its own module."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration33_release_to_client.py (added class TestIter34)"],
+  "success_rate": {"backend": "100% (22/22)", "frontend": "100%"},
+  "seed_data_creation": "Pytest creates test_release_*@example.com clients and cases. Their ids are not tracked and they are left in place. The UI test case 0f1aab08 was deleted by id.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: REACT_APP_BACKEND_URL=... pytest tests/test_iteration33_release_to_client.py -p no:randomly. Resend rejects @example.com, so a 'Released, but the email could not be sent' toast is expected. The send-for-signing test accepts 503 because Dropbox Sign may be unconfigured."
+}

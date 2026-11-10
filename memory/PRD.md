@@ -555,3 +555,12 @@ See `/app/memory/test_credentials.md` — admin: support@igcfirm.com / Wllorenzo
 - Explainer status derived in GET /trust-cases/{id}/trust-page-explanations: "needs_attention" + failed_pages when any page missing. POST /admin/trust-cases/{id}/trust-page-explanations/regenerate-failed (page_explanation_jobs.start_failed_pages_job, sequential).
 - Admin: ExplainerHealthBadge in Trust Draft card (writing X/N, red "N pages need attention" + Regenerate failed pages, green complete). Client panel missing-page text: "This page failed to generate. Click Regenerate."
 - Prompt: no em/en dashes or hyphen separators; people only by trust names/roles, no family relationships unless in intake; _scrub_dashes post-filter. Applies to newly written explanations only.
+
+## 2026-11-10 — Unified "Release to client for review" (owner rule: only Release emails/updates clients)
+- trust_cases.client_status = what client sees (backfilled from status on startup). _client_view() for non-admins: status←client_status, hides held draft/explainers, scheduled_release, release_history, asset_items[].pending_admin.
+- GET/POST /api/admin/trust-cases/{id}/release (mode now|schedule|silent, subject, message, release_at NY local, send_email); DELETE /release/scheduled; POST /release/scheduled/update (re-snapshot). Snapshot = status + draft path + held asset edits. _release_scheduler polls every 30s (atomic claim). release_history kept.
+- Removed: /release-trust-draft, /resend-status-email, /asset-items/release + their buttons. Sticky ReleaseBar + ReleaseDialog (editable email preview) on AdminCaseDetail.
+- Automatic client emails turned OFF (_client_auto_email_off logs them): status change (+text), Completed, explainer doc upload/replace, unlock final, signature complete, send-for-signing "trust is ready", doc request, invoice, mark paid, payment verify, payment-claimed receipt, Square auto-unlock.
+- Still ON (manual or client/security): welcome on signup, password/email-change/security, invite + resend invite, admin typed message, question reply, review reminder button. Dropbox Sign sends its own signing email.
+- Tested: iteration_33/34 (100%). NEXT (wait for user go-ahead): asset form phone fixes, then Claude MCP connection.
+
