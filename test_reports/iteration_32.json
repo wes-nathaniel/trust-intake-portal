@@ -1,0 +1,57 @@
+{
+  "summary": "PHASE 1 'Tell us what you own' tested end to end on test case 562399a8 (client pwtest + admin support@). Backend: 15 pytest cases, 14 pass; 1 fails on a real bug (street number 457 rejected as a retirement account). Frontend at 360/390/430 and desktop: the guided form, Just type it (AI organize, nothing saved before Looks right, 401k left out), list Edit/Remove/Great job, admin Summary/Items/Schedule A tabs, hidden admin edits plus Release asset edits, CSV export, the Transfer Method Library add/confirm flow and the release button text/confirm all work. Main mobile problems: no admin nav below 768px, so Methods cannot be reached on a phone; the admin case page overflows horizontally (414px) because of the Password History table; 'What does this mean?' help links are 20px tall.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST/PUT /api/trust-cases/{id}/asset-items (+ /confirm)", "issue": "RETIREMENT_RE in asset_items.py matches bare '457', 'roth', 'retirement', 'tsp' as whole words. Verified: 'House at 457 Oak Street' -> 400 'Retirement accounts stay in your name'. Real users will also be blocked for 'Roth family cabin', 'Retirement home condo'. In /confirm one bad AI item fails the whole batch. Fix: require account context (e.g. '457(b)', '457 plan', 'roth ira', 'retirement account', 'tsp account') or turn the regex into a soft warning.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "PUT /api/trust-cases/{id}/asset-items/{item_id} (client)", "issue": "If an admin edit is pending and the client then edits the same item, the client save overwrites asset_items.$ and silently throws away pending_admin. Verified: the admin edit disappeared and has_unreleased_edits went to None. Keep pending_admin or warn the admin."},
+      {"endpoint": "_clean_asset_item / methods_for", "issue": "For kinds without a state (bank, investment, etc.) the backend sets state='' and then only looks at ANY rows. The frontend asks /transfer-methods with clientState, though, so if a state-specific bank row exists the client can pick it but the backend marks method_status 'needs_check'. Also methods_for forces status 'needs_check' on ANY rows, so 'Mark Confirmed' on a generic row does nothing, and every generic method item gets the 'Wes will review' badge."},
+      {"endpoint": "Grantor address state vs asset state", "issue": "The Grantor address state is a free-text Txt input (users type 'TX'), but asset-state is a select of full state names. With 'TX' the default does not match any option: the select shows 'Pick a state', the help says 'We filled in TX', and library lookups for 'Texas' rows miss. Normalize abbreviations, or make the grantor state a select."},
+      {"endpoint": "/api/admin/transfer-methods", "issue": "There is no DELETE endpoint, so wrong or test rows cannot be removed and clients would see them. Tests remove rows through Mongo by id."},
+      {"endpoint": "DELETE /api/trust-cases/{id}/asset-items/{bad_id}", "issue": "Returns 200 for an id that does not exist. It should return 404."},
+      {"endpoint": "No-numbers check", "issue": "\\d{9,} after removing spaces and dashes also rejects phone numbers ('555 123 4567'). This is acceptable but should be noted."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Layout admin nav (mobile)", "issue": "The admin nav is 'hidden md:flex' and there is no hamburger or mobile menu, so below 768px the admin cannot reach Methods, Cases, Questions, etc. except by typing the URL. This breaks 'everything must work at phone widths'.", "selector": "[data-testid='nav-admin-methods']", "priority": "HIGH"},
+      {"component": "AdminCaseDetail Password History table", "issue": "Horizontal overflow at 360 and 390 (scrollWidth 414). The table rows reach 440px. The offender is admin-password-history (not the assets panel). Wrap it in overflow-x-auto or stack it on mobile.", "selector": "[data-testid='admin-password-history']", "priority": "MEDIUM"},
+      {"component": "AssetItemForm Help links", "issue": "The 'What does this mean?' buttons are 138x20px tap targets, under 44px. Radio and checkbox inputs are 20x20 but sit inside labels about 40px tall, which is borderline.", "selector": "[data-testid^='help-']", "priority": "MEDIUM"},
+      {"component": "Header mobile icons", "issue": "user-account-mobile-btn is about 20px tall and logout-btn is 32px tall at 360px, below 44px.", "selector": "[data-testid='user-account-mobile-btn']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin Schedule A (desktop >=640px)", "issues": ["The grid rows have no column header row (Description / Date Delivered / Method / Initials). The labels are 'sm:hidden', so on desktop the columns are unlabeled. Add a header row on sm+."]},
+      {"screen": "Client list item for kind Other", "issues": ["The list shows only 'Other' and not the sub kind (e.g. Cryptocurrency)."]},
+      {"screen": "Admin Items tab", "issues": ["The 'Wes will review this one' badge appears on almost every item (every AI item and every generic method), so it does not tell items apart.", "Legacy asset cards elsewhere use data-testid 'admin-asset-*', which collides with the 'admin-asset-{id}' prefix."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_iteration32_asset_items.py", "/app/test_reports/pytest/iter32.xml"],
+  "action_items": [
+    "Fix RETIREMENT_RE false positives ('457' street numbers, 'Roth' surnames, 'retirement home')",
+    "Add a mobile admin nav (hamburger or bottom sheet) so Methods and the other admin pages can be reached under 768px",
+    "Make the admin Password History table not overflow at 360 to 430px",
+    "Make the Help 'What does this mean?' tap targets at least 44px tall (min-h-[44px] inline-flex items-center)",
+    "Normalize grantor state abbreviations (TX -> Texas) or use a state select in AddressFields, so the asset state default works",
+    "Keep pending admin asset edits when the client edits the same item, or warn",
+    "Make the backend method lookup state consistent with the frontend for non-state kinds; let a confirmed ANY row stay confirmed",
+    "Add DELETE /api/admin/transfer-methods/{id}; return 404 when deleting an asset item that does not exist",
+    "Add column headers to Schedule A preview on desktop"
+  ],
+  "critical_code_review_comments": [
+    "asset_items.RETIREMENT_RE: the bare 457, roth, retirement and tsp alternatives cause false rejects. This is the only failing backend test.",
+    "update_asset_item (client branch) replaces the whole array element and drops pending_admin.",
+    "methods_for(): the fallback rewrites status to needs_check, so 'Mark Confirmed' on generic rows is a no-op for clients.",
+    "AdminAssetsPanel.exportData has no try/catch, so a failed export gives no feedback.",
+    "OwnStep.remove has no error handling or toast if the DELETE fails.",
+    "server.py is about 6980 lines and should be split. The asset routes could move into a router module next to asset_items.py."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration32_asset_items.py"],
+  "success_rate": {"backend": "93% (14/15)", "frontend": "88%: all requested flows work; mobile nav, overflow and tap-target problems remain"},
+  "seed_data_creation": "Test case 562399a8: Grantor 1 (Rose M Test UI) was given address.state='Texas' and email=pwtest_1793318071@igchq-test.com (the client grantor PUT requires an email). All asset items, the TEST_ library rows and the TEST_ raw texts I created were deleted by id afterwards. The case has 0 asset_items now.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: REACT_APP_BACKEND_URL=... MONGO_URL/DB_NAME exported; pytest tests/test_iteration32_asset_items.py -p no:xdist -o addopts=''. It only fails on the 457 bug. The test cleans its own items and library rows (through Mongo, since there is no DELETE API). The AI organize call takes about 5-10s. ready-for-client-review-btn is present on the test case (draft on hold). I clicked it and dismissed the confirm only.",
+  "rca of the issue": "457 false positive: RETIREMENT_RE = \\b(ira|roth|401k|403b|457|pension|retirement|...)\\b treats '457' as a whole word, so any address containing 457 matches. Repro: POST asset-items {description:'House at 457 Oak Street', kind:'house_land'} -> 400. Mitigation: require plan context for 457, roth and tsp."
+}

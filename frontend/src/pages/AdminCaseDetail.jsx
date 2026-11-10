@@ -18,6 +18,7 @@ import AdminCaseFieldsEditor from "@/components/AdminCaseFieldsEditor";
 import AdminAssetsPanel from "@/components/AdminAssetsPanel";
 import ExplainerHealthBadge from "@/components/ExplainerHealthBadge";
 import { startViewAsClient } from "@/components/ViewAsBanner";
+import ReleaseBar from "@/components/ReleaseBar";
 import { useAuth } from "@/context/AuthContext";
 import { Eye } from "lucide-react";
 
@@ -66,7 +67,6 @@ export default function AdminCaseDetail() {
   const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [tempPwOpen, setTempPwOpen] = useState(false);
   const [pwHistoryKey, setPwHistoryKey] = useState(0);
-  const [releasing, setReleasing] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [confirmEmail, setConfirmEmail] = useState("");
   const [changingEmail, setChangingEmail] = useState(false);
@@ -178,14 +178,14 @@ export default function AdminCaseDetail() {
     form.append("file", file);
     try {
       await api.post(`/admin/trust-cases/${caseId}/trust-draft`, form, { headers: { "Content-Type": "multipart/form-data" } });
-      toast.success("Trust draft uploaded. Client has been notified.");
+      toast.success("Trust draft uploaded. It stays hidden until you release it.");
       await load();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
     finally { setUploadingTrust(false); if (trustDraftInputRef.current) trustDraftInputRef.current.value = ""; }
   };
 
   const unlockFinal = async () => {
-    if (!window.confirm("Unlock final trust for this client? This removes watermarks, enables download/print, and emails the client.")) return;
+    if (!window.confirm("Unlock final trust for this client? This removes watermarks and enables download/print. No email is sent. Use Release to tell the client.")) return;
     try {
       await api.post(`/admin/trust-cases/${caseId}/unlock-final`);
       toast.success("Final trust unlocked.");
@@ -223,20 +223,6 @@ export default function AdminCaseDetail() {
       toast.success("Trust draft deleted. Case is reset — upload a new PDF when ready.");
       await load();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-  };
-
-  const releaseDraft = async () => {
-    if (!window.confirm(
-      `Release to client for review?\n\nThis will:\n• Show the trust draft and its AI explainer to ${c.client_name || c.client_email}\n` +
-      `• Show any asset edits you made\n• Set the status to "Ready for Client Review"\n` +
-      `• Email ${c.client_email} that their trust is ready for review\n\nContinue?`)) return;
-    setReleasing(true);
-    try {
-      const { data } = await api.post(`/admin/trust-cases/${caseId}/release-trust-draft`);
-      toast.success(data.emailed ? "Released — the client can now review it and has been emailed." : "Released, but the email could not be sent. Use Resend status email.");
-      await load();
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-    finally { setReleasing(false); }
   };
 
   const createInvoice = async () => {
@@ -290,7 +276,7 @@ export default function AdminCaseDetail() {
     const amtStr = window.prompt(
       "Verify and approve client's claimed payment.\n\n" +
       "Optionally enter the FINAL amount (USD) to lock it in (or leave blank to keep current). " +
-      "This will also email the client and advance their status to 'Payment Verified'.",
+      "This advances the internal status to 'Payment Verified'. No email is sent. Use Release to tell the client.",
       ""
     );
     if (amtStr === null) return;
@@ -299,7 +285,7 @@ export default function AdminCaseDetail() {
     if (n > 0) body.amount_cents = Math.round(n * 100);
     try {
       await api.post(`/admin/trust-cases/${caseId}/payment-verify`, body);
-      toast.success("Payment verified. Client has been notified.");
+      toast.success("Payment verified. Use Release to tell the client.");
       await load();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
@@ -460,18 +446,6 @@ export default function AdminCaseDetail() {
               title="See the portal exactly as this client sees it (read-only)">
               <Eye className="h-3 w-3" /> View as Client
             </button>
-            <button
-              type="button"
-              onClick={async () => {
-                if (!window.confirm(`Re-send the "${c.status}" status email to ${c.client_email}?`)) return;
-                try { await api.post(`/admin/trust-cases/${c.id}/resend-status-email`); toast.success(`Status email sent to ${c.client_email}.`); }
-                catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-              }}
-              className="ml-2 inline-flex items-center gap-1 text-xs text-bronze hover:text-navy underline underline-offset-4"
-              data-testid="admin-resend-status-email-btn"
-              title="Re-send the client's status-update email for the current status">
-              Resend status email
-            </button>
             {c.client_phone && (
               <>
                 {" · "}
@@ -602,6 +576,7 @@ export default function AdminCaseDetail() {
             className="bg-white border border-input rounded-md px-3 py-2 text-sm" data-testid="admin-status-select">
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
+          <span className="text-xs text-[#64748B]" data-testid="admin-status-internal-note">Internal only. The client does not see this or get an email until you press Release.</span>
         </div>
 
         {/* Credit Repair release — admin-gated unlock that surfaces a button in the client's portal */}
@@ -910,11 +885,7 @@ export default function AdminCaseDetail() {
                     ? "Hidden from client — only you can see this draft and its explainer."
                     : `Visible to client${c.trust_draft.released_at ? ` since ${c.trust_draft.released_at.slice(0, 16).replace("T", " ")}` : ""}.`}
                 </span>
-                {c.trust_draft.released === false && (
-                  <button onClick={releaseDraft} disabled={releasing} className="btn-primary text-sm disabled:opacity-50" data-testid="ready-for-client-review-btn">
-                    {releasing ? "Releasing…" : "Release to client for review"}
-                  </button>
-                )}
+                {c.trust_draft.released === false && <span className="text-xs">Use the Release button at the bottom of the screen.</span>}
               </div>
               <div className="flex flex-wrap gap-2 mt-4">
                 <a href={`/portal/trust-preview/${caseId}`} target="_blank" rel="noreferrer" className="btn-secondary text-sm" data-testid="admin-open-preview-btn">
@@ -1072,6 +1043,7 @@ export default function AdminCaseDetail() {
       {tempPwOpen && (
         <TempPasswordDialog email={c.client_email} label={c.client_name || c.client_email} onClose={() => { setTempPwOpen(false); setPwHistoryKey((k) => k + 1); }} />
       )}
+      <ReleaseBar caseId={caseId} reloadKey={c.updated_at} onReleased={load} />
     </Layout>
   );
 }

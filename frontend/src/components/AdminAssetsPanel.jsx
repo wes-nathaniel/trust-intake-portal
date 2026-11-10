@@ -103,12 +103,6 @@ export default function AdminAssetsPanel({ caseId }) {
   }, [caseId]);
   useEffect(() => { load(); }, [load]);
 
-  const releaseEdits = async () => {
-    if (!window.confirm("Show your asset edits to the client now? No email is sent.")) return;
-    const { data } = await api.post(`/admin/trust-cases/${caseId}/asset-items/release`);
-    toast.success(`Released ${data.released} edit(s).`);
-    load();
-  };
   if (!d) return null;
   const items = d.items.items || [];
   const unreleased = items.some((i) => i.has_unreleased_edits);
@@ -128,8 +122,7 @@ export default function AdminAssetsPanel({ caseId }) {
         <div className="space-y-3" data-testid="admin-asset-items">
           {unreleased && (
             <div className="p-3 rounded-md bg-amber-50 border border-amber-300 text-sm flex flex-col sm:flex-row gap-2 sm:items-center justify-between">
-              <span>Some edits are hidden from the client until you release them.</span>
-              <button onClick={releaseEdits} className="btn-primary min-h-[44px] text-sm" data-testid="release-asset-edits-btn">Release asset edits</button>
+              <span data-testid="asset-edits-held-note">Some edits are hidden from the client. Use the Release button at the bottom of the screen to show them.</span>
             </div>
           )}
           {items.length === 0 && <p className="text-sm text-[#94A3B8]">The client has not listed anything yet.</p>}

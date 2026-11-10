@@ -26,6 +26,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 from starlette.middleware.cors import CORSMiddleware
 import io
+import html as html_lib
+from zoneinfo import ZoneInfo
 from pdf_export import build_intake_pdf
 import esign
 import sms
@@ -470,6 +472,14 @@ def _html_to_text(html: str) -> str:
     # Unescape common entities
     text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&middot;", "·").replace("&copy;", "©")
     return text.strip()
+
+
+async def _client_auto_email_off(*args, **kwargs):
+    """Owner rule: automatic client emails are OFF. Only the Release button emails clients."""
+    to = kwargs.get("to_email") or (args[0] if args else "")
+    subj = kwargs.get("subject") or (args[1] if len(args) > 1 else "")
+    logger.info(f"Automatic client email suppressed: to={to} subject={subj!r}")
+    return None
 
 
 async def send_email_notification(to_email: str, subject: str, html_body: str):
@@ -925,77 +935,208 @@ async def _notify_status_change(case: dict, prev_status: str, new_status: str, s
     except Exception as e:
         logger.error(f"admin status-change email failed: {e}")
 
-    # --- CLIENT email (subset of statuses; others have dedicated emails elsewhere) ---
-    CLIENT_AUTO_EMAIL_STATUSES = {
-        "Intake In Progress", "Waiting on Documents", "In Review",
-        "Drafting Trust", "Ready for Client Review", "Ready for Payment",
-    }
-    if new_status in CLIENT_AUTO_EMAIL_STATUSES:
-        try:
-            pending = _compute_pending(case) if new_status == "Waiting on Documents" else None
-            portal_link = f"{FRONTEND_URL}/intake/{case_id}?step=documents" if pending else f"{FRONTEND_URL}/portal"
-            html = _status_change_email_html(
-                business=biz, accent=accent, primary=primary,
-                client_name=case.get("client_name") or case.get("client_email"),
-                status=new_status,
-                case_id=case_id[:8].upper(),
-                link=portal_link,
-                pending_items=pending,
-            )
-            await send_email_notification(
-                case.get("client_email"),
-                f"Status update: {new_status} — {biz}",
-                html,
-            )
-        except Exception as e:
-            logger.error(f"client status-change email failed: {e}")
-        try:
-            await client_messaging.notify_client_text(
-                _resolve_case_phone(case),
-                f"{biz}: your trust case status is now \"{new_status}\". Details: {FRONTEND_URL}/portal",
-                bool(case.get("whatsapp_opt_in")))
-        except Exception as e:
-            logger.error(f"client status-change text failed: {e}")
+    # Client is never emailed or texted on a status change. Only the Release button does that.
 
 class StatusUpdate(BaseModel):
     status: str
 
 
-async def _send_client_status_email(case: dict) -> bool:
-    status = case.get("status") or ""
-    branding = await _branding_doc()
-    biz = branding.get("business_name", "Trust Portal")
-    pending = _compute_pending(case) if status == "Waiting on Documents" else None
-    link = f"{FRONTEND_URL}/intake/{case['id']}?step=documents" if pending else f"{FRONTEND_URL}/portal"
-    html = _status_change_email_html(
-        business=biz, accent=branding.get("accent_color", "#C5A880"), primary=branding.get("primary_color", "#1C252E"),
-        client_name=case.get("client_name") or case.get("client_email"), status=status,
-        case_id=case["id"][:8].upper(), link=link, pending_items=pending)
-    return bool(await send_email_notification(case.get("client_email"), f"Status update: {status} — {biz}", html))
+RELEASE_TZ = ZoneInfo("America/New_York")
+RELEASE_STATUS_COPY = {
+    "Intake Started": "Your trust file is open. Please sign in to your portal to keep going.",
+    "Intake In Progress": "Thank you for the details you shared so far. Please sign in to your portal to finish the rest.",
+    "Waiting on Documents": "We need a few papers from you. Please sign in to your portal to see the list and upload them.",
+    "In Review": "Thank you. We got your details, and our team is reading them now. We will reach out if we have questions.",
+    "Drafting Trust": "Good news. We are now writing your trust. We will let you know when it is ready for you to read.",
+    "Ready for Client Review": "Your trust draft is ready for you to read. Please sign in to your portal to review it. Each page has a simple explanation to help you.",
+    "Ready for Payment": "Your trust is ready for the next step. Please sign in to your portal to make your payment.",
+    "Pending Payment Verification": "Thank you. We got your payment note, and we are checking it now.",
+    "Payment Verified": "Thank you. Your payment is confirmed. Your final trust papers are next.",
+    "Completed": "Your trust is complete. Please sign in to your portal to see your papers.",
+}
 
 
-@api_router.post("/admin/trust-cases/{case_id}/release-trust-draft")
-async def admin_release_trust_draft(case_id: str, admin: dict = Depends(require_admin)):
-    """'Ready for client review': make the current draft + explainer visible to the client,
-    set status to Ready for Client Review, and send the client the same status email."""
+def _client_view(case: dict) -> dict:
+    """What a client may see: released status only, and no held draft."""
+    case = _hide_unreleased_draft(case)
+    return {**case, "status": case.get("client_status") or "Intake Started"}
+
+
+def _release_snapshot(case: dict) -> dict:
+    draft = case.get("trust_draft") or {}
+    return {"status": case.get("status") or "Intake Started",
+            "draft_path": draft.get("storage_path") or "",
+            "draft_held": _draft_hidden(case),
+            "asset_edits": {i["id"]: i["pending_admin"] for i in (case.get("asset_items") or []) if i.get("pending_admin")}}
+
+
+def _release_changes(case: dict, snap: dict) -> List[str]:
+    cur = _release_snapshot(case)
+    out = []
+    if cur["status"] != snap["status"]:
+        out.append(f"Status is now {cur['status']} (scheduled: {snap['status']})")
+    if cur["draft_path"] != snap["draft_path"]:
+        out.append("A different trust draft was uploaded")
+    if cur["asset_edits"] != snap["asset_edits"]:
+        out.append("Asset edits changed")
+    return out
+
+
+async def _default_release_email(case: dict, snap: dict) -> dict:
+    biz = (await _branding_doc()).get("business_name", "Trust Portal")
+    first = (case.get("client_name") or "").split(" ")[0] or "there"
+    lines = [RELEASE_STATUS_COPY.get(snap["status"], "We have an update on your trust. Please sign in to your portal to see it.")]
+    if snap["draft_held"] and snap["status"] != "Ready for Client Review":
+        lines.append("Your trust draft is also ready for you to read in your portal.")
+    body = f"Hi {first},\n\n" + "\n\n".join(lines) + f"\n\nIf you have questions, send us a message in your portal.\n\nThank you,\n{biz}"
+    return {"subject": f"An update on your trust from {biz}", "message": body}
+
+
+def _release_email_html(biz: str, primary: str, accent: str, message: str) -> str:
+    paras = "".join(f'<p style="margin:0 0 14px 0;">{html_lib.escape(p).replace(chr(10), "<br>")}</p>'
+                    for p in message.strip().split("\n\n") if p.strip())
+    return _email_shell(biz, primary, accent, paras + _cta(f"{FRONTEND_URL}/portal", "Open your portal", accent))
+
+
+async def _apply_release(case_id: str, snap: dict, send_email: bool, subject: str, message: str, by: str, mode: str) -> dict:
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    sets = {"client_status": snap["status"], "client_status_released_at": now_iso()}
+    draft = case.get("trust_draft") or {}
+    draft_released = False
+    if snap["draft_path"] and draft.get("storage_path") == snap["draft_path"] and draft.get("released") is False:
+        sets.update({"trust_draft.released": True, "trust_draft.released_at": now_iso(), "trust_draft.released_by": by})
+        draft_released = True
+    items, assets_released = [], 0
+    for i in case.get("asset_items") or []:
+        approved = snap["asset_edits"].get(i.get("id"))
+        if approved:
+            base = {k: v for k, v in i.items() if k != "pending_admin"}
+            merged = {**base, **approved}
+            if i.get("pending_admin") and i["pending_admin"] != approved:
+                merged["pending_admin"] = i["pending_admin"]
+            items.append(merged)
+            assets_released += 1
+        else:
+            items.append(i)
+    if assets_released:
+        sets["asset_items"] = items
+    emailed = False
+    if send_email and case.get("client_email"):
+        b = await _branding_doc()
+        html = _release_email_html(b.get("business_name", "Trust Portal"), b.get("primary_color", "#1C252E"),
+                                   b.get("accent_color", "#C5A880"), message)
+        emailed = bool(await send_email_notification(case["client_email"], subject, html))
+    entry = {"id": new_id(), "at": now_iso(), "by": by, "mode": mode, "status": snap["status"],
+             "draft_released": draft_released, "assets_released": assets_released,
+             "emailed": emailed, "email_requested": send_email, "subject": subject if send_email else ""}
+    await db.trust_cases.update_one({"id": case_id}, {"$set": sets, "$push": {"release_history": entry}})
+    return entry
+
+
+class ReleaseReq(BaseModel):
+    mode: Literal["now", "schedule", "silent"]
+    subject: Optional[str] = Field(default="", max_length=200)
+    message: Optional[str] = Field(default="", max_length=5000)
+    release_at: Optional[str] = ""
+    send_email: bool = True
+
+
+async def _admin_case(case_id: str) -> dict:
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Not found")
-    if not (case.get("trust_draft") or {}).get("storage_path"):
-        raise HTTPException(status_code=400, detail="Upload a trust draft first.")
-    prev = case.get("status")
-    new_status = "Ready for Client Review"
-    await db.trust_cases.update_one({"id": case_id}, {"$set": {
-        "trust_draft.released": True, "trust_draft.released_at": now_iso(),
-        "trust_draft.released_by": admin["email"], "status": new_status, "updated_at": now_iso()}})
-    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
-    if prev != new_status:
-        await _notify_status_change(case, prev_status=prev, new_status=new_status)
-        emailed = True
-    else:
-        emailed = await _send_client_status_email(case)
-    await _release_asset_edits(case_id)
-    return {"ok": True, "status": new_status, "emailed": emailed}
+    return case
+
+
+@api_router.get("/admin/trust-cases/{case_id}/release")
+async def admin_release_preview(case_id: str, _: dict = Depends(require_admin)):
+    case = await _admin_case(case_id)
+    snap = _release_snapshot(case)
+    sched = case.get("scheduled_release")
+    return {"internal_status": snap["status"], "client_status": case.get("client_status") or "Intake Started",
+            "client_status_released_at": case.get("client_status_released_at"),
+            "draft_held": snap["draft_held"], "asset_edits_held": len(snap["asset_edits"]),
+            "client_email": case.get("client_email"), **(await _default_release_email(case, snap)),
+            "scheduled_release": sched, "changed_since_scheduled": _release_changes(case, sched["snapshot"]) if sched else [],
+            "history": list(reversed(case.get("release_history") or []))[:10]}
+
+
+@api_router.post("/admin/trust-cases/{case_id}/release")
+async def admin_release(case_id: str, body: ReleaseReq, admin: dict = Depends(require_admin)):
+    case = await _admin_case(case_id)
+    snap = _release_snapshot(case)
+    send_email = body.mode != "silent" and body.send_email
+    subject, message = (body.subject or "").strip(), (body.message or "").strip()
+    if send_email and (not subject or not message):
+        raise HTTPException(status_code=400, detail="Please fill in the email subject and message.")
+    if send_email and not case.get("client_email"):
+        raise HTTPException(status_code=400, detail="This client has no email on file.")
+    if body.mode == "schedule":
+        try:
+            local = datetime.fromisoformat(body.release_at).replace(tzinfo=RELEASE_TZ)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Pick a date and time for the release.")
+        at = local.astimezone(timezone.utc)
+        if at <= datetime.now(timezone.utc) + timedelta(minutes=1):
+            raise HTTPException(status_code=400, detail="Pick a time at least 2 minutes from now (New York time).")
+        sched = {"id": new_id(), "release_at": at.isoformat(), "release_at_local": local.strftime("%b %d, %Y %I:%M %p ET"),
+                 "send_email": send_email, "subject": subject, "message": message, "snapshot": snap,
+                 "created_by": admin["email"], "created_at": now_iso()}
+        await db.trust_cases.update_one({"id": case_id}, {"$set": {"scheduled_release": sched}})
+        return {"ok": True, "scheduled": sched}
+    entry = await _apply_release(case_id, snap, send_email, subject, message, admin["email"], body.mode)
+    await db.trust_cases.update_one({"id": case_id}, {"$unset": {"scheduled_release": ""}})
+    return {"ok": True, "release": entry}
+
+
+@api_router.delete("/admin/trust-cases/{case_id}/release/scheduled")
+async def admin_cancel_scheduled_release(case_id: str, _: dict = Depends(require_admin)):
+    await _admin_case(case_id)
+    await db.trust_cases.update_one({"id": case_id}, {"$unset": {"scheduled_release": ""}})
+    return {"ok": True}
+
+
+@api_router.post("/admin/trust-cases/{case_id}/release/scheduled/update")
+async def admin_update_scheduled_release(case_id: str, _: dict = Depends(require_admin)):
+    """One tap: point the scheduled release at the case as it is right now. Time stays the same."""
+    case = await _admin_case(case_id)
+    sched = case.get("scheduled_release")
+    if not sched:
+        raise HTTPException(status_code=404, detail="No scheduled release.")
+    new_snap = _release_snapshot(case)
+    if sched["message"] == (await _default_release_email(case, sched["snapshot"]))["message"]:
+        sched["message"] = (await _default_release_email(case, new_snap))["message"]
+    sched.update({"snapshot": new_snap, "updated_at": now_iso()})
+    await db.trust_cases.update_one({"id": case_id}, {"$set": {"scheduled_release": sched}})
+    return {"ok": True, "scheduled": sched}
+
+
+async def _run_due_releases():
+    now = datetime.now(timezone.utc).isoformat()
+    while True:
+        case = await db.trust_cases.find_one_and_update(
+            {"scheduled_release.release_at": {"$lte": now}},
+            {"$unset": {"scheduled_release": ""}},
+            projection={"_id": 0, "id": 1, "scheduled_release": 1})
+        if not case:
+            return
+        s = case["scheduled_release"]
+        try:
+            await _apply_release(case["id"], s["snapshot"], s["send_email"], s["subject"], s["message"],
+                                 s["created_by"], "scheduled")
+            logger.info(f"Scheduled release done for case {case['id']}")
+        except Exception as e:
+            logger.error(f"Scheduled release failed for case {case['id']}: {e}")
+
+
+async def _release_scheduler():
+    await asyncio.sleep(15)
+    while True:
+        try:
+            await _run_due_releases()
+        except Exception as e:
+            logger.error(f"Release scheduler tick failed: {e}")
+        await asyncio.sleep(30)
 
 
 # ---------- "TELL US WHAT YOU OWN" ASSET ITEMS ----------
@@ -1068,16 +1209,6 @@ async def _clean_asset_item(body: AssetItemIn, case: dict, existing: Optional[di
     return d
 
 
-async def _release_asset_edits(case_id: str):
-    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "asset_items": 1})
-    items = (case or {}).get("asset_items") or []
-    if not any(i.get("pending_admin") for i in items):
-        return 0
-    merged = [({**{k: v for k, v in i.items() if k != "pending_admin"}, **i["pending_admin"]} if i.get("pending_admin") else i) for i in items]
-    await db.trust_cases.update_one({"id": case_id}, {"$set": {"asset_items": merged}})
-    return sum(1 for i in items if i.get("pending_admin"))
-
-
 @api_router.get("/transfer-methods")
 async def list_transfer_methods(kind: str, state: str = "", _: dict = Depends(get_current_user)):
     rows = await asset_items.methods_for(db, kind, state)
@@ -1113,7 +1244,7 @@ async def update_asset_item(case_id: str, item_id: str, body: AssetItemIn, user:
         await db.trust_cases.update_one({"id": case_id, "asset_items.id": item_id},
                                         {"$set": {"asset_items.$.pending_admin": {**new, "edited_by": user["email"]}}})
     else:
-        new.update({k: old[k] for k in ("id", "created_at", "part") if k in old})
+        new.update({k: old[k] for k in ("id", "created_at", "part", "pending_admin") if k in old})
         await db.trust_cases.update_one({"id": case_id, "asset_items.id": item_id}, {"$set": {"asset_items.$": new}})
     return {"ok": True}
 
@@ -1180,11 +1311,6 @@ async def admin_schedule_a(case_id: str, format: str = "json", _: dict = Depends
     return sa
 
 
-@api_router.post("/admin/trust-cases/{case_id}/asset-items/release")
-async def admin_release_asset_edits(case_id: str, _: dict = Depends(require_admin)):
-    return {"ok": True, "released": await _release_asset_edits(case_id)}
-
-
 class TransferMethodIn(BaseModel):
     kind: str
     state: str = Field(min_length=2, max_length=40)
@@ -1217,17 +1343,6 @@ async def admin_update_transfer_method(row_id: str, body: TransferMethodIn, _: d
         raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
 
-
-@api_router.post("/admin/trust-cases/{case_id}/resend-status-email")
-async def admin_resend_status_email(case_id: str, _: dict = Depends(require_admin)):
-    """Re-send the client's status-update email for the case's CURRENT status (no status change)."""
-    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
-    if not case:
-        raise HTTPException(status_code=404, detail="Not found")
-    ok = await _send_client_status_email(case)
-    if not ok:
-        raise HTTPException(status_code=502, detail="The email provider rejected the message. Check the sender domain in Resend.")
-    return {"ok": True, "status": case.get("status"), "to": case.get("client_email")}
 
 class NoteCreate(BaseModel):
     note: str
@@ -2426,7 +2541,7 @@ async def get_case(case_id: str, user: dict) -> dict:
     if user.get("role") != "admin" and case["client_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
     if user.get("role") != "admin":
-        case = _hide_unreleased_draft(case)
+        case = _client_view(case)
     return case
 
 
@@ -2579,7 +2694,7 @@ async def my_cases(user: dict = Depends(get_current_user)):
         {"client_id": user["id"], "archived": {"$ne": True}},
         {"_id": 0},
     ).sort("created_at", -1).to_list(100)
-    return [_attach_pending(_hide_unreleased_draft(c)) for c in cases]
+    return [_attach_pending(_client_view(c)) for c in cases]
 
 @api_router.get("/trust-cases/{case_id}")
 async def get_case_endpoint(case_id: str, user: dict = Depends(get_current_user)):
@@ -2855,7 +2970,8 @@ async def set_acknowledgments(case_id: str, body: AcknowledgmentsUpdate, user: d
     is_client_completing_intake = now_intake_ack and not was_intake_ack and user.get("role") != "admin"
     is_client_completing_review = now_review_ack and not was_review_ack and user.get("role") != "admin"
 
-    if is_client_completing_intake and cur_status in INTAKE_STATUSES:
+    internal_status = (await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "status": 1}) or {}).get("status") or ""
+    if is_client_completing_intake and internal_status in INTAKE_STATUSES:
         updates["status"] = "In Review"
         review_kind = "intake"
     elif is_client_completing_review and cur_status == "Ready for Client Review":
@@ -3891,34 +4007,13 @@ async def admin_update_status(case_id: str, body: StatusUpdate, admin: dict = De
 
     case["status"] = body.status
 
-    branding = await _branding_doc()
-    biz = branding.get("business_name", "Trust Portal")
-    accent = branding.get("accent_color", "#C5A880")
-    primary = branding.get("primary_color", "#1C252E")
-
-    # Centralized admin + client status-change notification (handles every status)
+    # Centralized admin status-change notification (handles every status)
     try:
         await _notify_status_change(case, prev_status=prev_status, new_status=body.status, source="admin")
     except Exception as e:
         logger.error(f"admin update_status notify failed: {e}")
 
-    # Special "Completed" client message (replaces the generic email)
     if body.status == "Completed" and prev_status != "Completed":
-        try:
-            portal_link = f"{FRONTEND_URL}/portal"
-            inner = f"""
-<p style="font-size:22px;margin:0 0 14px 0;font-family:Georgia,serif;">Congratulations — your trust is complete.</p>
-<p>A member of our team will call you within 10 minutes. Please log back into your portal to access your complimentary credit review.</p>
-{_cta(portal_link, "Open your portal", accent)}
-"""
-            html = _email_shell(biz, primary, accent, inner)
-            await send_email_notification(
-                case.get("client_email"),
-                f"Your trust is complete — {biz}",
-                html,
-            )
-        except Exception as e:
-            logger.error(f"Completion email failed: {e}")
         # SMS admin so they can make the promised "within 10 minutes" call
         try:
             notify.notify_admin(
@@ -4718,7 +4813,7 @@ async def admin_upload_explainer_doc(case_id: str,
 {_cta(link, "Open your portal", accent)}
 """
         html = _email_shell(biz, primary, accent, inner)
-        await send_email_notification(
+        await _client_auto_email_off(
             case.get("client_email"),
             f"New document uploaded — {label}",
             html,
@@ -4843,7 +4938,7 @@ async def admin_replace_explainer_doc(case_id: str, doc_id: str,
 {_cta(link, "Open your portal", accent)}
 """
         html = _email_shell(biz, primary, accent, inner)
-        await send_email_notification(
+        await _client_auto_email_off(
             case.get("client_email"),
             f"Document updated — {new_label}",
             html,
@@ -5154,7 +5249,7 @@ async def admin_unlock_final(case_id: str, admin: dict = Depends(require_admin))
 <p style="color:#64748B;font-size:13px;">If you placed a business under your trust, remember to file a Change of Ownership with your Secretary of State.</p>
 """
         html = _email_shell(biz, primary, accent, inner)
-        await send_email_notification(
+        await _client_auto_email_off(
             case.get("client_email"),
             f"Your final trust is ready — {biz}",
             html,
@@ -5330,7 +5425,7 @@ async def admin_signature_status(case_id: str, admin: dict = Depends(require_adm
 {_referral_block(biz, accent, referral_link)}
 """
             html = _email_shell(biz, primary, accent, inner)
-            await send_email_notification_with_attachment(
+            await _client_auto_email_off(
                 to_email=case.get("client_email"),
                 subject=f"Your trust is signed & complete — {biz}",
                 html_body=html,
@@ -5441,7 +5536,7 @@ async def admin_create_doc_request(case_id: str, body: DocRequestCreate,
 {_cta(link, "Upload now", accent)}
 """
             html = _email_shell(biz, primary, accent, inner)
-            await send_email_notification(
+            await _client_auto_email_off(
                 case.get("client_email"),
                 f"Document requested: {req['label']} — {biz}",
                 html,
@@ -5732,7 +5827,7 @@ async def admin_create_invoice(case_id: str, body: InvoiceCreateReq, admin: dict
 {_cta(pay_link, "Pay securely with Square", accent)}
 """
         html = _email_shell(biz, primary, accent, inner)
-        await send_email_notification(
+        await _client_auto_email_off(
             case.get("client_email"),
             f"Invoice for your trust — {biz}",
             html,
@@ -5799,7 +5894,7 @@ async def admin_mark_payment_received(case_id: str, admin: dict = Depends(requir
 <p>Your final trust is next. We'll email you when it's unlocked.</p>
 """
         html = _email_shell(biz, primary, accent, inner)
-        await send_email_notification(case.get("client_email"),
+        await _client_auto_email_off(case.get("client_email"),
                                       f"Payment received — {biz}", html)
     except Exception as e:
         logger.error(f"Mark-paid email failed: {e}")
@@ -5896,7 +5991,7 @@ async def client_claimed_payment(case_id: str, body: PaymentClaimedReq, user: di
 <p style="color:#64748B;font-size:13px;">Payment method: {method_label}</p>
 """
         html = _email_shell(biz, primary, accent, inner)
-        await send_email_notification(
+        await _client_auto_email_off(
             case.get("client_email"),
             "Payment Submitted – Pending Verification",
             html,
@@ -5973,7 +6068,7 @@ async def admin_verify_payment(case_id: str, body: PaymentVerifyReq, admin: dict
 {_cta(link, "Open your portal", accent)}
 """
         html = _email_shell(biz, primary, accent, inner)
-        await send_email_notification(
+        await _client_auto_email_off(
             case.get("client_email"),
             f"Payment verified — {biz}",
             html,
@@ -6182,7 +6277,7 @@ async def square_webhook(request: Request):
 {_cta(link, "Open your final trust", accent)}
 """
                 html = _email_shell(biz, primary, accent, inner)
-                await send_email_notification(
+                await _client_auto_email_off(
                     fresh.get("client_email"),
                     f"Your final trust is ready — {biz}", html,
                 )
@@ -6805,6 +6900,13 @@ async def startup():
         asyncio.create_task(_monthly_summary_scheduler())
     except Exception as e:
         logger.error(f"Monthly summary scheduler failed to start: {e}")
+    try:
+        r = await db.trust_cases.update_many({"client_status": {"$exists": False}}, [{"$set": {"client_status": "$status"}}])
+        if r.modified_count:
+            logger.info(f"client_status backfilled on {r.modified_count} cases")
+        asyncio.create_task(_release_scheduler())
+    except Exception as e:
+        logger.error(f"Release scheduler failed to start: {e}")
 
     # --- Stripe catalog (idempotent) ---
     try:

@@ -37,7 +37,9 @@ GENERIC_METHODS = {
     "cash": ["Deposit into the trust bank account"],
     "other": ["Signed assignment form", "Account retitled in the trust name"],
 }
-RETIREMENT_RE = re.compile(r"\b(ira|roth|401\s*\(?k\)?|403\s*\(?b\)?|457|pension|retirement|sep\s*ira|simple\s*ira|tsp)\b", re.I)
+RETIREMENT_RE = re.compile(
+    r"\b(ira|401\s*\(?k\)?|403\s*\(?b\)?|457\s*\(?b\)?\s*(plan|account)?|roth\s+(ira|401|account)|sep\s+ira|simple\s+ira|"
+    r"pension(\s+(plan|account))?|retirement\s+(account|plan|savings|fund)|tsp\s+account|thrift\s+savings)\b", re.I)
 
 
 def now_iso():

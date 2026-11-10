@@ -37,7 +37,7 @@ export default function Layout({ children }) {
           </Link>
 
           {user && user !== false && (
-            <nav className="hidden md:flex items-center gap-6 text-sm">
+            <nav className="flex items-center gap-4 md:gap-6 text-sm overflow-x-auto whitespace-nowrap max-w-[62vw] md:max-w-none py-2 md:py-0" data-testid="main-nav">
               {user.role === "admin" ? (
                 <>
                   <Link to="/admin" className="text-navy hover:text-bronze transition-colors" data-testid="nav-admin-cases">Cases</Link>
