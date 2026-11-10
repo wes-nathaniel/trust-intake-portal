@@ -573,7 +573,7 @@ export default function AdminCaseDetail() {
         <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
           <span className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Update status</span>
           <select value={c.status} onChange={(e) => setStatus(e.target.value)}
-            className="bg-white border border-input rounded-md px-3 py-2 text-sm" data-testid="admin-status-select">
+            className="bg-white border border-input rounded-md px-3 py-2 text-base min-h-[44px]" data-testid="admin-status-select">
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           <span className="text-xs text-[#64748B]" data-testid="admin-status-internal-note">Internal only. The client does not see this or get an email until you press Release.</span>

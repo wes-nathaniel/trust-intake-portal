@@ -958,7 +958,9 @@ RELEASE_STATUS_COPY = {
 
 def _client_view(case: dict) -> dict:
     """What a client may see: released status only, and no held draft."""
-    case = _hide_unreleased_draft(case)
+    case = {k: v for k, v in _hide_unreleased_draft(case).items() if k not in ("scheduled_release", "release_history")}
+    if case.get("asset_items"):
+        case["asset_items"] = [{k: v for k, v in i.items() if k != "pending_admin"} for i in case["asset_items"]]
     return {**case, "status": case.get("client_status") or "Intake Started"}
 
 
@@ -5379,7 +5381,7 @@ async def admin_send_for_signing(
             case_id=case_id[:8].upper(),
             link=f"{FRONTEND_URL}/portal",
         )
-        await send_email_notification(
+        await _client_auto_email_off(
             case.get("client_email"),
             f"Your trust is ready — {biz}",
             html,

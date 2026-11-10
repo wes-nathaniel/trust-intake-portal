@@ -1,0 +1,48 @@
+{
+  "summary": "Tested the 'Release to client for review' feature on the backend (pytest, 17/17 core tests pass, plus 2 new leak tests that fail) and the frontend (Playwright at 390x844 and 1920x1080). What works: internal status vs client_status are kept apart on GET case, /mine and /status. Admin status changes email only the admin, never the client. The preview endpoint returns all fields, and the default email has no em/en dashes. Silent release, Release now and schedule all work. A scheduled release fired with the snapshot status: scheduled Ready for Payment, internal changed to Completed, client got Ready for Payment, history mode=scheduled. Past or bad times return 400. The changed_since_scheduled list, update and cancel work. The held draft and explainer are hidden until release. The review ack uses the released status. The 3 old endpoints return 404. The old buttons are gone. UI: the release bar, dialog, all 3 modes, schedule date/time, editable subject/message, empty-day and empty-subject toasts, scheduled notice, changed warning, Update and Cancel all work on mobile and desktop. Found 2 backend data leaks to the client, 1 automatic client email that is still on, and a 4px horizontal overflow on mobile.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/trust-cases/{id} and /api/trust-cases/mine (client)", "issue": "_client_view does not remove `scheduled_release`. The client JSON shows snapshot.status (the INTERNAL status, e.g. 'Drafting Trust'), the future email subject and message, created_by (admin email) and the release time. `release_history` (admin emails, subjects) is also returned to the client. This breaks the rule that the client sees only the released status. Repro: tests/test_iteration33_release_to_client.py::TestClientLeak::test_no_scheduled_or_history_leak", "priority": "HIGH"},
+      {"endpoint": "GET /api/trust-cases/{id} (client)", "issue": "asset_items[].pending_admin (held admin asset edits) appears in the client case JSON before release. /asset-items correctly shows the old value, but the raw case doc leaks the held edit. Repro: TestClientLeak::test_no_pending_admin_leak. Fix: in _client_view, strip pending_admin from each asset item and drop scheduled_release and release_history.", "priority": "HIGH"},
+      {"endpoint": "POST /api/admin/trust-cases/{id}/send-for-signing", "issue": "Still sends an automatic client email 'Your trust is ready' (status Ready for Payment) via send_email_notification (server.py ~line 5382). This breaks the owner rule that only the Release button emails clients. It should use _client_auto_email_off or be removed.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/trust-cases (client creates case)", "issue": "A welcome email still goes to the client automatically (server.py ~2677). It is triggered by the client's own signup, so it may be intended. Owner should confirm."},
+      {"endpoint": "POST /admin/trust-cases/{id}/send-review-reminder, admin case message to client (~3366), admin reply to client question (~3537)", "issue": "These are manual admin actions that still email the client directly, outside the Release button. Probably intended. Confirm with the owner."},
+      {"endpoint": "POST /release mode=schedule", "issue": "release_at is parsed with replace(tzinfo=NY). Times that do not exist or happen twice on DST change days are not handled. Edge case only."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ReleaseBar (mobile 390px)", "issue": "The bar uses -mx-4 (16px) but the page gutter is 12px. The bar spans x=-4 to 394, so document.scrollWidth is 394 at 390px and the page scrolls sideways. Use -mx-3, or match the container padding.", "selector": "[data-testid='release-bar']", "priority": "MEDIUM"},
+      {"component": "Admin status dropdown", "issue": "admin-status-select is 38px tall, below the 44px tap target. Use min-h-[44px].", "selector": "[data-testid='admin-status-select']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin case page mobile, with a scheduled release and changed warning", "issues": ["The sticky bar grows to about 380px of the 844px viewport (notice, warning, 2 buttons, status and the main button) and covers a lot of content. Consider making the notice collapsible.", "Update scheduled release (btn-accent) has white text on a light bronze background, which is low contrast.", "Schedule mode has no option to schedule without an email in the UI. The API supports send_email:false, but the dialog always schedules with email."]},
+      {"screen": "Release dialog", "issues": ["Uses the browser's native date/time inputs, not the shadcn Calendar. This is OK on phones, but it is not consistent with the rest of the app."]},
+      {"screen": "Admin header mobile (from before this work)", "issues": ["Nav links (nav-admin-*), logout and the change-email, temp-password and view-as links are 16-36px tall, below 44px."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_iteration33_release_to_client.py", "/app/backend/tests/manual_iter33_scheduled_fire.py", "/app/test_reports/pytest/pytest_iter33.xml"],
+  "action_items": [
+    "In _client_view, strip scheduled_release, release_history and asset_items[].pending_admin (and any other admin-only fields) from client responses",
+    "send-for-signing: stop the automatic 'Your trust is ready' client email (route it to _client_auto_email_off)",
+    "ReleaseBar: fix the 4px horizontal overflow at 390px (-mx-4 vs 12px page gutter)",
+    "admin-status-select: min-h 44px",
+    "Optional: add an email on/off choice to schedule mode, and fix the contrast of the Update scheduled release button"
+  ],
+  "critical_code_review_comments": [
+    "_client_view only replaces status and hides the draft. It has no allow-list, so any new admin-only field on trust_cases leaks to clients. Use an explicit deny/allow list.",
+    "_apply_release reads the case and then writes it with $set asset_items (whole array). A client asset edit made at the same moment can be overwritten (race). Consider per-item positional updates.",
+    "admin_update_scheduled_release only regenerates the message if it equals the old default. This is fine, but the subject is never regenerated.",
+    "server.py is 7000+ lines. The release logic should move to its own module."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration33_release_to_client.py", "/app/backend/tests/manual_iter33_scheduled_fire.py"],
+  "success_rate": {"backend": "89% (17/19, 2 leak tests fail)", "frontend": "95% (all flows work, only overflow and tap-target issues)"},
+  "seed_data_creation": "Created about 6 TEST client accounts and cases with test_release_*@example.com emails via register plus POST /trust-cases. Deleted the scheduled-fire case 67a00afd by id. The others remain because their ids were not tracked. Changed the status of the provided test case ed21262e (Rita Release) and released it several times; it is now internal and client Ready for Client Review, with no schedule.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: REACT_APP_BACKEND_URL=... pytest tests/test_iteration33_release_to_client.py -p no:randomly. TestClientLeak should pass after the fix. The scheduled-fire check (manual_iter33_scheduled_fire.py) takes about 4 minutes; run it with python -u in the background. Resend rejects @example.com, so emailed=false is expected. Admin status changes log no 'suppressed' line because _notify_status_change simply has no client branch.",
+  "rca of the issue": "Leaks: _client_view (server.py ~959) returns {**case, status: client_status} after _hide_unreleased_draft. That only removes trust_draft, trust_page_explanations and trust_page_job, so scheduled_release (whose snapshot holds the internal status), release_history and asset_items.pending_admin all go to the client. Email: send-for-signing still calls send_email_notification to client_email directly. It was missed in the _client_auto_email_off sweep."
+}

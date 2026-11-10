@@ -46,13 +46,15 @@ export default function ReleaseDialog({ open, onOpenChange, caseId, preview, onD
   const [day, setDay] = useState("");
   const [time, setTime] = useState("09:00");
   const [busy, setBusy] = useState(false);
+  const [schedEmail, setSchedEmail] = useState(true);
+  const withEmail = mode === "now" || (mode === "schedule" && schedEmail);
 
   const submit = async () => {
     if (mode === "schedule" && !day) { toast.error("Pick a day for the release."); return; }
     setBusy(true);
     try {
       const { data } = await api.post(`/admin/trust-cases/${caseId}/release`, {
-        mode, subject, message, release_at: mode === "schedule" ? `${day}T${time}` : "",
+        mode, subject, message, send_email: withEmail, release_at: mode === "schedule" ? `${day}T${time}` : "",
       });
       if (mode === "schedule") toast.success(`Scheduled for ${data.scheduled.release_at_local}.`);
       else if (mode === "silent") toast.success("Released. No email was sent.");
@@ -88,9 +90,14 @@ export default function ReleaseDialog({ open, onOpenChange, caseId, preview, onD
                 <input type="time" value={time} onChange={(e) => setTime(e.target.value)}
                   className="mt-1 w-full min-h-[44px] border border-input rounded-md px-3 text-base" data-testid="release-schedule-time" />
               </label>
+              <label className="sm:col-span-2 min-h-[44px] flex items-center gap-3 text-sm text-navy cursor-pointer">
+                <input type="checkbox" checked={schedEmail} onChange={(e) => setSchedEmail(e.target.checked)}
+                  className="h-5 w-5 accent-[#1C252E]" data-testid="release-schedule-send-email" />
+                Send the email when it releases
+              </label>
             </div>
           )}
-          {mode !== "silent" && <EmailEditor to={preview.client_email} subject={subject} setSubject={setSubject} message={message} setMessage={setMessage} />}
+          {withEmail && <EmailEditor to={preview.client_email} subject={subject} setSubject={setSubject} message={message} setMessage={setMessage} />}
           <div className="flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
             <button type="button" onClick={() => onOpenChange(false)} className="btn-secondary min-h-[44px]" data-testid="release-cancel-btn">Cancel</button>
             <button type="button" onClick={submit} disabled={busy} className="btn-primary min-h-[44px] disabled:opacity-50" data-testid="release-confirm-btn">
