@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { Send, CalendarClock, AlertTriangle, ChevronDown } from "lucide-react";
+import { Send, CalendarClock, AlertTriangle, ChevronDown, History, XCircle, Mail, MailX } from "lucide-react";
 import ReleaseDialog from "@/components/ReleaseDialog";
 
 function ScheduledNotice({ s, changes, onCancel, onUpdate }) {
@@ -34,6 +34,55 @@ function ScheduledNotice({ s, changes, onCancel, onUpdate }) {
   );
 }
 
+const MODE_LABELS = { now: "Released now", schedule: "Scheduled release", silent: "Released (no email)" };
+
+function ReleaseLog({ history }) {
+  const [open, setOpen] = useState(false);
+  if (!history || history.length === 0) return null;
+  return (
+    <div className="mb-2 border-t border-[#E2E0DA] pt-2" data-testid="release-log">
+      <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
+        className="w-full min-h-[44px] flex items-center gap-1.5 text-left text-sm text-[#64748B]" data-testid="release-log-toggle">
+        <History className="h-4 w-4 shrink-0" />
+        <span className="flex-1 font-semibold">Release log ({history.length})</span>
+        <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <ul className="mt-1 space-y-1.5" data-testid="release-log-list">
+          {history.map((e, i) => {
+            const sent = e.emailed;
+            const requested = e.email_requested;
+            return (
+              <li key={e.id || i} className="flex flex-col gap-0.5 text-xs rounded-md bg-[#F6F4F0] px-3 py-2" data-testid={`release-log-entry-${i}`}>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {sent
+                    ? <Mail className="h-3.5 w-3.5 text-green-600 shrink-0" />
+                    : requested
+                      ? <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0" title="Email failed to send" />
+                      : <MailX className="h-3.5 w-3.5 text-[#94A3B8] shrink-0" />}
+                  <span className="font-semibold text-navy">{MODE_LABELS[e.mode] || e.mode}</span>
+                  <span className="text-[#94A3B8]">·</span>
+                  <span className="text-[#64748B]">Status: <b className="text-navy">{e.status}</b></span>
+                  {e.draft_released && <span className="ml-1 text-green-700">· draft released</span>}
+                  {e.assets_released > 0 && <span className="ml-1 text-green-700">· {e.assets_released} asset(s) released</span>}
+                </div>
+                <div className="flex items-center gap-1.5 text-[#94A3B8] flex-wrap">
+                  <span>{new Date(e.at).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                  <span>·</span>
+                  <span>by {e.by}</span>
+                  {sent && e.subject && <><span>·</span><span className="italic truncate max-w-[180px]" title={e.subject}>"{e.subject}"</span></>}
+                  {requested && !sent && <><span>·</span><span className="text-red-500 font-semibold">Email failed</span></>}
+                  {!requested && e.mode !== "silent" && <><span>·</span><span>No email</span></>}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // Sticky bar: the ONLY way a client sees new status/drafts or gets a status email.
 export default function ReleaseBar({ caseId, reloadKey, onReleased }) {
   const [p, setP] = useState(null);
@@ -53,6 +102,7 @@ export default function ReleaseBar({ caseId, reloadKey, onReleased }) {
   const s = p.scheduled_release;
   return (
     <div className="sticky bottom-0 z-30 -mx-3 sm:mx-0 mt-6 bg-white/95 backdrop-blur-xl border-t sm:border border-[#E2E0DA] sm:rounded-xl shadow-[0_-6px_20px_rgba(28,37,46,0.08)] px-4 py-3" data-testid="release-bar">
+      <ReleaseLog history={p.history} />
       {s && <ScheduledNotice s={s} changes={p.changed_since_scheduled}
         onCancel={() => act(() => api.delete(`/admin/trust-cases/${caseId}/release/scheduled`), "Scheduled release cancelled.")}
         onUpdate={() => act(() => api.post(`/admin/trust-cases/${caseId}/release/scheduled/update`), "Scheduled release now uses the latest version.")} />}
