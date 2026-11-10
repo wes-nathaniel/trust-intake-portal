@@ -40,7 +40,18 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
 
-## Changelog — 2026-11-10 (Session 2: Stripe custom key, retirement filter, post-completion assets)
+## Changelog — 2026-11-10 Session 3: MCP OAuth + Status Report
+
+### MCP OAuth 2.1 (fully live)
+- mcp_oauth.py: OAuth 2.1 AS with PKCE S256, branded authorize page (login + authorize flow), token endpoint, revoke all
+- GET /api/mcp/.well-known/oauth-protected-resource (RFC 9728)
+- GET /api/mcp/oauth/.well-known/oauth-authorization-server (RFC 8414)
+- POST /api/mcp (keyless, Bearer token, 401+WWW-Authenticate when no token)
+- GET/DELETE /admin/mcp/oauth-tokens (list/revoke individual or all)
+- AdminMcpPage.jsx: OAuth section at top (recommended), legacy key below; active token list with per-token revoke + "Revoke all"
+- iteration_37.json: 100% pass (16/16)
+
+
 
 ### Stripe — Echo Holding Ventures Inc. (acct_1Tyy0A2NJSIllpjQ)
 - ✅ stripe_service.py: CUSTOM_STRIPE_SECRET_KEY / CUSTOM_STRIPE_PUBLISHABLE_KEY always take precedence over platform-managed STRIPE_* keys — prevents platform overwrites on restart

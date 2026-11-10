@@ -6467,6 +6467,7 @@ from routes.commissions_router import (
 )
 # Re-exported for tests: force-flip a Stripe session to paid + fire Stage-3 & 4 alerts.
 from routes.stripe_router import _stripe_apply_paid  # noqa: F401
+import mcp_oauth
 
 # Give the NEO routers access to server-level singletons.
 neo_state.configure(
@@ -6496,6 +6497,7 @@ neo_nia.build_routes()
 api_router.include_router(neo_commissions.router)
 api_router.include_router(neo_stripe.router)
 api_router.include_router(neo_nia.router)
+api_router.include_router(mcp_oauth.router)
 
 
 whatsapp_commands.configure(
@@ -6518,7 +6520,8 @@ import mcp_server as _mcp
 
 @api_router.post("/mcp/{key}")
 async def mcp_endpoint(key: str, request: Request):
-    """MCP HTTP transport endpoint. Accepts JSON-RPC 2.0 from Claude."""
+    """MCP HTTP transport endpoint. Accepts JSON-RPC 2.0 from Claude.
+    Authentication: URL key (legacy) — use POST /api/mcp with Bearer token for OAuth."""
     # Validate key
     key_doc = await db.mcp_keys.find_one({"key": key, "revoked": False}, {"_id": 0})
     if not key_doc:
@@ -6545,6 +6548,52 @@ async def mcp_endpoint(key: str, request: Request):
     # Notifications have no id — return 204
     if body.get("id") is None and body.get("method", "").startswith("notifications/"):
         from fastapi.responses import Response
+        return Response(status_code=204)
+    return result
+
+
+@api_router.post("/mcp")
+async def mcp_endpoint_oauth(request: Request):
+    """Keyless MCP endpoint — authentication via OAuth Bearer token (Authorization header).
+    Returns 401 with WWW-Authenticate pointing to resource metadata when no token is provided."""
+    from fastapi.responses import JSONResponse, Response
+    base = mcp_oauth._base_url(request)
+    resource_meta_url = f"{base}/api/mcp/.well-known/oauth-protected-resource"
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "Unauthorized — Bearer token required"}},
+            status_code=401,
+            headers={"WWW-Authenticate": f'Bearer resource_metadata="{resource_meta_url}"'},
+        )
+
+    token_str = auth_header[len("Bearer "):]
+    admin = await mcp_oauth.validate_bearer_token(token_str, db)
+    if not admin:
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "Invalid or expired token"}},
+            status_code=401,
+            headers={"WWW-Authenticate": f'Bearer resource_metadata="{resource_meta_url}", error="invalid_token"'},
+        )
+
+    # Log OAuth access
+    await db.mcp_audit.insert_one({
+        "key_id": f"oauth:{admin.get('email', '')}",
+        "at": now_iso(),
+        "ip": request.client.host if request.client else "unknown",
+        "auth_method": "oauth",
+    })
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}, status_code=400)
+
+    if isinstance(body, list):
+        return [await _mcp.handle_request(b, db, f"oauth:{admin.get('id', '')}") for b in body]
+    result = await _mcp.handle_request(body, db, f"oauth:{admin.get('id', '')}")
+    if body.get("id") is None and body.get("method", "").startswith("notifications/"):
         return Response(status_code=204)
     return result
 
