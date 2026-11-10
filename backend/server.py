@@ -716,6 +716,16 @@ STATUSES = [
     "Completed",
 ]
 
+# Any status at or after "Ready for Client Review" means the trust draft has been prepared.
+# Assets added at or after this point are flagged post_completion → Part II, Planned, admin-reviewed.
+POST_COMPLETION_STATUSES = {
+    "Ready for Client Review",
+    "Ready for Payment",
+    "Pending Payment Verification",
+    "Payment Verified",
+    "Completed",
+}
+
 # Ordered phase mapping for auto-advance logic during intake.
 _INTAKE_PHASE_ORDER = ["Intake Started", "Intake In Progress", "Waiting on Documents", "In Review"]
 
@@ -1126,10 +1136,10 @@ async def _clean_asset_item(body: AssetItemIn, case: dict, existing: Optional[di
     d.update({"description": desc, "status": status, "source": d.get("source") if d.get("source") in ("form", "ai") else "form"})
     if existing is None:
         signed = bool(case.get("_trust_unlocked") or case.get("trust_unlocked")) or \
-                 (case.get("_internal_status") or case.get("status")) == "Completed"
+                 (case.get("_internal_status") or case.get("status")) in POST_COMPLETION_STATUSES
         d.update({"id": new_id(), "created_at": now_iso(), "part": "II" if signed else "I"})
     d["updated_at"] = now_iso()
-    # Flag items added AFTER the trust was signed so admin can review before including in Schedule A.
+    # Flag items added AFTER the draft trust is ready so admin can review before including in Schedule A.
     if existing is None and signed:
         d["post_completion"] = True
     return d
@@ -1148,19 +1158,20 @@ async def _get_alert_email() -> str:
 
 
 async def _alert_admin_asset_change(case: dict, action: str, description: str):
-    """Send admin alert email when a client adds or changes an asset on a completed case."""
+    """Send admin alert email when a client adds, edits, or removes an asset — any case, any status."""
     client_name = case.get("client_name") or case.get("client_email") or "A client"
     case_id = case.get("id", "")
     case_link = f"{FRONTEND_URL.rstrip('/')}/admin/cases/{case_id}"
     alert_email = await _get_alert_email()
     subject = f"IGC: {client_name} {action} an asset"
     body_html = (
-        f"<p>{client_name} <strong>{action}</strong> an asset on their completed trust:</p>"
+        f"<p>{client_name} <strong>{action}</strong> an asset on their trust case:</p>"
         f"<p style='margin:12px 0;padding:12px;background:#f6f4f0;border-left:3px solid #b89e6d;"
         f"font-family:monospace;'>{description}</p>"
         f"<p><a href='{case_link}' style='display:inline-block;background:#1C252E;color:#ffffff;"
         f"padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;'>Review case</a></p>"
     )
+    await send_email_notification(alert_email, subject, body_html)
     await send_email_notification(alert_email, subject, body_html)
 
 
@@ -1194,8 +1205,8 @@ async def add_asset_item(case_id: str, body: AssetItemIn, user: dict = Depends(g
     case = await get_case(case_id, user)
     item = await _clean_asset_item(body, case)
     await db.trust_cases.update_one({"id": case_id}, {"$push": {"asset_items": item}, "$set": {"updated_at": now_iso()}})
-    # Alert admin when a client adds an item to a completed/signed trust
-    if user.get("role") != "admin" and (case.get("_trust_unlocked") or case.get("trust_unlocked") or (case.get("_internal_status") or case.get("status")) == "Completed"):
+    # Alert admin whenever a client adds an asset — any status
+    if user.get("role") != "admin":
         await _alert_admin_asset_change(case, "added", item.get("description", ""))
     return asset_items.effective(item, False)
 
@@ -1214,16 +1225,19 @@ async def update_asset_item(case_id: str, item_id: str, body: AssetItemIn, user:
     else:
         new.update({k: old[k] for k in ("id", "created_at", "part", "pending_admin", "post_completion") if k in old})
         await db.trust_cases.update_one({"id": case_id, "asset_items.id": item_id}, {"$set": {"asset_items.$": new}})
-        # Alert admin when a client edits an item on a completed/signed trust
-        if case.get("_trust_unlocked") or case.get("trust_unlocked") or (case.get("_internal_status") or case.get("status")) == "Completed":
-            await _alert_admin_asset_change(case, "updated", new.get("description", ""))
+        # Alert admin whenever a client edits an asset — any status
+        await _alert_admin_asset_change(case, "updated", new.get("description", ""))
     return {"ok": True}
 
 
 @api_router.delete("/trust-cases/{case_id}/asset-items/{item_id}")
 async def delete_asset_item(case_id: str, item_id: str, user: dict = Depends(get_current_user)):
-    await get_case(case_id, user)
+    case = await get_case(case_id, user)
+    old = next((i for i in (case.get("asset_items") or []) if i.get("id") == item_id), None)
     await db.trust_cases.update_one({"id": case_id}, {"$pull": {"asset_items": {"id": item_id}}})
+    # Alert admin whenever a client removes an asset — any status
+    if user.get("role") != "admin" and old:
+        await _alert_admin_asset_change(case, "removed", old.get("description", ""))
     return {"ok": True}
 
 
@@ -1273,8 +1287,8 @@ async def confirm_organized_items(case_id: str, body: ConfirmOrganizedReq, user:
     await db.trust_cases.update_one({"id": case_id}, {
         "$push": {"asset_items": {"$each": saved}, "asset_raw_texts": {"text": body.text, "at": now_iso()}},
         "$set": {"updated_at": now_iso()}})
-    # Alert admin when client bulk-confirms items on a completed/signed trust
-    if user.get("role") != "admin" and (case.get("_trust_unlocked") or case.get("trust_unlocked") or (case.get("_internal_status") or case.get("status")) == "Completed"):
+    # Alert admin whenever a client bulk-adds assets — any status
+    if user.get("role") != "admin":
         await _alert_admin_asset_change(case, f"added {len(saved)}", f"{len(saved)} asset(s) via AI organizer")
     return {"ok": True, "saved": len(saved)}
 

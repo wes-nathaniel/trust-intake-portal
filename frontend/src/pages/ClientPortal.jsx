@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
 import NiaChat from "@/components/NiaChat";
 import api, { formatApiError } from "@/lib/api";
-import { ArrowRight, ShieldCheck, Download, FilePen, AlertTriangle, Plus, KeyRound } from "lucide-react";
+import { ArrowRight, ShieldCheck, Download, FilePen, AlertTriangle, Plus, KeyRound, Package } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import StatusTracker from "@/components/StatusTracker";
 import TourCard from "@/components/TourCard";
@@ -130,7 +130,9 @@ export default function ClientPortal() {
                     <span className="hidden sm:inline">·</span>
                     <span>{c.beneficiaries?.length || 0} beneficiary(ies)</span>
                     <span className="hidden sm:inline">·</span>
-                    <span>{c.assets?.length || 0} asset(s)</span>
+                    <Link to={`/intake/${c.id}?step=assets`} className="text-bronze underline underline-offset-2 hover:text-navy" data-testid={`asset-count-link-${c.id}`}>
+                      {c.assets?.length || 0} asset(s)
+                    </Link>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:flex lg:items-center gap-2 lg:flex-nowrap">
@@ -158,9 +160,19 @@ export default function ClientPortal() {
                     data-testid={`download-pdf-${c.id}`}>
                     <Download className="h-4 w-4 inline mr-1" /> PDF
                   </button>
-                  <Link to={`/intake/${c.id}?step=assets`} className="btn-accent text-sm w-full lg:w-auto sm:col-span-2 lg:col-span-1" data-testid={`continue-case-${c.id}`}>
-                    {c.status === "Completed" ? "Add / View Assets" : "Continue Intake"}
+                  {/* Add / View Assets — always visible on every case at every status */}
+                  <Link
+                    to={`/intake/${c.id}?step=assets`}
+                    className="btn-accent text-sm w-full lg:w-auto sm:col-span-2 lg:col-span-1 inline-flex items-center justify-center gap-1"
+                    data-testid={`add-view-assets-${c.id}`}>
+                    <Package className="h-4 w-4" /> Add / View Assets
                   </Link>
+                  {/* Continue Intake — only for early-stage cases still filling out the form */}
+                  {(c.status === "Intake Started" || c.status === "Intake In Progress") && (
+                    <Link to={`/intake/${c.id}`} className="btn-secondary text-sm w-full lg:w-auto" data-testid={`continue-case-${c.id}`}>
+                      Continue Intake
+                    </Link>
+                  )}
                 </div>
               </div>
 
