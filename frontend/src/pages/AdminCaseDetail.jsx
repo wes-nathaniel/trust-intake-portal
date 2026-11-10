@@ -15,6 +15,7 @@ import SSNReveal from "@/components/SSNReveal";
 import TempPasswordDialog from "@/components/TempPasswordDialog";
 import PasswordHistory from "@/components/PasswordHistory";
 import AdminCaseFieldsEditor from "@/components/AdminCaseFieldsEditor";
+import AdminAssetsPanel from "@/components/AdminAssetsPanel";
 import ExplainerHealthBadge from "@/components/ExplainerHealthBadge";
 import { startViewAsClient } from "@/components/ViewAsBanner";
 import { useAuth } from "@/context/AuthContext";
@@ -225,7 +226,10 @@ export default function AdminCaseDetail() {
   };
 
   const releaseDraft = async () => {
-    if (!window.confirm(`Make this trust draft and its explainer visible to ${c.client_name || c.client_email}, set the status to "Ready for Client Review", and email them that their trust is ready?`)) return;
+    if (!window.confirm(
+      `Release to client for review?\n\nThis will:\n• Show the trust draft and its AI explainer to ${c.client_name || c.client_email}\n` +
+      `• Show any asset edits you made\n• Set the status to "Ready for Client Review"\n` +
+      `• Email ${c.client_email} that their trust is ready for review\n\nContinue?`)) return;
     setReleasing(true);
     try {
       const { data } = await api.post(`/admin/trust-cases/${caseId}/release-trust-draft`);
@@ -570,6 +574,7 @@ export default function AdminCaseDetail() {
       </div>
 
       <AdminCaseFieldsEditor key={c.updated_at} c={c} onSaved={load} />
+      <AdminAssetsPanel caseId={caseId} />
 
       {c.pending_invite && (
         <div className="mb-6 bg-amber-50 border border-amber-300 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 justify-between" data-testid="pending-invite-banner">
@@ -907,7 +912,7 @@ export default function AdminCaseDetail() {
                 </span>
                 {c.trust_draft.released === false && (
                   <button onClick={releaseDraft} disabled={releasing} className="btn-primary text-sm disabled:opacity-50" data-testid="ready-for-client-review-btn">
-                    {releasing ? "Releasing…" : "Ready for client review"}
+                    {releasing ? "Releasing…" : "Release to client for review"}
                   </button>
                 )}
               </div>

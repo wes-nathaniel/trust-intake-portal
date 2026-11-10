@@ -3,7 +3,7 @@ const ASSET_DOC_TYPES = new Set(["bank_statement", "deed", "title", "insurance_p
 
 export const STEP_LABELS = {
   grantors: "Grantors", trustee: "Trustee", successor: "Successor Trustees", beneficiaries: "Beneficiaries",
-  assets: "Assets", ein: "EIN Workflow", documents: "Documents",
+  assets: "What You Own", ein: "EIN Workflow", documents: "Documents",
 };
 
 export function isStepComplete(key, trustCase) {
@@ -16,7 +16,8 @@ export function isStepComplete(key, trustCase) {
     case "successor": return (trustCase.successor_trustees?.length || 0) >= 1;
     case "beneficiaries": return (trustCase.beneficiaries?.length || 0) >= 1;
     case "assets":
-      return (trustCase.assets?.length || 0) >= 1 || docs.some((d) => ASSET_DOC_TYPES.has(d.doc_type))
+      return (trustCase.assets?.length || 0) >= 1 || (trustCase.asset_items?.length || 0) >= 1
+        || docs.some((d) => ASSET_DOC_TYPES.has(d.doc_type))
         || !!trustCase.acknowledgments?.no_assets_ack;
     case "ein": return trustCase.ein?.authorized === true;
     case "documents": {

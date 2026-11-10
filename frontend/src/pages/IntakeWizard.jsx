@@ -11,7 +11,7 @@ import GrantorStep from "@/pages/intake/GrantorStep";
 import TrusteeStep from "@/pages/intake/TrusteeStep";
 import SuccessorStep from "@/pages/intake/SuccessorStep";
 import BeneficiaryStep from "@/pages/intake/BeneficiaryStep";
-import AssetStep from "@/pages/intake/AssetStep";
+import OwnStep from "@/pages/intake/OwnStep";
 import EINStep from "@/pages/intake/EINStep";
 import DocumentsStep from "@/pages/intake/DocumentsStep";
 import ReviewStep from "@/pages/intake/ReviewStep";
@@ -19,10 +19,10 @@ import { isStepComplete } from "@/lib/intakeProgress";
 
 const STEP_DEFS = [
   { key: "grantors", label: "Grantors", Component: GrantorStep },
+  { key: "assets", label: "What You Own", Component: OwnStep },
   { key: "trustee", label: "Trustee", Component: TrusteeStep },
   { key: "successor", label: "Successor Trustees", Component: SuccessorStep },
   { key: "beneficiaries", label: "Beneficiaries", Component: BeneficiaryStep },
-  { key: "assets", label: "Assets", Component: AssetStep },
   { key: "ein", label: "EIN Workflow", Component: EINStep },
   { key: "documents", label: "Documents", Component: DocumentsStep },
   { key: "review", label: "Review", Component: ReviewStep },

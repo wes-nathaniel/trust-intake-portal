@@ -44,6 +44,7 @@ export default function Layout({ children }) {
                   <Link to="/admin/questions" className="text-navy hover:text-bronze transition-colors" data-testid="nav-admin-questions">Questions</Link>
                   <Link to="/admin/whatsapp-inbox" className="text-navy hover:text-bronze transition-colors" data-testid="nav-admin-whatsapp-inbox">WhatsApp</Link>
                   <Link to="/admin/reps" className="text-navy hover:text-bronze transition-colors" data-testid="nav-admin-reps">Reps</Link>
+                  <Link to="/admin/transfer-methods" className="text-navy hover:text-bronze transition-colors" data-testid="nav-admin-methods">Methods</Link>
                   <Link to="/admin/commissions" className="text-navy hover:text-bronze transition-colors" data-testid="nav-admin-commissions">Commissions</Link>
                   <Link to="/admin/branding" className="text-navy hover:text-bronze transition-colors" data-testid="nav-admin-branding">Branding</Link>
                 </>

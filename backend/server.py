@@ -34,6 +34,7 @@ import notify
 import client_messaging
 import whatsapp_alerts
 import whatsapp_utils
+import asset_items
 import whatsapp_commands
 import extract_jobs
 import page_explanation_jobs
@@ -811,7 +812,7 @@ def _intake_missing_steps(case: dict) -> list:
             ("Trustee", len(case.get("trustees") or []) >= 1),
             ("Successor Trustees", len(case.get("successor_trustees") or []) >= 1),
             ("Beneficiaries", len(case.get("beneficiaries") or []) >= 1),
-            ("Assets", bool(case.get("assets")) or any(d.get("doc_type") in _ASSET_DOC_TYPES for d in docs)
+            ("Assets", bool(case.get("assets")) or bool(case.get("asset_items")) or any(d.get("doc_type") in _ASSET_DOC_TYPES for d in docs)
              or bool((case.get("acknowledgments") or {}).get("no_assets_ack"))),
             ("EIN Workflow", (case.get("ein") or {}).get("authorized") is True),
         ]
@@ -993,7 +994,228 @@ async def admin_release_trust_draft(case_id: str, admin: dict = Depends(require_
         emailed = True
     else:
         emailed = await _send_client_status_email(case)
+    await _release_asset_edits(case_id)
     return {"ok": True, "status": new_status, "emailed": emailed}
+
+
+# ---------- "TELL US WHAT YOU OWN" ASSET ITEMS ----------
+class AssetItemIn(BaseModel):
+    description: str = Field(min_length=1, max_length=500)
+    kind: str
+    other_kind: Optional[str] = ""
+    other_text: Optional[str] = Field(default="", max_length=200)
+    state: Optional[str] = Field(default="", max_length=40)
+    in_trust: Optional[str] = ""
+    not_done: bool = True
+    date_delivered: Optional[str] = ""
+    method: Optional[str] = ""
+    method_other: Optional[str] = Field(default="", max_length=300)
+    attachment_doc_id: Optional[str] = ""
+    source: Optional[str] = "form"
+
+
+def _asset_error(msg: str):
+    raise HTTPException(status_code=400, detail=msg)
+
+
+async def _clean_asset_item(body: AssetItemIn, case: dict, existing: Optional[dict] = None) -> dict:
+    d = body.model_dump()
+    desc = d["description"].strip()
+    if asset_items.RETIREMENT_RE.search(desc):
+        _asset_error("Retirement accounts stay in your name. Please do not list them here. We will talk with you about them.")
+    if re.search(r"\d{9,}", desc.replace(" ", "").replace("-", "")):
+        _asset_error("Please do not type full account numbers or Social Security numbers. Use only the last 4 numbers.")
+    if d["kind"] not in asset_items.KINDS:
+        _asset_error("Please pick what kind of item this is.")
+    if d["kind"] == "other":
+        if d["other_kind"] not in asset_items.OTHER_KINDS:
+            _asset_error("Please tell us what it is.")
+        if d["other_kind"] == "Something Else" and not (d["other_text"] or "").strip():
+            _asset_error("Please type what it is in your own words.")
+    else:
+        d["other_kind"], d["other_text"] = "", ""
+    if d["kind"] in asset_items.STATE_KINDS:
+        d["state"] = (d["state"] or asset_items.client_state(case)).strip()
+        if not d["state"]:
+            _asset_error("Please pick what state it is in.")
+    else:
+        d["state"] = ""
+    if d["in_trust"] not in ("yes", "unsure", ""):
+        d["in_trust"] = ""
+    if d["method"] == asset_items.METHOD_OTHER and not (d["method_other"] or "").strip():
+        _asset_error("Please tell us what paper or form you used.")
+    if d["not_done"]:
+        d["date_delivered"] = ""
+        d["method"], d["method_other"] = "", ""
+    status = "planned"
+    if not d["not_done"]:
+        if not d["date_delivered"]:
+            _asset_error("Please pick the day you moved it into the trust.")
+        if not d["method"]:
+            _asset_error("Please pick the paper you signed or the form you filled out.")
+        if d["method"] != asset_items.METHOD_UNSURE:
+            status = "moved"
+    d["method_status"] = ""
+    if d["method"] and d["method"] not in (asset_items.METHOD_OTHER, asset_items.METHOD_UNSURE):
+        rows = await asset_items.methods_for(db, d["kind"], d["state"])
+        match = next((r for r in rows if r["wording"] == d["method"]), None)
+        d["method_status"] = match["status"] if match else "needs_check"
+    d.update({"description": desc, "status": status, "source": d.get("source") if d.get("source") in ("form", "ai") else "form"})
+    if existing is None:
+        signed = bool(case.get("trust_unlocked")) or case.get("status") == "Completed"
+        d.update({"id": new_id(), "created_at": now_iso(), "part": "II" if signed else "I"})
+    d["updated_at"] = now_iso()
+    return d
+
+
+async def _release_asset_edits(case_id: str):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "asset_items": 1})
+    items = (case or {}).get("asset_items") or []
+    if not any(i.get("pending_admin") for i in items):
+        return 0
+    merged = [({**{k: v for k, v in i.items() if k != "pending_admin"}, **i["pending_admin"]} if i.get("pending_admin") else i) for i in items]
+    await db.trust_cases.update_one({"id": case_id}, {"$set": {"asset_items": merged}})
+    return sum(1 for i in items if i.get("pending_admin"))
+
+
+@api_router.get("/transfer-methods")
+async def list_transfer_methods(kind: str, state: str = "", _: dict = Depends(get_current_user)):
+    rows = await asset_items.methods_for(db, kind, state)
+    return {"methods": [{"wording": r["wording"], "status": r["status"]} for r in rows]}
+
+
+@api_router.get("/trust-cases/{case_id}/asset-items")
+async def get_asset_items(case_id: str, user: dict = Depends(get_current_user)):
+    case = await get_case(case_id, user)
+    admin = user.get("role") == "admin"
+    items = [asset_items.effective(i, admin) for i in (case.get("asset_items") or [])]
+    return {"items": items, "client_state": asset_items.client_state(case),
+            "kinds": asset_items.KIND_LABELS, "other_kinds": asset_items.OTHER_KINDS}
+
+
+@api_router.post("/trust-cases/{case_id}/asset-items")
+async def add_asset_item(case_id: str, body: AssetItemIn, user: dict = Depends(get_current_user)):
+    case = await get_case(case_id, user)
+    item = await _clean_asset_item(body, case)
+    await db.trust_cases.update_one({"id": case_id}, {"$push": {"asset_items": item}, "$set": {"updated_at": now_iso()}})
+    return asset_items.effective(item, False)
+
+
+@api_router.put("/trust-cases/{case_id}/asset-items/{item_id}")
+async def update_asset_item(case_id: str, item_id: str, body: AssetItemIn, user: dict = Depends(get_current_user)):
+    case = await get_case(case_id, user)
+    old = next((i for i in (case.get("asset_items") or []) if i.get("id") == item_id), None)
+    if not old:
+        raise HTTPException(status_code=404, detail="Item not found")
+    new = await _clean_asset_item(body, case, existing=old)
+    if user.get("role") == "admin":
+        # Admin edits stay internal until "Release to client for review"
+        await db.trust_cases.update_one({"id": case_id, "asset_items.id": item_id},
+                                        {"$set": {"asset_items.$.pending_admin": {**new, "edited_by": user["email"]}}})
+    else:
+        new.update({k: old[k] for k in ("id", "created_at", "part") if k in old})
+        await db.trust_cases.update_one({"id": case_id, "asset_items.id": item_id}, {"$set": {"asset_items.$": new}})
+    return {"ok": True}
+
+
+@api_router.delete("/trust-cases/{case_id}/asset-items/{item_id}")
+async def delete_asset_item(case_id: str, item_id: str, user: dict = Depends(get_current_user)):
+    await get_case(case_id, user)
+    await db.trust_cases.update_one({"id": case_id}, {"$pull": {"asset_items": {"id": item_id}}})
+    return {"ok": True}
+
+
+class OrganizeReq(BaseModel):
+    text: str = Field(min_length=3, max_length=6000)
+
+
+@api_router.post("/trust-cases/{case_id}/asset-items/organize")
+async def organize_asset_text(case_id: str, body: OrganizeReq, user: dict = Depends(get_current_user)):
+    """AI splits free text into suggested items. NOTHING is saved here."""
+    await get_case(case_id, user)
+    try:
+        return await asset_items.organize(body.text)
+    except Exception as e:
+        logger.error(f"asset organize failed: {e}")
+        raise HTTPException(status_code=502, detail="Sorry, we could not organize that right now. Please try again, or add items one at a time.")
+
+
+class ConfirmOrganizedReq(BaseModel):
+    text: str = Field(min_length=1, max_length=6000)
+    items: List[AssetItemIn]
+
+
+@api_router.post("/trust-cases/{case_id}/asset-items/confirm")
+async def confirm_organized_items(case_id: str, body: ConfirmOrganizedReq, user: dict = Depends(get_current_user)):
+    """Client clicked 'Looks right' — save the reviewed items plus their original typed text."""
+    case = await get_case(case_id, user)
+    saved = []
+    for it in body.items:
+        it.source = "ai"
+        saved.append(await _clean_asset_item(it, case))
+    await db.trust_cases.update_one({"id": case_id}, {
+        "$push": {"asset_items": {"$each": saved}, "asset_raw_texts": {"text": body.text, "at": now_iso()}},
+        "$set": {"updated_at": now_iso()}})
+    return {"ok": True, "saved": len(saved)}
+
+
+@api_router.get("/admin/trust-cases/{case_id}/intake-summary")
+async def admin_intake_summary(case_id: str, _: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Not found")
+    return asset_items.intake_summary(case)
+
+
+@api_router.get("/admin/trust-cases/{case_id}/schedule-a")
+async def admin_schedule_a(case_id: str, format: str = "json", _: dict = Depends(require_admin)):
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Not found")
+    items = [asset_items.effective(i, True) for i in (case.get("asset_items") or [])]
+    sa = asset_items.schedule_a(items)
+    if format == "csv":
+        return Response(content=asset_items.schedule_a_csv(sa), media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="schedule_a_{case_id[:8]}.csv"'})
+    return sa
+
+
+@api_router.post("/admin/trust-cases/{case_id}/asset-items/release")
+async def admin_release_asset_edits(case_id: str, _: dict = Depends(require_admin)):
+    return {"ok": True, "released": await _release_asset_edits(case_id)}
+
+
+class TransferMethodIn(BaseModel):
+    kind: str
+    state: str = Field(min_length=2, max_length=40)
+    wording: str = Field(min_length=3, max_length=400)
+    status: Optional[str] = "needs_check"
+
+
+@api_router.get("/admin/transfer-methods")
+async def admin_list_transfer_methods(_: dict = Depends(require_admin)):
+    rows = await db.transfer_methods.find({}, {"_id": 0}).sort([("kind", 1), ("state", 1)]).to_list(1000)
+    return {"rows": rows, "kinds": asset_items.KIND_LABELS}
+
+
+@api_router.post("/admin/transfer-methods")
+async def admin_add_transfer_method(body: TransferMethodIn, _: dict = Depends(require_admin)):
+    if body.kind not in asset_items.GENERIC_METHODS:
+        raise HTTPException(status_code=400, detail="Unknown asset kind")
+    row = {"id": new_id(), "kind": body.kind, "state": body.state.strip(), "wording": body.wording.strip(),
+           "status": "needs_check", "created_at": now_iso()}
+    await db.transfer_methods.insert_one(dict(row))
+    return row
+
+
+@api_router.patch("/admin/transfer-methods/{row_id}")
+async def admin_update_transfer_method(row_id: str, body: TransferMethodIn, _: dict = Depends(require_admin)):
+    sets = {"kind": body.kind, "state": body.state.strip(), "wording": body.wording.strip(),
+            "status": "confirmed" if body.status == "confirmed" else "needs_check", "updated_at": now_iso()}
+    r = await db.transfer_methods.update_one({"id": row_id}, {"$set": sets})
+    if not r.matched_count:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
 
 
 @api_router.post("/admin/trust-cases/{case_id}/resend-status-email")
@@ -2338,16 +2560,17 @@ async def create_trust_case(body: TrustCaseCreate, user: dict = Depends(get_curr
         link=f"{FRONTEND_URL}/intake/{case['id']}",
     )
     await send_email_notification(user["email"], f"Welcome to {biz} — your trust intake has begun", welcome_html)
-    # Notify admin too
-    admin = await db.users.find_one({"role": "admin"})
-    if admin:
-        await send_email_notification(
-            admin["email"],
-            f"New trust intake started — {user.get('name') or user['email']}",
-            f"<p>A new <b>{trust_label}</b> case has been started by "
-            f"<b>{user.get('name') or user['email']}</b>.</p>"
-            f"<p><a href='{FRONTEND_URL}/admin/cases/{case['id']}'>Open case in admin</a></p>",
-        )
+    # Notify admin too — one-tap button opens this exact case (login returns to it)
+    case_url = f"{FRONTEND_URL}/admin/cases/{case['id']}"
+    await send_email_notification(
+        ADMIN_NOTIFY_EMAIL,
+        f"New trust intake started — {user.get('name') or user['email']}",
+        f"<p>A new <b>{trust_label}</b> case has been started by "
+        f"<b>{user.get('name') or user['email']}</b>.</p>"
+        f"<p style='margin:24px 0'><a href='{case_url}' style='display:inline-block;background:#1C252E;color:#ffffff;"
+        f"padding:16px 28px;border-radius:8px;font-size:17px;font-weight:bold;text-decoration:none'>Open this case</a></p>"
+        f"<p style='font-size:12px;color:#64748B'>{case_url}</p>",
+    )
     return case
 
 @api_router.get("/trust-cases/mine")
@@ -6488,6 +6711,7 @@ async def startup():
 
     try:
         await whatsapp_alerts.ensure_settings(db)
+        await asset_items.seed_library(db)
     except Exception as e:
         logger.warning(f"notification settings seed failed: {e}")
 

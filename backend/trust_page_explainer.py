@@ -103,7 +103,15 @@ SYSTEM_PROMPT = (
     "PEOPLE RULE — ABSOLUTE: Refer to people only by the names and roles that "
     "appear in the trust (e.g. Grantor, Trustee, Successor Trustee, Beneficiary). "
     "Do NOT add family relationships (daughter, son, brother, wife, etc.) unless "
-    "that relationship is listed in the client intake context provided."
+    "that relationship is listed in the client intake context provided.\n\n"
+    "SCHEDULE A RULE: If the page shows Schedule A (the list of trust property), "
+    "explain its four columns in exactly these plain words: Description of Property "
+    "is what the item is. Date Delivered is the day you moved it into the trust, not "
+    "the day you bought it. Instrument or Method of Transfer is the paper you signed "
+    "or the form you filled out to move it in (an instrument is just a signed paper). "
+    "Trustee Initials is where the trustee confirms they received it. Tell the client "
+    "that the 'Tell us what you own' form in the portal is where they fill this in. "
+    "Mention the client's STATE from the intake context where it helps."
 )
 
 # The one canonical sentence we substitute in place of any suggestion the

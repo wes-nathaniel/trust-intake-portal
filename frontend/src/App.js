@@ -21,6 +21,7 @@ import AcceptInvite from "@/pages/AcceptInvite";
 import AdminQuestions from "@/pages/AdminQuestions";
 import AdminWhatsAppInbox from "@/pages/AdminWhatsAppInbox";
 import AdminRepsPage from "@/pages/AdminRepsPage";
+import TransferMethodLibrary from "@/pages/TransferMethodLibrary";
 import AdminCommissionsPage from "@/pages/AdminCommissionsPage";
 import AccountSettings from "@/pages/AccountSettings";
 import ConfirmEmailChange from "@/pages/ConfirmEmailChange";
@@ -76,6 +77,7 @@ function App() {
             <Route path="/admin/questions" element={<ProtectedRoute adminOnly><AdminQuestions /></ProtectedRoute>} />
             <Route path="/admin/whatsapp-inbox" element={<ProtectedRoute adminOnly><AdminWhatsAppInbox /></ProtectedRoute>} />
             <Route path="/admin/reps" element={<ProtectedRoute adminOnly><AdminRepsPage /></ProtectedRoute>} />
+            <Route path="/admin/transfer-methods" element={<ProtectedRoute adminOnly><TransferMethodLibrary /></ProtectedRoute>} />
             <Route path="/admin/commissions" element={<ProtectedRoute adminOnly><AdminCommissionsPage /></ProtectedRoute>} />
             <Route path="/account" element={<ProtectedRoute><AccountSettings /></ProtectedRoute>} />
             <Route path="/admin/cases/:caseId" element={<ProtectedRoute adminOnly><AdminCaseDetail /></ProtectedRoute>} />
