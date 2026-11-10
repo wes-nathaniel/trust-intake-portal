@@ -114,18 +114,16 @@ REFRESH_TTL_DAYS = 14
 APP_NAME = os.environ.get("APP_NAME", "trust-portal")
 STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
-BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "").strip()
 ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "wes@igchq.com").strip().lower()
-SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "outreach@igcoutreach.com")
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "support@igchq.com")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://trust.igchq.com")
 # Idle-session timeout: an authenticated user who makes no requests for this
 # many minutes is forced to re-log-in even if their access token is still
 # within its absolute TTL. Complies with the security audit "sessions must
 # expire after inactivity" requirement.
 IDLE_TIMEOUT_MINUTES = int(os.environ.get("IDLE_TIMEOUT_MINUTES", "60"))
 
-# Legacy Resend init kept as a no-op so importing `resend` never crashes if
-# an environment still has the old key. All send paths now go through Brevo.
+# Resend SDK init — set api_key eagerly so the SDK doesn't crash on import.
 if os.environ.get("RESEND_API_KEY"):
     try:
         resend.api_key = os.environ["RESEND_API_KEY"]
@@ -448,7 +446,7 @@ REPLY_TO_EMAIL = os.environ.get("REPLY_TO_EMAIL", ADMIN_NOTIFY_EMAIL)
 
 def _from_header() -> str:
     """Return a properly formatted RFC-5322 `From` header string with a
-    display name — 'Iron Gate Consulting <support@igcfirm.com>'."""
+    display name — 'Iron Gate Consulting <support@igchq.com>'."""
     if not SENDER_EMAIL:
         return ""
     if "<" in SENDER_EMAIL:  # already formatted
@@ -483,19 +481,14 @@ async def _client_auto_email_off(*args, **kwargs):
 
 async def send_email_notification(to_email: str, subject: str, html_body: str):
     """Send an HTML+text email via Resend. Non-fatal on failure.
-
-    Provider fallback order:
-      1. Resend (primary — igchq.com + igcreach.com are domain-verified)
-      2. Brevo (legacy — kept so we can toggle back if Resend ever errors out)
-
-    `send_via_resend_sync` is called inside a thread so we don't block the
-    event loop on the SDK's requests call.
+    Resend is the only provider. If it fails, the error is logged here
+    and visible in the backend logs for the admin to see.
     """
-    # ---- Primary: Resend ----
     rk = os.environ.get("RESEND_API_KEY", "").strip()
     if not rk:
-        logger.error(f"RESEND_API_KEY missing — cannot send email to={to_email} subject={subject}")
-    for attempt in range(3 if rk else 0):
+        logger.error(f"[email-not-sent] RESEND_API_KEY missing — to={to_email} subject={subject}")
+        return False
+    for attempt in range(3):
         try:
             resend.api_key = rk
             def _send():
@@ -520,112 +513,40 @@ async def send_email_notification(to_email: str, subject: str, html_body: str):
             if "testing email" in str(e) or "validation" in type(e).__name__.lower():
                 break
         await asyncio.sleep(1.2 * (attempt + 1))
-
-    # ---- Fallback: Brevo ----
-    if not BREVO_API_KEY:
-        logger.error(f"[email-not-sent] to={to_email} subject={subject}")
-        return False
-    payload = {
-        "sender": {"email": SENDER_EMAIL, "name": SENDER_DISPLAY},
-        "to": [{"email": to_email}],
-        "replyTo": {"email": REPLY_TO_EMAIL},
-        "subject": subject,
-        "htmlContent": html_body,
-        "textContent": _html_to_text(html_body),
-        "headers": {
-            "List-Unsubscribe": f"<mailto:{REPLY_TO_EMAIL}?subject=Unsubscribe>",
-            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-        },
-    }
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0)) as client_http:
-            r = await client_http.post(
-                "https://api.brevo.com/v3/smtp/email",
-                headers={
-                    "accept": "application/json",
-                    "content-type": "application/json",
-                    "api-key": BREVO_API_KEY,
-                },
-                json=payload,
-            )
-        r.raise_for_status()
-        return True
-    except Exception as e:
-        body = getattr(e, "response", None)
-        detail = body.text[:400] if body is not None else str(e)[:400]
-        logger.error(f"Brevo send failed: {detail}")
-        return False
+    logger.error(f"[email-not-sent] All Resend attempts failed — to={to_email} subject={subject}")
+    return False
 
 
 async def send_email_notification_with_attachment(to_email: str, subject: str, html_body: str,
                                                   attachment_name: str, attachment_bytes: bytes,
                                                   content_type: str = "application/pdf"):
     """Same contract as send_email_notification, with a single file attachment.
-    Resend primary, Brevo fallback. `content_type` kept for backward compat."""
-    import base64
-
+    Resend only — no fallback provider."""
     rk = os.environ.get("RESEND_API_KEY", "").strip()
-    if rk:
-        try:
-            resend.api_key = rk
-            def _send():
-                return resend.Emails.send({
-                    "from": f"{SENDER_DISPLAY} <{SENDER_EMAIL}>",
-                    "to": [to_email],
-                    "subject": subject,
-                    "html": html_body,
-                    "text": _html_to_text(html_body),
-                    "reply_to": REPLY_TO_EMAIL,
-                    "attachments": [{
-                        "filename": attachment_name,
-                        "content": list(attachment_bytes),  # Resend expects list[int] for bytes
-                    }],
-                })
-            result = await asyncio.to_thread(_send)
-            if result and result.get("id"):
-                return
-        except Exception as e:
-            logger.error(f"Resend send (attachment) failed, will try Brevo: {type(e).__name__}: {str(e)[:400]}")
-
-    # ---- Fallback: Brevo ----
-    if not BREVO_API_KEY:
-        logger.info(
-            f"[email-mock-attach] to={to_email} subject={subject} "
-            f"attachment={attachment_name} ({len(attachment_bytes)} bytes)"
-        )
+    if not rk:
+        logger.error(f"[email-not-sent] RESEND_API_KEY missing (attachment) — to={to_email}")
         return
-    payload = {
-        "sender": {"email": SENDER_EMAIL, "name": SENDER_DISPLAY},
-        "to": [{"email": to_email}],
-        "replyTo": {"email": REPLY_TO_EMAIL},
-        "subject": subject,
-        "htmlContent": html_body,
-        "textContent": _html_to_text(html_body),
-        "headers": {
-            "List-Unsubscribe": f"<mailto:{REPLY_TO_EMAIL}?subject=Unsubscribe>",
-            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-        },
-        "attachment": [{
-            "name": attachment_name,
-            "content": base64.b64encode(attachment_bytes).decode("ascii"),
-        }],
-    }
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client_http:
-            r = await client_http.post(
-                "https://api.brevo.com/v3/smtp/email",
-                headers={
-                    "accept": "application/json",
-                    "content-type": "application/json",
-                    "api-key": BREVO_API_KEY,
-                },
-                json=payload,
-            )
-        r.raise_for_status()
+        resend.api_key = rk
+        def _send():
+            return resend.Emails.send({
+                "from": f"{SENDER_DISPLAY} <{SENDER_EMAIL}>",
+                "to": [to_email],
+                "subject": subject,
+                "html": html_body,
+                "text": _html_to_text(html_body),
+                "reply_to": REPLY_TO_EMAIL,
+                "attachments": [{
+                    "filename": attachment_name,
+                    "content": list(attachment_bytes),
+                }],
+            })
+        result = await asyncio.to_thread(_send)
+        if result and result.get("id"):
+            return
+        logger.warning(f"Resend (attachment) returned no id. result={result}")
     except Exception as e:
-        body = getattr(e, "response", None)
-        detail = body.text[:400] if body is not None else str(e)[:400]
-        logger.error(f"Brevo send (attachment) failed: {detail}")
+        logger.error(f"[email-failed] Resend (attachment) to={to_email}: {type(e).__name__}: {str(e)[:400]}")
 
 # ---------- MODELS ----------
 class RegisterReq(BaseModel):
@@ -1204,7 +1125,8 @@ async def _clean_asset_item(body: AssetItemIn, case: dict, existing: Optional[di
         d["method_status"] = match["status"] if match else "needs_check"
     d.update({"description": desc, "status": status, "source": d.get("source") if d.get("source") in ("form", "ai") else "form"})
     if existing is None:
-        signed = bool(case.get("trust_unlocked")) or case.get("status") == "Completed"
+        signed = bool(case.get("_trust_unlocked") or case.get("trust_unlocked")) or \
+                 (case.get("_internal_status") or case.get("status")) == "Completed"
         d.update({"id": new_id(), "created_at": now_iso(), "part": "II" if signed else "I"})
     d["updated_at"] = now_iso()
     # Flag items added AFTER the trust was signed so admin can review before including in Schedule A.
@@ -1213,11 +1135,24 @@ async def _clean_asset_item(body: AssetItemIn, case: dict, existing: Optional[di
     return d
 
 
+async def _get_alert_email() -> str:
+    """Return the admin alert email: DB notification_settings override → env fallback."""
+    try:
+        s = await db.settings.find_one({"id": "notifications"}, {"_id": 0}) or {}
+        override = (s.get("admin_alert_email") or "").strip().lower()
+        if override:
+            return override
+    except Exception:
+        pass
+    return ADMIN_NOTIFY_EMAIL
+
+
 async def _alert_admin_asset_change(case: dict, action: str, description: str):
-    """Send ADMIN_NOTIFY_EMAIL when a client adds or changes an asset on a completed case."""
+    """Send admin alert email when a client adds or changes an asset on a completed case."""
     client_name = case.get("client_name") or case.get("client_email") or "A client"
     case_id = case.get("id", "")
     case_link = f"{FRONTEND_URL.rstrip('/')}/admin/cases/{case_id}"
+    alert_email = await _get_alert_email()
     subject = f"IGC: {client_name} {action} an asset"
     body_html = (
         f"<p>{client_name} <strong>{action}</strong> an asset on their completed trust:</p>"
@@ -1226,13 +1161,19 @@ async def _alert_admin_asset_change(case: dict, action: str, description: str):
         f"<p><a href='{case_link}' style='display:inline-block;background:#1C252E;color:#ffffff;"
         f"padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;'>Review case</a></p>"
     )
-    await send_email_notification(ADMIN_NOTIFY_EMAIL, subject, body_html)
+    await send_email_notification(alert_email, subject, body_html)
 
 
 
 async def list_transfer_methods(kind: str, state: str = "", _: dict = Depends(get_current_user)):
     rows = await asset_items.methods_for(db, kind, state)
     return {"methods": [{"wording": r["wording"], "status": r["status"]} for r in rows]}
+
+
+@api_router.get("/transfer-methods")
+async def get_transfer_methods(kind: str = "", state: str = "", user: dict = Depends(get_current_user)):
+    """Client and admin: list transfer methods for a given kind + state."""
+    return await list_transfer_methods(kind, state, user)
 
 
 @api_router.get("/trust-cases/{case_id}/asset-items")
@@ -1254,7 +1195,7 @@ async def add_asset_item(case_id: str, body: AssetItemIn, user: dict = Depends(g
     item = await _clean_asset_item(body, case)
     await db.trust_cases.update_one({"id": case_id}, {"$push": {"asset_items": item}, "$set": {"updated_at": now_iso()}})
     # Alert admin when a client adds an item to a completed/signed trust
-    if user.get("role") != "admin" and (case.get("trust_unlocked") or case.get("status") == "Completed"):
+    if user.get("role") != "admin" and (case.get("_trust_unlocked") or case.get("trust_unlocked") or (case.get("_internal_status") or case.get("status")) == "Completed"):
         await _alert_admin_asset_change(case, "added", item.get("description", ""))
     return asset_items.effective(item, False)
 
@@ -1274,7 +1215,7 @@ async def update_asset_item(case_id: str, item_id: str, body: AssetItemIn, user:
         new.update({k: old[k] for k in ("id", "created_at", "part", "pending_admin", "post_completion") if k in old})
         await db.trust_cases.update_one({"id": case_id, "asset_items.id": item_id}, {"$set": {"asset_items.$": new}})
         # Alert admin when a client edits an item on a completed/signed trust
-        if case.get("trust_unlocked") or case.get("status") == "Completed":
+        if case.get("_trust_unlocked") or case.get("trust_unlocked") or (case.get("_internal_status") or case.get("status")) == "Completed":
             await _alert_admin_asset_change(case, "updated", new.get("description", ""))
     return {"ok": True}
 
@@ -1333,7 +1274,7 @@ async def confirm_organized_items(case_id: str, body: ConfirmOrganizedReq, user:
         "$push": {"asset_items": {"$each": saved}, "asset_raw_texts": {"text": body.text, "at": now_iso()}},
         "$set": {"updated_at": now_iso()}})
     # Alert admin when client bulk-confirms items on a completed/signed trust
-    if user.get("role") != "admin" and (case.get("trust_unlocked") or case.get("status") == "Completed"):
+    if user.get("role") != "admin" and (case.get("_trust_unlocked") or case.get("trust_unlocked") or (case.get("_internal_status") or case.get("status")) == "Completed"):
         await _alert_admin_asset_change(case, f"added {len(saved)}", f"{len(saved)} asset(s) via AI organizer")
     return {"ok": True, "saved": len(saved)}
 
@@ -2233,19 +2174,29 @@ class NotificationSettingsReq(BaseModel):
     admin_notification_phone: Optional[str] = Field(default=None, max_length=30)
     admin_email_alerts_enabled: Optional[bool] = None
     admin_alert_template: Optional[str] = Field(default=None, max_length=100)
+    admin_alert_email: Optional[str] = Field(default=None, max_length=200)
 
 
 @api_router.get("/admin/notification-settings")
 async def get_notification_settings(_: dict = Depends(require_admin)):
-    return {**(await whatsapp_alerts.get_settings(db)), "whatsapp_configured": whatsapp_utils.is_configured()}
+    s = await whatsapp_alerts.get_settings(db)
+    # Also fetch admin_alert_email from the central settings doc
+    portal_s = await db.settings.find_one({"id": "notifications"}, {"_id": 0}) or {}
+    effective_email = (portal_s.get("admin_alert_email") or "").strip() or ADMIN_NOTIFY_EMAIL
+    return {
+        **s,
+        "whatsapp_configured": whatsapp_utils.is_configured(),
+        "admin_alert_email": effective_email,
+        "admin_alert_email_default": ADMIN_NOTIFY_EMAIL,
+    }
 
 
 @api_router.patch("/admin/notification-settings")
 async def update_notification_settings(body: NotificationSettingsReq, _: dict = Depends(require_admin)):
     sets = body.model_dump(exclude_none=True)
     if sets:
-        await db.settings.update_one({"id": whatsapp_alerts.SETTINGS_ID}, {"$set": sets}, upsert=True)
-    return await whatsapp_alerts.get_settings(db)
+        await db.settings.update_one({"id": "notifications"}, {"$set": sets}, upsert=True)
+    return await get_notification_settings()
 
 
 class TestAlertReq(BaseModel):
@@ -2582,14 +2533,26 @@ def _response_case(case: dict) -> dict:
 async def get_case(case_id: str, user: dict) -> dict:
     """Internal fetch — returns the case with ENCRYPTED SSN values intact so
     callers can safely re-persist the doc without losing data. Callers that
-    return the case to a client MUST wrap the result in `_response_case()`."""
+    return the case to a client MUST wrap the result in `_response_case()`.
+
+    For client users the case is passed through `_client_view()` so that the
+    public `status` field holds the *client-visible* status.  The raw
+    internal status and trust_unlocked flag are preserved as `_internal_status`
+    and `_trust_unlocked` so that server-side logic (asset flagging, alert
+    triggers) can still check them without exposing them to the client.
+    """
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Trust case not found")
     if user.get("role") != "admin" and case["client_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
     if user.get("role") != "admin":
+        _int_status = case.get("status", "")
+        _trust_unlocked = bool(case.get("trust_unlocked", False))
         case = _client_view(case)
+        # Underscore-prefixed — server-only, never serialised back to the client
+        case["_internal_status"] = _int_status
+        case["_trust_unlocked"] = _trust_unlocked
     return case
 
 
@@ -5606,9 +5569,9 @@ async def admin_diagnostics(_: dict = Depends(require_admin)):
     twilio_ready = sms.is_enabled()
     twilio_admin_phone_set = bool((os.environ.get("ADMIN_PHONE_NUMBER") or "").strip())
 
-    # --- Brevo (transactional email) ---
-    email_ready = bool(BREVO_API_KEY)
-    resend_ready = email_ready  # backward-compat alias for existing health JSON consumers
+    # --- Email (Resend only) ---
+    email_ready = bool(os.environ.get("RESEND_API_KEY", "").strip())
+    resend_ready = email_ready
 
     # --- Emergent LLM (AI assistant) ---
     llm_ready = bool(EMERGENT_KEY)
@@ -5653,6 +5616,23 @@ async def admin_diagnostics(_: dict = Depends(require_admin)):
         "auth": {"jwt_secret_set": jwt_set, "admin_count": admin_count},
         "frontend_url": FRONTEND_URL,
     }
+
+
+@api_router.post("/admin/diagnostics/test-email")
+async def admin_test_email(admin: dict = Depends(require_admin)):
+    """Send a live test email to ADMIN_NOTIFY_EMAIL to verify Resend is working."""
+    alert_email = await _get_alert_email()
+    case_link = f"{FRONTEND_URL}/admin/cases/test"
+    html = (
+        f"<p>This is a test email from the Iron Gate Trust Portal.</p>"
+        f"<p>Domain: <strong>{FRONTEND_URL}</strong><br>"
+        f"Sender: <strong>{SENDER_EMAIL}</strong><br>"
+        f"Alert target: <strong>{alert_email}</strong></p>"
+        f"<p>Sample Review case link: <a href='{case_link}'>{case_link}</a></p>"
+        f"<p>If you can click that link and it opens trust.igchq.com, everything is wired correctly.</p>"
+    )
+    ok = await send_email_notification(alert_email, "Iron Gate Portal — Email Test", html)
+    return {"sent": ok, "to": alert_email, "sender": SENDER_EMAIL, "frontend_url": FRONTEND_URL}
 
 
 @api_router.post("/admin/trust-cases/{case_id}/invoice")
@@ -6810,7 +6790,6 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         FRONTEND_URL,
-        "https://trust.igcfirm.com",
         "https://trust.igchq.com",
         "https://trust-intake-portal.preview.emergentagent.com",  # keep preview working for QA
     ],

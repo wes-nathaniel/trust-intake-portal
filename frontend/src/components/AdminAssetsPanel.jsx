@@ -92,17 +92,33 @@ export default function AdminAssetsPanel({ caseId }) {
   const [tab, setTab] = useState("summary");
   const [d, setD] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [adding, setAdding] = useState(false);
   const [togglingPart, setTogglingPart] = useState(null);
+  const [alertEmail, setAlertEmail] = useState("");
+  const [alertEmailSaving, setAlertEmailSaving] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [items, summary, sa] = await Promise.all([
-        api.get(`/trust-cases/${caseId}/asset-items`), api.get(`/admin/trust-cases/${caseId}/intake-summary`),
-        api.get(`/admin/trust-cases/${caseId}/schedule-a`)]);
+      const [items, summary, sa, notif] = await Promise.all([
+        api.get(`/trust-cases/${caseId}/asset-items`),
+        api.get(`/admin/trust-cases/${caseId}/intake-summary`),
+        api.get(`/admin/trust-cases/${caseId}/schedule-a`),
+        api.get("/admin/notification-settings"),
+      ]);
       setD({ items: items.data, summary: summary.data, sa: sa.data });
+      setAlertEmail(notif.data.admin_alert_email || "");
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   }, [caseId]);
   useEffect(() => { load(); }, [load]);
+
+  const saveAlertEmail = async () => {
+    setAlertEmailSaving(true);
+    try {
+      await api.patch("/admin/notification-settings", { admin_alert_email: alertEmail.trim() });
+      toast.success("Alert email saved.");
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setAlertEmailSaving(false); }
+  };
 
   const togglePart = async (itemId, currentPart) => {
     const newPart = currentPart === "I" ? "II" : "I";
@@ -125,7 +141,7 @@ export default function AdminAssetsPanel({ caseId }) {
     <section className="mb-6 bg-white border border-[#E2E0DA] rounded-xl p-4 sm:p-5" data-testid="admin-assets-panel">
       <h2 className="font-serif text-xl text-navy mb-3">What the client owns</h2>
 
-      {/* Alert: items added after trust was signed — awaiting admin review */}
+      {/* Alert: items added after trust was signed */}
       {postCompletion.length > 0 && (
         <div className="mb-3 p-3 rounded-lg bg-blue-50 border border-blue-300 flex gap-2 items-start" data-testid="post-completion-alert">
           <AlertTriangle className="h-5 w-5 shrink-0 text-blue-700 mt-0.5" />
@@ -135,7 +151,7 @@ export default function AdminAssetsPanel({ caseId }) {
         </div>
       )}
 
-      {/* Alert: retirement items in list (should be empty, shown if old data slipped through) */}
+      {/* Alert: retirement items in list */}
       {(d.summary.retirement_items_in_list || []).length > 0 && (
         <div className="mb-3 p-3 rounded-lg bg-red-50 border border-red-300 text-sm text-red-900" data-testid="retirement-items-alert">
           <strong>Retirement accounts detected in the item list (must be removed):</strong> {d.summary.retirement_items_in_list.join(", ")}
@@ -147,7 +163,34 @@ export default function AdminAssetsPanel({ caseId }) {
           <button key={k} onClick={() => setTab(k)} className={`min-h-[44px] px-4 rounded-md text-sm font-semibold ${tab === k ? "bg-navy text-white" : "bg-sand-200/50 text-navy"}`} data-testid={`assets-tab-${k}`}>{l}</button>
         ))}
       </div>
-      {tab === "summary" && <Summary s={d.summary} />}
+      {tab === "summary" && (
+        <div className="space-y-5">
+          <Summary s={d.summary} />
+          {/* Editable alert email */}
+          <div className="border-t border-[#E2E0DA] pt-4">
+            <p className="text-sm font-semibold text-navy mb-1">Alert email for asset changes</p>
+            <p className="text-xs text-[#64748B] mb-2">You receive an email here whenever a client adds, changes, or removes an asset.</p>
+            <div className="flex gap-2">
+              <input
+                type="email"
+                className="flex-1 border border-[#E2E0DA] rounded-md px-3 py-2 text-sm"
+                value={alertEmail}
+                onChange={(e) => setAlertEmail(e.target.value)}
+                placeholder="wes@igchq.com"
+                data-testid="alert-email-input"
+              />
+              <button
+                onClick={saveAlertEmail}
+                disabled={alertEmailSaving}
+                className="px-4 py-2 bg-navy text-white rounded-md text-sm font-semibold min-h-[44px] disabled:opacity-50"
+                data-testid="alert-email-save-btn"
+              >
+                {alertEmailSaving ? "Saving" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {tab === "schedule" && <ScheduleA caseId={caseId} sa={d.sa} />}
       {tab === "items" && (
         <div className="space-y-3" data-testid="admin-asset-items">
@@ -156,7 +199,24 @@ export default function AdminAssetsPanel({ caseId }) {
               <span data-testid="asset-edits-held-note">Some edits are hidden from the client. Use the Release button at the bottom of the screen to show them.</span>
             </div>
           )}
-          {items.length === 0 && <p className="text-sm text-[#94A3B8]">The client has not listed anything yet.</p>}
+          {/* Add item for client */}
+          {adding ? (
+            <AssetItemForm
+              caseId={caseId}
+              clientState={d.items.client_state}
+              onSaved={() => { setAdding(false); load(); }}
+              onCancel={() => setAdding(false)}
+            />
+          ) : (
+            <button
+              onClick={() => setAdding(true)}
+              className="w-full min-h-[48px] border-2 border-dashed border-navy/30 rounded-lg text-sm text-navy/70 hover:border-navy hover:text-navy font-semibold flex items-center justify-center gap-2"
+              data-testid="admin-add-asset-btn"
+            >
+              + Add item for this client
+            </button>
+          )}
+          {items.length === 0 && !adding && <p className="text-sm text-[#94A3B8]">The client has not listed anything yet.</p>}
           {items.map((i) => (
             <div key={i.id} className={`border rounded-lg p-3 text-sm ${i.post_completion ? "border-blue-300 bg-blue-50/40" : ""}`} data-testid={`admin-asset-${i.id}`}>
               {editing === i.id ? (
@@ -173,8 +233,6 @@ export default function AdminAssetsPanel({ caseId }) {
                   <p className="text-[#64748B]">{KIND_LABEL[i.kind]}{i.other_kind ? ` (${i.other_kind === "Something Else" ? i.other_text : i.other_kind})` : ""}{i.state ? `, ${i.state}` : ""}</p>
                   <p className="mt-1">Status: <b>{STATUS_LABEL[i.status]}</b>{i.date_delivered ? `, ${i.date_delivered}` : ""}</p>
                   {methodLabel(i) && <p className="break-words text-[#64748B]">Method: {methodLabel(i)}</p>}
-
-                  {/* Part I/II toggle — only on items with moved or planned status */}
                   <div className="flex flex-wrap gap-2 mt-2">
                     <span className="text-xs px-2 py-0.5 rounded-full bg-sand-200 text-navy font-semibold" data-testid={`part-badge-${i.id}`}>
                       Schedule A: Part {i.part || "I"}
@@ -188,7 +246,6 @@ export default function AdminAssetsPanel({ caseId }) {
                       <ArrowRightLeft className="h-3 w-3" /> Move to Part {i.part === "II" ? "I" : "II"}
                     </button>
                   </div>
-
                   <Badges f={i.flags} />
                   <button onClick={() => setEditing(i.id)} className="mt-2 min-h-[44px] px-4 border rounded-md inline-flex items-center gap-1" data-testid={`admin-asset-edit-${i.id}`}><Pencil className="h-4 w-4" /> Edit</button>
                 </>

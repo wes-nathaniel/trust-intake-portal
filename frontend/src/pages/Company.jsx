@@ -8,17 +8,17 @@ import { Shield, Phone, Mail, MapPin, ScrollText, FileLock, Users, Building2 } f
 */
 
 const BUSINESS = {
-  legal_name: "IGC Firm — Iron Gate Consulting",
+  legal_name: "IGC HQ — Iron Gate Consulting",
   dba: "Iron Gate Consulting",
   tagline: "Trust Structuring & Client Onboarding",
   technology_partner: "WAAAIR Technology LLC",
-  email: "support@igcfirm.com",
+  email: "support@igchq.com",
   phone_e164: "+19545983681",
   phone_display: "(954) 598-3681",
   address_line_1: "Iron Gate Consulting",
   address_line_2: "Fort Lauderdale, Florida, USA",
-  portal_url: "https://trust.igcfirm.com",
-  site_url: "https://igcfirm.com",
+  portal_url: "https://trust.igchq.com",
+  site_url: "https://igchq.com",
   effective_date: "April 21, 2026",
 };
 

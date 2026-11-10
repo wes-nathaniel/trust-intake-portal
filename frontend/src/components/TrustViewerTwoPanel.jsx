@@ -35,7 +35,7 @@ export default function TrustViewerTwoPanel({ sections = [], caseShortId, client
         e.preventDefault();
         if (k === "p") {
           alert(
-            "Printing is not available until your trust is finalized and payment is confirmed.\n\nContact Iron Gate Consulting: wes@igcfirm.com or (954) 598-3681."
+            "Printing is not available until your trust is finalized and payment is confirmed.\n\nContact Iron Gate Consulting: wes@igchq.com or (954) 598-3681."
           );
         }
       }
@@ -238,7 +238,7 @@ const styles = `
   .igc-panel { overflow-y: visible !important; }
 }
 @media print {
-  body::before { content: "This document cannot be printed until payment is confirmed. Contact Iron Gate Consulting: wes@igcfirm.com or (954) 598-3681."; display: block; font-family: Arial, sans-serif; font-size: 18px; color: #333; text-align: center; padding: 100px 40px; }
+  body::before { content: "This document cannot be printed until payment is confirmed. Contact Iron Gate Consulting: wes@igchq.com or (954) 598-3681."; display: block; font-family: Arial, sans-serif; font-size: 18px; color: #333; text-align: center; padding: 100px 40px; }
   body > * { display: none !important; }
   body::before { display: block !important; }
 }
