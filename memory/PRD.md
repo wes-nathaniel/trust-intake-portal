@@ -40,7 +40,86 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - **Trust preview**: pypdfium2 renders per-page PNGs at low DPI with tiled diagonal watermark.
 
 
-## Changelog — 2026-09-05 (post-NEO refactor + live-purchase verified)
+## Changelog — 2026-11-10 (Session 2: Stripe custom key, retirement filter, post-completion assets)
+
+### Stripe — Echo Holding Ventures Inc. (acct_1Tyy0A2NJSIllpjQ)
+- ✅ stripe_service.py: CUSTOM_STRIPE_SECRET_KEY / CUSTOM_STRIPE_PUBLISHABLE_KEY always take precedence over platform-managed STRIPE_* keys — prevents platform overwrites on restart
+- ✅ _apply_key() called dynamically before every Stripe API call
+- ✅ get_publishable_key() / get_webhook_secret() — live getters used by stripe_router.py
+- ✅ account_info() fixed for stripe-python v5+ StripeObject (to_dict() coercion)
+- ✅ health() shows key_source: "custom (your account)" or "platform managed"
+- ✅ Webhook: CUSTOM_STRIPE_WEBHOOK_SECRET env var ready — user must set up endpoint in Stripe Dashboard (checkout.session.completed)
+
+### Retirement Accounts Filter
+- ✅ RETIREMENT_RE already in asset_items.py + server.py _clean_asset_item (backend blocks saves)
+- ✅ schedule_a(): defense-in-depth filter — retirement keywords excluded even if in DB
+- ✅ intake_summary(): retirement_items_in_list field surfaced for admin review
+- ✅ AssetItemForm.jsx: RETIREMENT_RE client-side regex — inline warning banner + Save button disabled on match
+- ✅ AdminAssetsPanel: retirement_items_in_list warning banner shown if any slip through
+
+### Post-Completion Asset Management
+- ✅ Clients can open "Tell us what you own" on any case status (no lock — confirmed)
+- ✅ ClientPortal.jsx: completed cases show "Add / View Assets" button linking to ?step=assets
+- ✅ _clean_asset_item: new items on signed/completed cases get post_completion=True, part=II
+- ✅ _alert_admin_asset_change: admin email sent to ADMIN_NOTIFY_EMAIL when client adds/edits on completed case
+- ✅ update_asset_item: preserves post_completion flag on client edits
+- ✅ OwnStep.jsx: "Pending team review" badge (blue) on post_completion items
+- ✅ AdminAssetsPanel: blue alert banner for post-completion count + "Added after signing" badge + Part I/II toggle
+- ✅ PATCH /admin/trust-cases/{id}/asset-items/{itemId}/part — admin-only part toggle (I ↔ II)
+- ✅ Asset CRUD never changes case status or sends client emails
+
+### MCP OAuth (mcp_oauth.py — built, not wired to server.py yet)
+- ✅ mcp_oauth.py created: OAuth 2.1 AS with PKCE, discovery endpoints, authorize page, token endpoint, admin token management
+- ❌ Not yet wired into server.py and api_router
+
+### Testing
+- ✅ iteration_36.json: 100% pass (13/13 backend + all frontend features verified)
+
+
+
+### STEP 1: Asset Entry Form Mobile Fixes
+- ✅ AssetItemForm.jsx: `min-h-[44px]` on all Help buttons, `min-h-[52px]` on radio/checkbox labels — fully tap-friendly on iPhone
+- ✅ OwnStep.jsx: Legacy assets (`case.assets` old schema) shown as a read-only list
+- ✅ asset-items API: now returns `legacy_assets` field
+
+### STEP 2: Schedule A
+- ✅ AdminCaseDetail: Schedule A section with PREVIEW label, collapsible table, Export CSV and Export JSON buttons
+- ✅ Uses existing `/admin/trust-cases/{case_id}/schedule-a` backend endpoint
+
+### STEP 3: MCP Server (Claude Integration)
+- ✅ `/app/backend/mcp_server.py` — MCP HTTP transport, JSON-RPC 2.0, 7 tools: list_cases, read_case, read_schedule_a, read_intake_summary, propose_field_change, propose_client_message, propose_admin_note
+- ✅ POST `/api/mcp/{key}` — Claude connects to this URL
+- ✅ Admin key management: generate, revoke, shown ONCE after generation
+- ✅ `/admin/mcp` page — key management, Zelle phone setting, Claude setup instructions (desktop + mobile app)
+- ✅ `/admin/mcp/proposals` page — Approve/Reject queue, 44px+ buttons, send-confirm dialog for messages
+- ✅ MCP URL: `https://trust.igcfirm.com/api/mcp/{your-key}`
+- ✅ Claude tools blocked from: release, delete, approve their own proposals, touch payments
+- ✅ Audit log on every MCP access
+
+### STEP 4: Payments Overhaul
+- ✅ **Dropbox Sign removed** — "Send for Signing" button and all esign routes removed
+- ✅ **"I have paid" button removed** — /trust-cases/{case_id}/payment-claimed endpoint removed
+- ✅ **Square removed** — createInvoice and Square invoice UI removed
+- ✅ **Stripe Embedded Checkout** — `ui_mode=embedded`, `payment_method_types=["card"]` (no Apple/Google Pay), debit-only via `funding_types_blocked` (requires Stripe API v2026-08-26 on account; graceful fallback if unsupported)
+- ✅ **Admin "Send payment link"** — creates Stripe Embedded Checkout session, emails client with editable subject/message
+- ✅ **Payment card in ClientPortal** — shows embedded Stripe checkout + Zelle tab
+- ✅ **Zelle option** — phone from admin_settings, case reference number IGC-{caseId[:8].upper()} in memo
+- ✅ **Mark Zelle received** admin button — records payment internally, NO client email, admin uses Release when ready
+- ✅ **Stripe webhook admin alert** — when payment succeeds, admin gets email with one-tap case link
+- ✅ **Stripe account display** in AdminCaseDetail — shows account ID and business name live from Stripe API
+- ✅ Zelle phone stored in `admin_settings` collection, editable from /admin/mcp
+- ✅ Default Zelle phone seeded: 9545983681
+
+### Account Switch Required (Stripe)
+- Current keys: test mode, `acct_1UClAdGq3bxxw6x`
+- Target: `acct_1Tyy0A2NJSIllpjQ` (Echo Holding Ventures Inc.)
+- Action needed by Wes: add STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET for the new account via admin settings or secrets tool. STRIPE_ACCOUNT_ID = `acct_1Tyy0A2NJSIllpjQ`.
+- Webhook URL to register in Stripe Dashboard: `https://trust.igcfirm.com/api/stripe/webhook`
+- Events to listen for: `checkout.session.completed`
+
+---
+
+
 - ✅ **Refactor**: extracted the ~580-line NEO block out of `server.py` into `/app/backend/routes/` — `stripe_router.py`, `commissions_router.py`, `nia_router.py`, sharing a small `_neo_state.py` state carrier. `server.py` now weighs ~5,760 lines (down from 6,333). All 22 regression tests still pass (`iteration_27.json`).
 - 🐛 **Bug fix**: Stripe SDK v15 `StripeObject.get()` no longer supports dict-style `.get()` — webhook handler now coerces the event payload via `to_dict_recursive()` before reading fields. Symptom: webhook was returning `AttributeError: get` and never applying paid state.
 - ✅ **Public payment pages**: `/payment/success` + `/payment/cancel` are now public routes so the confirmation UX survives Stripe's cross-origin redirect roundtrip even if the auth cookie is dropped. The status endpoint is unauth by design (session_id is the identifier).

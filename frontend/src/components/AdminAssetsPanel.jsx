@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Download, Pencil } from "lucide-react";
+import { Download, Pencil, ArrowRightLeft, AlertTriangle } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 import AssetItemForm from "@/components/AssetItemForm";
 import { KIND_LABEL, STATUS_LABEL, METHOD_OTHER, METHOD_UNSURE } from "@/lib/assetCopy";
@@ -92,6 +92,7 @@ export default function AdminAssetsPanel({ caseId }) {
   const [tab, setTab] = useState("summary");
   const [d, setD] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [togglingPart, setTogglingPart] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -103,14 +104,44 @@ export default function AdminAssetsPanel({ caseId }) {
   }, [caseId]);
   useEffect(() => { load(); }, [load]);
 
+  const togglePart = async (itemId, currentPart) => {
+    const newPart = currentPart === "I" ? "II" : "I";
+    setTogglingPart(itemId);
+    try {
+      await api.patch(`/admin/trust-cases/${caseId}/asset-items/${itemId}/part`, { part: newPart });
+      toast.success(`Moved to Part ${newPart}`);
+      await load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setTogglingPart(null); }
+  };
+
   if (!d) return null;
   const items = d.items.items || [];
   const unreleased = items.some((i) => i.has_unreleased_edits);
+  const postCompletion = items.filter((i) => i.post_completion);
   const methodLabel = (i) => (i.method === METHOD_OTHER ? i.method_other : i.method === METHOD_UNSURE ? "I am not sure" : i.method) || "";
 
   return (
     <section className="mb-6 bg-white border border-[#E2E0DA] rounded-xl p-4 sm:p-5" data-testid="admin-assets-panel">
       <h2 className="font-serif text-xl text-navy mb-3">What the client owns</h2>
+
+      {/* Alert: items added after trust was signed — awaiting admin review */}
+      {postCompletion.length > 0 && (
+        <div className="mb-3 p-3 rounded-lg bg-blue-50 border border-blue-300 flex gap-2 items-start" data-testid="post-completion-alert">
+          <AlertTriangle className="h-5 w-5 shrink-0 text-blue-700 mt-0.5" />
+          <p className="text-sm text-blue-900">
+            <strong>{postCompletion.length} item{postCompletion.length > 1 ? "s" : ""} added after the trust was signed.</strong> Review each one and set status to "Moved into trust" to include in Schedule A.
+          </p>
+        </div>
+      )}
+
+      {/* Alert: retirement items in list (should be empty, shown if old data slipped through) */}
+      {(d.summary.retirement_items_in_list || []).length > 0 && (
+        <div className="mb-3 p-3 rounded-lg bg-red-50 border border-red-300 text-sm text-red-900" data-testid="retirement-items-alert">
+          <strong>Retirement accounts detected in the item list (must be removed):</strong> {d.summary.retirement_items_in_list.join(", ")}
+        </div>
+      )}
+
       <div className="flex gap-1 mb-4 overflow-x-auto" role="tablist">
         {TABS.map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} className={`min-h-[44px] px-4 rounded-md text-sm font-semibold ${tab === k ? "bg-navy text-white" : "bg-sand-200/50 text-navy"}`} data-testid={`assets-tab-${k}`}>{l}</button>
@@ -127,16 +158,37 @@ export default function AdminAssetsPanel({ caseId }) {
           )}
           {items.length === 0 && <p className="text-sm text-[#94A3B8]">The client has not listed anything yet.</p>}
           {items.map((i) => (
-            <div key={i.id} className="border rounded-lg p-3 text-sm" data-testid={`admin-asset-${i.id}`}>
+            <div key={i.id} className={`border rounded-lg p-3 text-sm ${i.post_completion ? "border-blue-300 bg-blue-50/40" : ""}`} data-testid={`admin-asset-${i.id}`}>
               {editing === i.id ? (
                 <AssetItemForm caseId={caseId} clientState={d.items.client_state} item={i} onSaved={() => { setEditing(null); load(); }} onCancel={() => setEditing(null)} />
               ) : (
                 <>
+                  <div className="flex flex-wrap gap-1 mb-1">
+                    {i.post_completion && (
+                      <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-300" data-testid={`post-completion-badge-${i.id}`}>Added after signing</span>
+                    )}
+                    {i.has_unreleased_edits && <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-900">Edit not visible to client</span>}
+                  </div>
                   <p className="font-semibold text-navy break-words">{i.description}</p>
                   <p className="text-[#64748B]">{KIND_LABEL[i.kind]}{i.other_kind ? ` (${i.other_kind === "Something Else" ? i.other_text : i.other_kind})` : ""}{i.state ? `, ${i.state}` : ""}</p>
-                  <p>Status: <b>{STATUS_LABEL[i.status]}</b>{i.date_delivered ? `, ${i.date_delivered}` : ""}{i.part ? `, Part ${i.part}` : ""}</p>
-                  {methodLabel(i) && <p className="break-words">Method: {methodLabel(i)}</p>}
-                  {i.has_unreleased_edits && <p className="text-amber-800 text-xs mt-1">Edited, not yet visible to client</p>}
+                  <p className="mt-1">Status: <b>{STATUS_LABEL[i.status]}</b>{i.date_delivered ? `, ${i.date_delivered}` : ""}</p>
+                  {methodLabel(i) && <p className="break-words text-[#64748B]">Method: {methodLabel(i)}</p>}
+
+                  {/* Part I/II toggle — only on items with moved or planned status */}
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-sand-200 text-navy font-semibold" data-testid={`part-badge-${i.id}`}>
+                      Schedule A: Part {i.part || "I"}
+                    </span>
+                    <button
+                      onClick={() => togglePart(i.id, i.part || "I")}
+                      disabled={togglingPart === i.id}
+                      className="text-xs px-3 py-1 rounded-full border border-navy/40 text-navy inline-flex items-center gap-1 min-h-[32px] hover:bg-navy/5 disabled:opacity-50"
+                      data-testid={`toggle-part-${i.id}`}
+                    >
+                      <ArrowRightLeft className="h-3 w-3" /> Move to Part {i.part === "II" ? "I" : "II"}
+                    </button>
+                  </div>
+
                   <Badges f={i.flags} />
                   <button onClick={() => setEditing(i.id)} className="mt-2 min-h-[44px] px-4 border rounded-md inline-flex items-center gap-1" data-testid={`admin-asset-edit-${i.id}`}><Pencil className="h-4 w-4" /> Edit</button>
                 </>

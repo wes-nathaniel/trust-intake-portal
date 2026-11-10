@@ -9,6 +9,7 @@ import StatusTracker from "@/components/StatusTracker";
 import TourCard from "@/components/TourCard";
 import AdminDocumentCard from "@/components/AdminDocumentCard";
 import ClientDocumentsPanel from "@/components/ClientDocumentsPanel";
+import PaymentCard from "@/components/PaymentCard";
 import { toast } from "sonner";
 
 export default function ClientPortal() {
@@ -106,23 +107,10 @@ export default function ClientPortal() {
                 </div>
               )}
 
-              {c.payment?.invoice_id && c.payment.status !== "paid" && c.payment.status !== "paid_manual" && c.payment.public_url && (
-                <div className="bg-bronze/10 border border-bronze/40 rounded-xl p-5 flex flex-col sm:flex-row items-start sm:items-center gap-3 justify-between" data-testid={`payment-banner-${c.id}`}>
-                  <div>
-                    <p className="font-semibold text-navy">
-                      {c.payment.status === "ach_pending" ? "ACH payment pending — waiting for your bank to clear." :
-                       "Invoice ready — please complete payment to unlock your final trust."}
-                    </p>
-                    <p className="text-sm text-[#334155]">
-                      {c.payment.amount_cents ? `Amount: $${(c.payment.amount_cents/100).toLocaleString(undefined, {minimumFractionDigits: 2})}` : ""}
-                      {c.payment.due_date ? ` · Due ${c.payment.due_date}` : ""}
-                    </p>
-                  </div>
-                  {c.payment.status !== "ach_pending" && (
-                    <a href={c.payment.public_url} target="_blank" rel="noreferrer" className="btn-accent text-sm shrink-0" data-testid={`pay-btn-${c.id}`}>
-                      Pay securely with Square
-                    </a>
-                  )}
+              {/* Payment card — shown when admin sends a payment link or Zelle is set up */}
+              {(c.payment?.stripe_client_secret || c.payment?.link_sent_at || c.payment?.status === "received_zelle") && (
+                <div className="bg-white border border-[#E2E0DA] rounded-xl p-5" data-testid={`payment-card-wrapper-${c.id}`}>
+                  <PaymentCard caseId={c.id} />
                 </div>
               )}
               <StatusTracker status={c.status} />
@@ -196,8 +184,8 @@ export default function ClientPortal() {
                     data-testid={`download-pdf-${c.id}`}>
                     <Download className="h-4 w-4 inline mr-1" /> PDF
                   </button>
-                  <Link to={`/intake/${c.id}`} className="btn-accent text-sm w-full lg:w-auto sm:col-span-2 lg:col-span-1" data-testid={`continue-case-${c.id}`}>
-                    {c.status === "Completed" ? "View" : "Continue Intake"}
+                  <Link to={`/intake/${c.id}?step=assets`} className="btn-accent text-sm w-full lg:w-auto sm:col-span-2 lg:col-span-1" data-testid={`continue-case-${c.id}`}>
+                    {c.status === "Completed" ? "Add / View Assets" : "Continue Intake"}
                   </Link>
                 </div>
               </div>

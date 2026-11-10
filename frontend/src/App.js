@@ -23,6 +23,8 @@ import AdminWhatsAppInbox from "@/pages/AdminWhatsAppInbox";
 import AdminRepsPage from "@/pages/AdminRepsPage";
 import TransferMethodLibrary from "@/pages/TransferMethodLibrary";
 import AdminCommissionsPage from "@/pages/AdminCommissionsPage";
+import AdminMcpPage from "@/pages/AdminMcpPage";
+import AdminProposalsPage from "@/pages/AdminProposalsPage";
 import AccountSettings from "@/pages/AccountSettings";
 import ConfirmEmailChange from "@/pages/ConfirmEmailChange";
 import ForgotEmail from "@/pages/ForgotEmail";
@@ -79,6 +81,8 @@ function App() {
             <Route path="/admin/reps" element={<ProtectedRoute adminOnly><AdminRepsPage /></ProtectedRoute>} />
             <Route path="/admin/transfer-methods" element={<ProtectedRoute adminOnly><TransferMethodLibrary /></ProtectedRoute>} />
             <Route path="/admin/commissions" element={<ProtectedRoute adminOnly><AdminCommissionsPage /></ProtectedRoute>} />
+            <Route path="/admin/mcp" element={<ProtectedRoute adminOnly><AdminMcpPage /></ProtectedRoute>} />
+            <Route path="/admin/mcp/proposals" element={<ProtectedRoute adminOnly><AdminProposalsPage /></ProtectedRoute>} />
             <Route path="/account" element={<ProtectedRoute><AccountSettings /></ProtectedRoute>} />
             <Route path="/admin/cases/:caseId" element={<ProtectedRoute adminOnly><AdminCaseDetail /></ProtectedRoute>} />
             <Route path="/admin/cases/:caseId/trust-viewer-preview" element={<ProtectedRoute adminOnly><AdminTrustViewerPreview /></ProtectedRoute>} />

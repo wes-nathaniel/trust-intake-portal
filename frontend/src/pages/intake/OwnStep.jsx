@@ -94,6 +94,7 @@ export default function OwnStep({ caseId, reload }) {
   };
   if (!data) return <p>Loading</p>;
   const items = data.items || [];
+  const legacy = data.legacy_assets || [];
 
   return (
     <div className="space-y-5" data-testid="own-step">
@@ -111,7 +112,12 @@ export default function OwnStep({ caseId, reload }) {
                 <>
                   <p className="text-base font-semibold text-navy break-words">{it.description}</p>
                   <p className="text-sm text-[#64748B]">{KIND_LABEL[it.kind] || it.kind}{it.state ? `, ${it.state}` : ""}</p>
-                  <span className={`inline-block mt-2 text-sm px-3 py-1 rounded-full ${it.status === "moved" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}>{STATUS_LABEL[it.status]}</span>
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    <span className={`inline-block text-sm px-3 py-1 rounded-full ${it.status === "moved" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}>{STATUS_LABEL[it.status]}</span>
+                    {it.post_completion && (
+                      <span className="inline-block text-xs px-3 py-1 rounded-full bg-blue-50 text-blue-800 border border-blue-200" data-testid={`pending-review-${it.id}`}>Pending team review</span>
+                    )}
+                  </div>
                   <div className="flex gap-3 mt-3">
                     <button onClick={() => setEditing(it.id)} className="flex-1 min-h-[48px] border rounded-lg inline-flex items-center justify-center gap-1" data-testid={`asset-edit-${it.id}`}><Pencil className="h-4 w-4" /> Edit</button>
                     <button onClick={() => remove(it)} className="flex-1 min-h-[48px] border rounded-lg inline-flex items-center justify-center gap-1 text-red-700" data-testid={`asset-remove-${it.id}`}><Trash2 className="h-4 w-4" /> Remove</button>
@@ -123,6 +129,18 @@ export default function OwnStep({ caseId, reload }) {
         </ul>
       )}
       {items.length > 0 && <p className="text-lg font-semibold text-emerald-800" data-testid="great-job">Great job. You listed {items.length} item{items.length === 1 ? "" : "s"}.</p>}
+
+      {/* Legacy assets (read-only) */}
+      {legacy.length > 0 && (
+        <div className="bg-[#F6F4F0] border border-[#E2E0DA] rounded-xl p-4 space-y-2" data-testid="legacy-assets">
+          <p className="text-sm font-semibold text-[#64748B]">Items from your earlier intake (read-only)</p>
+          <ul className="space-y-1">
+            {legacy.map((a, i) => (
+              <li key={i} className="text-sm text-navy">{typeof a === "string" ? a : a.description}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {mode === "type" && <JustTypeIt caseId={caseId} onDone={done} />}
       {mode === "form" && <AssetItemForm caseId={caseId} clientState={data.client_state} onSaved={done} onCancel={() => setMode(null)} />}

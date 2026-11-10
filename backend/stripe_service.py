@@ -1,19 +1,19 @@
 """Stripe payments for the Trust Portal.
 
-Uses the Emergent claimable Stripe sandbox. Keys are read from env vars
-provisioned into `/app/backend/.env`:
-
+Keys are read from env vars in `/app/backend/.env`:
     STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_ACCOUNT_ID,
-    STRIPE_WEBHOOK_SECRET, STRIPE_MODE, STRIPE_ONBOARDING_URL
+    STRIPE_WEBHOOK_SECRET, STRIPE_MODE
 
 Two products are exposed by lookup key:
+    - basic_living_trust
+    - private_trust
 
-    - basic_living_trust  ($1,497)
-    - private_trust       ($2,497)
+The setup_catalog() helper is idempotent — safe to call at every startup.
 
-The setup_catalog() helper below is idempotent — safe to call at every
-FastAPI startup. It will create the Product/Price rows on first run and
-be a no-op afterwards.
+Checkout mode: Embedded Checkout (ui_mode=embedded).
+Debit-only restriction uses payment_method_options.card.restrictions.funding_types_blocked.
+Requires Stripe API version 2026-08-26 or later on the connected account.
+Apple Pay and Google Pay are disabled by passing payment_method_types=["card"].
 """
 from __future__ import annotations
 
@@ -25,12 +25,44 @@ import stripe
 
 logger = logging.getLogger("stripe-service")
 
-stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or "sk_test_emergent"
+# Key resolution — CUSTOM_STRIPE_* (user-supplied via secrets card) always wins
+# over STRIPE_* (Emergent platform-managed, may be overwritten on restart).
+# This ensures the user's Echo Holding Ventures account is always used once set.
 
-STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
-STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
+def _key() -> str:
+    return (
+        os.environ.get("CUSTOM_STRIPE_SECRET_KEY")
+        or os.environ.get("STRIPE_SECRET_KEY")
+        or ""
+    )
+
+def _apply_key():
+    """Set stripe.api_key from the highest-priority source before every API call."""
+    stripe.api_key = _key()
+
+def get_publishable_key() -> str:
+    return (
+        os.environ.get("CUSTOM_STRIPE_PUBLISHABLE_KEY")
+        or os.environ.get("STRIPE_PUBLISHABLE_KEY")
+        or ""
+    )
+
+def get_webhook_secret() -> str:
+    return (
+        os.environ.get("CUSTOM_STRIPE_WEBHOOK_SECRET")
+        or os.environ.get("STRIPE_WEBHOOK_SECRET")
+        or ""
+    )
+
+# Keep module-level names for any code that imports them directly (backward compat).
+# These are read once at import; use the getter functions for live values.
+STRIPE_WEBHOOK_SECRET = get_webhook_secret()
+STRIPE_PUBLISHABLE_KEY = get_publishable_key()
 STRIPE_MODE = os.environ.get("STRIPE_MODE", "test")
 STRIPE_ONBOARDING_URL = os.environ.get("STRIPE_ONBOARDING_URL", "")
+
+# Apply key immediately at import so any top-level stripe usage works.
+_apply_key()
 
 
 # Catalog — trust preparation professional services. Fixed dollar amounts,
@@ -58,10 +90,11 @@ CATALOG = [
 
 
 def is_enabled() -> bool:
-    return bool(os.environ.get("STRIPE_SECRET_KEY"))
+    return bool(_key())
 
 
 def _get_or_create_product(entry: Dict[str, Any]):
+    _apply_key()
     for p in stripe.Product.list(active=True, limit=100).auto_paging_iter():
         md = p.to_dict().get("metadata") or {}
         if md.get("emergent_product_id") == entry["emergent_product_id"]:
@@ -86,6 +119,7 @@ def setup_catalog() -> Dict[str, str]:
     if not is_enabled():
         logger.warning("setup_catalog skipped — STRIPE_SECRET_KEY not set")
         return out
+    _apply_key()
     try:
         for entry in CATALOG:
             product = _get_or_create_product(entry)
@@ -120,6 +154,7 @@ def setup_catalog() -> Dict[str, str]:
 
 
 def price_for_lookup(lookup_key: str):
+    _apply_key()
     prices = stripe.Price.list(lookup_keys=[lookup_key], active=True, limit=1).data
     if not prices:
         raise RuntimeError(f"Stripe price not found for lookup_key={lookup_key}")
@@ -132,46 +167,105 @@ def create_checkout_session(
     metadata: Optional[Dict[str, str]] = None,
     customer_email: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create a Stripe Checkout Session for the given catalog item.
+    """Create an Embedded Checkout Session (debit-only, no Apple Pay / Google Pay).
 
-    origin_url is the frontend origin (e.g. https://app.example.com) that
-    the client will be redirected back to. Success + cancel URLs are
-    built from it so this same code works in preview and production.
+    Returns client_secret for the EmbeddedCheckout component on the frontend.
+    If funding_types_blocked is not supported by the account API version,
+    the session is created without it (card-only still enforced via payment_method_types).
     """
+    _apply_key()
     price = price_for_lookup(lookup_key)
     md = {k: (v or "") for k, v in (metadata or {}).items()}
-    kwargs = dict(
+    base_kwargs = dict(
         line_items=[{"price": price.id, "quantity": 1}],
         mode="subscription" if price.recurring else "payment",
-        success_url=f"{origin_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{origin_url}/payment/cancel?session_id={{CHECKOUT_SESSION_ID}}",
+        ui_mode="embedded",
+        payment_method_types=["card"],   # disables Apple Pay and Google Pay
+        return_url=f"{origin_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
         metadata=md,
     )
     if customer_email:
-        kwargs["customer_email"] = customer_email
-    session = stripe.checkout.Session.create(**kwargs)
+        base_kwargs["customer_email"] = customer_email
+
+    # Attempt debit-only restriction (requires Stripe API version 2026-08-26+)
+    try:
+        session = stripe.checkout.Session.create(
+            **base_kwargs,
+            payment_method_options={
+                "card": {
+                    "restrictions": {
+                        "funding_types_blocked": ["credit", "prepaid"]
+                    }
+                }
+            },
+        )
+        debit_enforced = True
+    except Exception as e:
+        logger.warning(f"Debit-only restriction not supported by API version, creating without it: {e}")
+        session = stripe.checkout.Session.create(**base_kwargs)
+        debit_enforced = False
+
     return {
         "session_id": session.id,
-        "checkout_url": session.url,
+        "client_secret": session.client_secret,
+        # Keep checkout_url for backward compat (None for embedded sessions)
+        "checkout_url": getattr(session, "url", None),
         "amount_cents": (price.unit_amount or 0),
         "currency": price.currency,
+        "debit_enforced": debit_enforced,
     }
 
 
 def retrieve_session(session_id: str):
+    _apply_key()
     return stripe.checkout.Session.retrieve(session_id)
 
 
 def construct_event(payload: bytes, sig_header: str):
-    return stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    return stripe.Webhook.construct_event(payload, sig_header, get_webhook_secret())
+
+
+def account_info() -> Dict[str, Any]:
+    """Retrieve live account name from Stripe for admin diagnostics."""
+    _apply_key()
+    try:
+        acct = stripe.Account.retrieve()
+        # stripe-python v5+ returns StripeObjects, not plain dicts.
+        # Coerce to dict for safe attribute access.
+        acct_d = acct.to_dict() if hasattr(acct, "to_dict") else dict(acct)
+        bp = acct_d.get("business_profile") or {}
+        name = (bp.get("name") if isinstance(bp, dict) else getattr(bp, "name", "")) or ""
+        if not name:
+            settings = acct_d.get("settings") or {}
+            dash = (settings.get("dashboard") if isinstance(settings, dict) else {}) or {}
+            name = (dash.get("display_name") if isinstance(dash, dict) else "") or ""
+        return {
+            "account_id": acct_d.get("id", ""),
+            "business_name": name,
+            "email": acct_d.get("email", ""),
+            "country": acct_d.get("country", ""),
+            "charges_enabled": acct_d.get("charges_enabled"),
+        }
+    except Exception as e:
+        logger.warning(f"account_info failed: {e}")
+        return {"account_id": os.environ.get("STRIPE_ACCOUNT_ID", ""), "error": str(e)}
 
 
 def health() -> Dict[str, Any]:
+    info = account_info()
+    pk = get_publishable_key()
+    using_custom = bool(os.environ.get("CUSTOM_STRIPE_SECRET_KEY"))
     return {
         "enabled": is_enabled(),
         "mode": STRIPE_MODE,
-        "account_id": os.environ.get("STRIPE_ACCOUNT_ID"),
-        "publishable_key": STRIPE_PUBLISHABLE_KEY[:20] + "..." if STRIPE_PUBLISHABLE_KEY else None,
-        "webhook_configured": bool(STRIPE_WEBHOOK_SECRET),
-        "onboarding_url": STRIPE_ONBOARDING_URL,
+        "account_id": info.get("account_id") or os.environ.get("STRIPE_ACCOUNT_ID"),
+        "business_name": info.get("business_name", ""),
+        "charges_enabled": info.get("charges_enabled"),
+        "publishable_key": pk[:20] + "..." if pk else None,
+        "webhook_configured": bool(get_webhook_secret()),
+        "checkout_mode": "embedded",
+        "debit_only": True,
+        "apple_pay": False,
+        "google_pay": False,
+        "key_source": "custom (your account)" if using_custom else "platform managed",
     }

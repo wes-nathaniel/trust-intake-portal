@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import Layout from "@/components/Layout";
 import api, { formatApiError } from "@/lib/api";
@@ -7,7 +7,7 @@ import AdminDocumentsManager from "@/components/AdminDocumentsManager";
 import MessageThread from "@/components/MessageThread";
 import WhatsAppPanel from "@/components/WhatsAppPanel";
 import { toast } from "sonner";
-import { ArrowLeft, Upload, Download, FileText, StickyNote, Download as DL, RefreshCw, MailPlus, Clock, Lock, Unlock, BellRing, ExternalLink, Trash2, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Upload, Download, FileText, StickyNote, RefreshCw, MailPlus, Clock, BellRing, ExternalLink, Trash2, ShieldCheck, Send, CreditCard, Smartphone, ChevronDown } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { displaySSN } from "@/pages/intake/_shared";
 import DocRequestsPanel from "@/components/DocRequestsPanel";
@@ -50,17 +50,17 @@ export default function AdminCaseDetail() {
   const einInputRef = useRef();
   const [uploadingEin, setUploadingEin] = useState(false);
   const [resending, setResending] = useState(false);
+  const [paymentLinkOpen, setPaymentLinkOpen] = useState(false);
+  const [plLookupKey, setPlLookupKey] = useState("basic_living_trust");
+  const [plSubject, setPlSubject] = useState("");
+  const [plMessage, setPlMessage] = useState("");
+  const [plSending, setPlSending] = useState(false);
+  const [scheduleA, setScheduleA] = useState(null);
+  const [scheduleAOpen, setScheduleAOpen] = useState(false);
+  const [stripeInfo, setStripeInfo] = useState(null);
 
   const trustDraftInputRef = useRef();
   const [uploadingTrust, setUploadingTrust] = useState(false);
-
-  const [invoiceOpen, setInvoiceOpen] = useState(false);
-  const [invoiceAmount, setInvoiceAmount] = useState("");
-  const [invoiceDesc, setInvoiceDesc] = useState("");
-  const [invoiceDue, setInvoiceDue] = useState(14);
-  const [invoiceSending, setInvoiceSending] = useState(false);
-
-  // Admin force-change of the client's login email. We require two confirmations
   // (typed new email + explicit "Change email" click) so this can't fire from an
   // errant click. Keeps all case data intact — only `users.email` and this case's
   // `client_email` move.
@@ -94,7 +94,21 @@ export default function AdminCaseDetail() {
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [caseId]);
+  const loadScheduleA = useCallback(async () => {
+    try {
+      const { data } = await api.get(`/admin/trust-cases/${caseId}/schedule-a`);
+      setScheduleA(data);
+    } catch (e) { /* non-critical */ }
+  }, [caseId]);
+
+  const loadStripeInfo = useCallback(async () => {
+    try {
+      const { data } = await api.get("/admin/stripe/health");
+      setStripeInfo(data);
+    } catch (e) { /* non-critical */ }
+  }, []);
+
+  useEffect(() => { load(); loadScheduleA(); loadStripeInfo(); /* eslint-disable-next-line */ }, [caseId]);
 
   if (!c) return <Layout><p>Loading…</p></Layout>;
 
@@ -225,29 +239,35 @@ export default function AdminCaseDetail() {
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
-  const createInvoice = async () => {
-    const cents = Math.round(parseFloat(invoiceAmount || "0") * 100);
-    if (!(cents > 0)) { toast.error("Enter an amount greater than $0.00"); return; }
-    setInvoiceSending(true);
+  const sendPaymentLink = async () => {
+    if (!plLookupKey) { toast.error("Choose a package."); return; }
+    setPlSending(true);
     try {
-      const { data } = await api.post(`/admin/trust-cases/${caseId}/invoice`, {
-        amount_cents: cents,
-        description: invoiceDesc || undefined,
-        due_in_days: Number(invoiceDue) || 14,
+      const origin = window.location.origin;
+      await api.post(`/admin/trust-cases/${caseId}/send-payment-link`, {
+        lookup_key: plLookupKey,
+        origin_url: origin,
+        email_subject: plSubject || undefined,
+        email_message: plMessage || undefined,
       });
-      toast.success(`Invoice sent to ${c.client_email}`);
-      if (data.public_url) window.open(data.public_url, "_blank");
-      setInvoiceOpen(false);
-      setInvoiceAmount(""); setInvoiceDesc("");
+      toast.success("Payment link sent to client.");
+      setPaymentLinkOpen(false);
       await load();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-    finally { setInvoiceSending(false); }
+    finally { setPlSending(false); }
   };
 
-  const refreshInvoice = async () => {
+  const markZelleReceived = async () => {
+    const amtStr = window.prompt(
+      "Enter the amount received via Zelle (USD). No email is sent to the client. Use Release when ready.",
+      c.payment?.amount_cents ? (c.payment.amount_cents / 100).toFixed(2) : ""
+    );
+    if (amtStr === null) return;
+    const n = parseFloat(amtStr || "");
+    if (!(n > 0)) { toast.error("Enter an amount greater than 0."); return; }
     try {
-      await api.get(`/admin/trust-cases/${caseId}/invoice`);
-      toast.success("Invoice status refreshed from Square");
+      await api.post(`/admin/trust-cases/${caseId}/mark-zelle-received`, { amount_cents: Math.round(n * 100) });
+      toast.success("Zelle payment recorded. Use Release to tell the client.");
       await load();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
@@ -255,47 +275,37 @@ export default function AdminCaseDetail() {
   const setAmountOnly = async () => {
     const suggested = c.payment?.suggested_amount_cents
       || ((c.intake_path || "new") === "review" ? 29700 : 99700);
-    const suggestedDollars = (suggested / 100).toFixed(2);
-    const pathLabel = (c.intake_path || "new") === "review" ? "Existing Trust Review" : "New Trust Drafting";
     const dollars = window.prompt(
-      `Set payment amount (USD) — ${pathLabel}.\n\n` +
-      "Enter a number like 297 or 997.50. The suggested amount for this path is pre-filled; you can override it.",
-      suggestedDollars
+      "Set payment amount (USD). Enter a number like 997 or 1497.",
+      (suggested / 100).toFixed(2)
     );
     if (dollars === null) return;
     const n = parseFloat(dollars);
     if (!(n > 0)) { toast.error("Enter a number greater than 0."); return; }
     try {
       await api.put(`/admin/trust-cases/${caseId}/payment-amount`, { amount_cents: Math.round(n * 100) });
-      toast.success(`Amount set: $${n.toFixed(2)}. Status: Ready for Payment.`);
+      toast.success(`Amount set to $${n.toFixed(2)}.`);
       await load();
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
-  const verifyPayment = async () => {
-    const amtStr = window.prompt(
-      "Verify and approve client's claimed payment.\n\n" +
-      "Optionally enter the FINAL amount (USD) to lock it in (or leave blank to keep current). " +
-      "This advances the internal status to 'Payment Verified'. No email is sent. Use Release to tell the client.",
-      ""
-    );
-    if (amtStr === null) return;
-    const body = {};
-    const n = parseFloat(amtStr || "");
-    if (n > 0) body.amount_cents = Math.round(n * 100);
+  const exportScheduleA = async (format = "csv") => {
     try {
-      await api.post(`/admin/trust-cases/${caseId}/payment-verify`, body);
-      toast.success("Payment verified. Use Release to tell the client.");
-      await load();
-    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
-  };
-
-  const markPaymentReceived = async () => {
-    if (!window.confirm("Manually mark this payment as received? This should only be used if payment was made offline or cleared outside Square.")) return;
-    try {
-      await api.post(`/admin/trust-cases/${caseId}/mark-payment-received`);
-      toast.success("Payment marked as received.");
-      await load();
+      const res = await api.get(`/admin/trust-cases/${caseId}/schedule-a?format=${format}`, {
+        responseType: format === "csv" ? "blob" : "json",
+      });
+      if (format === "csv") {
+        const url = URL.createObjectURL(res.data);
+        const a = document.createElement("a");
+        a.href = url; a.download = `schedule-a-${caseId.slice(0, 8)}.csv`; a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `schedule-a-${caseId.slice(0, 8)}.json`; a.click();
+        URL.revokeObjectURL(url);
+      }
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
@@ -550,6 +560,65 @@ export default function AdminCaseDetail() {
       <AdminCaseFieldsEditor key={c.updated_at} c={c} onSaved={load} />
       <AdminAssetsPanel caseId={caseId} />
 
+      {/* Schedule A */}
+      {scheduleA && (scheduleA.part_i?.length > 0 || scheduleA.part_ii?.length > 0) && (
+        <Section title="Schedule A — Preview">
+          <p className="text-xs uppercase text-amber-700 font-semibold mb-2 tracking-wide" data-testid="schedule-a-label">PREVIEW — Not the official document</p>
+          <button type="button" onClick={() => setScheduleAOpen(!scheduleAOpen)}
+            className="text-sm text-navy flex items-center gap-2 min-h-[44px] mb-2"
+            data-testid="schedule-a-toggle">
+            <ChevronDown className={`h-4 w-4 transition-transform ${scheduleAOpen ? "rotate-180" : ""}`} />
+            {scheduleAOpen ? "Hide" : "Show"} items
+            ({(scheduleA.part_i?.length || 0) + (scheduleA.part_ii?.length || 0)} moved into trust)
+          </button>
+
+          {scheduleAOpen && (
+            <div className="overflow-x-auto rounded-lg border border-[#E2E0DA]" data-testid="schedule-a-table">
+              <table className="w-full text-xs">
+                <thead className="bg-[#F6F4F0]">
+                  <tr>
+                    <th className="px-3 py-2 text-left text-[#64748B] font-semibold">#</th>
+                    <th className="px-3 py-2 text-left text-[#64748B] font-semibold">Part</th>
+                    <th className="px-3 py-2 text-left text-[#64748B] font-semibold">Description</th>
+                    <th className="px-3 py-2 text-left text-[#64748B] font-semibold">Date</th>
+                    <th className="px-3 py-2 text-left text-[#64748B] font-semibold">Method</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(scheduleA.part_i || []).map((r, i) => (
+                    <tr key={`i-${i}`} className="border-t border-[#E2E0DA]">
+                      <td className="px-3 py-2">{r.number}</td>
+                      <td className="px-3 py-2 text-[#64748B]">Part I</td>
+                      <td className="px-3 py-2">{r.description_of_property}</td>
+                      <td className="px-3 py-2">{r.date_delivered || "—"}</td>
+                      <td className="px-3 py-2">{r.instrument_or_method_of_transfer || "—"}</td>
+                    </tr>
+                  ))}
+                  {(scheduleA.part_ii || []).map((r, i) => (
+                    <tr key={`ii-${i}`} className="border-t border-[#E2E0DA]">
+                      <td className="px-3 py-2">{r.number}</td>
+                      <td className="px-3 py-2 text-[#64748B]">Part II</td>
+                      <td className="px-3 py-2">{r.description_of_property}</td>
+                      <td className="px-3 py-2">{r.date_delivered || "—"}</td>
+                      <td className="px-3 py-2">{r.instrument_or_method_of_transfer || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="flex gap-3 mt-3 flex-wrap">
+            <button onClick={() => exportScheduleA("csv")} className="btn-secondary text-sm min-h-[44px] flex items-center gap-2" data-testid="export-schedule-a-csv">
+              <Download className="h-4 w-4" /> Export CSV
+            </button>
+            <button onClick={() => exportScheduleA("json")} className="btn-secondary text-sm min-h-[44px] flex items-center gap-2" data-testid="export-schedule-a-json">
+              <FileText className="h-4 w-4" /> Export JSON
+            </button>
+          </div>
+        </Section>
+      )}
+
       {c.pending_invite && (
         <div className="mb-6 bg-amber-50 border border-amber-300 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 justify-between" data-testid="pending-invite-banner">
           <div className="flex items-start gap-3">
@@ -740,120 +809,108 @@ export default function AdminCaseDetail() {
           )}
         </Section>
 
-        <Section title="Payment (Zelle / Cash App / Square)">
-          <p className="text-sm text-[#64748B] mb-3">
-            Set the case amount for any payment method. Square invoice is optional (only for card payments).
-          </p>
+        <Section title="Payment">
+          {/* Stripe account info (small) */}
+          {stripeInfo && (
+            <div className="text-xs text-[#64748B] mb-3 flex items-center gap-2 flex-wrap" data-testid="stripe-account-info">
+              <CreditCard className="h-3.5 w-3.5" />
+              Stripe: <b className="text-navy">{stripeInfo.business_name || stripeInfo.account_id}</b>
+              {" "}&middot; {stripeInfo.mode?.toUpperCase()}
+              {" "}&middot; {stripeInfo.charges_enabled ? "charges enabled" : "charges not enabled"}
+              {" "}&middot; Debit only &middot; No Apple/Google Pay
+            </div>
+          )}
+
+          {/* Payment status */}
           <div className="flex flex-wrap gap-2 mb-4">
-            <button onClick={setAmountOnly} className="btn-secondary text-sm" data-testid="set-amount-only-btn">
-              {c.payment?.amount_cents ? "Update amount" : "Set payment amount"}
+            <button onClick={setAmountOnly} className="btn-secondary text-sm min-h-[44px]" data-testid="set-amount-btn">
+              {c.payment?.amount_cents ? `Update amount ($${(c.payment.amount_cents/100).toFixed(2)})` : "Set payment amount"}
             </button>
-            {c.payment?.claimed && c.payment?.status === "pending_verification" && (
-              <button onClick={verifyPayment} className="btn-accent text-sm" data-testid="verify-payment-btn">
-                <Unlock className="h-4 w-4 inline mr-1" /> Verify &amp; Approve Payment
+            <button onClick={() => setPaymentLinkOpen(!paymentLinkOpen)} className="btn-primary text-sm min-h-[44px] flex items-center gap-2" data-testid="send-payment-link-btn">
+              <Send className="h-4 w-4" /> Send payment link
+            </button>
+            {(!c.payment?.status || ["none","amount_set","link_sent"].includes(c.payment?.status)) && (
+              <button onClick={markZelleReceived} className="btn-secondary text-sm min-h-[44px] flex items-center gap-2" data-testid="mark-zelle-btn">
+                <Smartphone className="h-4 w-4" /> Mark Zelle received
               </button>
             )}
           </div>
 
-          {c.payment?.claimed && (
-            <div className="mb-4 p-3 bg-amber-50 border border-amber-300 rounded-md text-sm" data-testid="payment-claimed-banner">
-              <p className="font-semibold text-amber-900">
-                Client claims payment via <span className="uppercase">{c.payment.claimed_method}</span>
-              </p>
-              <p className="text-amber-900/90 text-xs mt-1">
-                Submitted {c.payment.claimed_at?.slice(0, 19).replace("T", " ")}
-                {c.payment.claimed_note && ` · Note: ${c.payment.claimed_note}`}
-              </p>
-              {c.payment.status !== "verified" && (
-                <p className="text-amber-900 text-xs mt-1 font-semibold">
-                  Action required: verify payment in your records, then click "Verify &amp; Approve Payment" above.
-                </p>
-              )}
-            </div>
-          )}
-
-          {!c.payment?.invoice_id ? (
-            <div>
-              <p className="text-xs uppercase text-[#64748B] font-semibold mb-2">Optional: Square invoice (debit/credit card)</p>
-              {invoiceOpen ? (
-                <div className="space-y-3 border border-bronze/40 bg-bronze/5 rounded-lg p-4">
-                  <div className="grid sm:grid-cols-3 gap-3">
-                    <div>
-                      <label className="text-xs uppercase text-[#64748B] font-semibold">Amount (USD)</label>
-                      <input type="number" step="0.01" min="0.01" value={invoiceAmount}
-                        onChange={(e) => setInvoiceAmount(e.target.value)}
-                        placeholder="0.00"
-                        className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
-                        data-testid="invoice-amount-input" />
-                    </div>
-                    <div>
-                      <label className="text-xs uppercase text-[#64748B] font-semibold">Due in (days)</label>
-                      <input type="number" min="1" max="90" value={invoiceDue}
-                        onChange={(e) => setInvoiceDue(e.target.value)}
-                        className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
-                        data-testid="invoice-due-input" />
-                    </div>
-                    <div className="sm:col-span-3">
-                      <label className="text-xs uppercase text-[#64748B] font-semibold">Description (optional)</label>
-                      <input type="text" value={invoiceDesc}
-                        onChange={(e) => setInvoiceDesc(e.target.value)}
-                        placeholder="Trust preparation & filing fee"
-                        className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
-                        data-testid="invoice-desc-input" />
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={createInvoice} disabled={invoiceSending} className="btn-primary text-sm" data-testid="invoice-submit-btn">
-                      {invoiceSending ? "Sending…" : "Create & send Square invoice"}
-                    </button>
-                    <button onClick={() => setInvoiceOpen(false)} className="btn-secondary text-sm">Cancel</button>
-                  </div>
-                </div>
-              ) : (
-                <button onClick={() => setInvoiceOpen(true)} className="btn-secondary text-sm" data-testid="create-invoice-btn">
-                  <DL className="h-4 w-4 inline mr-1" /> Create Square invoice
-                </button>
-              )}
-            </div>
-          ) : (
-            <div data-testid="payment-details">
-              <KV k="Amount" v={c.payment.amount_cents ? `$${(c.payment.amount_cents/100).toLocaleString(undefined, {minimumFractionDigits: 2})}` : "—"} />
-              <KV k="Status" v={c.payment.status} />
-              <KV k="Square Invoice ID" v={c.payment.invoice_id} />
-              <KV k="Square Status" v={c.payment.invoice_status || "—"} />
-              <KV k="Due date" v={c.payment.due_date} />
-              <KV k="Source" v={c.payment.source_type || "—"} />
-              <KV k="Last webhook" v={c.payment.last_webhook_at?.slice(0, 19).replace("T", " ") || "—"} />
-              {c.payment.risk_level && <KV k="Risk level" v={c.payment.risk_level} />}
-              <div className="flex flex-wrap gap-2 mt-3">
-                {c.payment.public_url && (
-                  <a href={c.payment.public_url} target="_blank" rel="noreferrer" className="btn-secondary text-sm" data-testid="invoice-public-link">
-                    <ExternalLink className="h-4 w-4 inline mr-1" /> Open in Square
-                  </a>
-                )}
-                <button onClick={refreshInvoice} className="btn-secondary text-sm" data-testid="invoice-refresh-btn">
-                  <RefreshCw className="h-4 w-4 inline mr-1" /> Refresh status
-                </button>
-                {c.payment.status !== "paid" && c.payment.status !== "paid_manual" && c.payment.status !== "verified" && (
-                  <button onClick={markPaymentReceived} className="btn-accent text-sm" data-testid="mark-paid-btn">
-                    Mark Square payment received (manual)
-                  </button>
-                )}
+          {/* Send payment link form */}
+          {paymentLinkOpen && (
+            <div className="border border-bronze/40 bg-bronze/5 rounded-xl p-4 space-y-3 mb-4" data-testid="payment-link-form">
+              <p className="text-sm font-semibold text-navy">Send Stripe payment link to {c.client_email}</p>
+              <p className="text-xs text-[#64748B]">Debit cards only. No credit cards, no Apple Pay, no Google Pay. Stripe Embedded Checkout.</p>
+              <div>
+                <label className="text-xs uppercase text-[#64748B] font-semibold">Package</label>
+                <select value={plLookupKey} onChange={e => setPlLookupKey(e.target.value)}
+                  className="w-full rounded-lg border border-input bg-white px-3 py-2 text-sm mt-1 min-h-[44px]"
+                  data-testid="pl-package-select">
+                  <option value="basic_living_trust">Basic Living Trust</option>
+                  <option value="private_trust">Private Trust</option>
+                </select>
               </div>
-              {c.payment.status === "ach_pending" && (
-                <p className="text-xs text-amber-700 mt-3">ACH is pending — typically 3–5 business days to clear.</p>
-              )}
+              <div>
+                <label className="text-xs uppercase text-[#64748B] font-semibold">Email subject (optional)</label>
+                <input type="text" value={plSubject} onChange={e => setPlSubject(e.target.value)}
+                  placeholder="Your trust payment is ready"
+                  className="w-full rounded-lg border border-input bg-white px-3 py-2 text-sm mt-1 min-h-[44px]"
+                  data-testid="pl-subject-input" />
+              </div>
+              <div>
+                <label className="text-xs uppercase text-[#64748B] font-semibold">Email message (optional)</label>
+                <textarea value={plMessage} onChange={e => setPlMessage(e.target.value)}
+                  rows={3} placeholder="Your payment is now ready. Debit cards only."
+                  className="w-full rounded-lg border border-input bg-white px-3 py-2 text-sm mt-1 resize-none"
+                  data-testid="pl-message-input" />
+              </div>
+              <div className="flex gap-3">
+                <button onClick={sendPaymentLink} disabled={plSending}
+                  className="btn-primary text-sm min-h-[48px] flex-1 flex items-center justify-center gap-2"
+                  data-testid="pl-send-btn">
+                  <Send className="h-4 w-4" /> {plSending ? "Sending…" : "Send link to client"}
+                </button>
+                <button onClick={() => setPaymentLinkOpen(false)} className="btn-secondary text-sm min-h-[48px]"
+                  data-testid="pl-cancel-btn">Cancel</button>
+              </div>
+              <p className="text-xs text-[#64748B]">
+                Note: Stripe sends its own automatic receipt email to the client after payment succeeds.
+                You can turn this off in your Stripe Dashboard under Settings &rarr; Customer emails &rarr; Successful payments.
+              </p>
             </div>
           )}
 
-          {!c.payment?.invoice_id && c.payment?.amount_cents && (
-            <div className="mt-3 text-sm" data-testid="payment-summary">
-              <KV k="Amount on file" v={`$${(c.payment.amount_cents/100).toLocaleString(undefined, {minimumFractionDigits: 2})}`} />
-              <KV k="Status" v={c.payment.status} />
-              {c.payment.claimed_at && <KV k="Claimed at" v={c.payment.claimed_at?.slice(0, 19).replace("T", " ")} />}
-              {c.payment.verified_at && <KV k="Verified at" v={c.payment.verified_at?.slice(0, 19).replace("T", " ")} />}
+          {/* Zelle received */}
+          {c.payment?.status === "received_zelle" && (
+            <div className="bg-emerald-50 border border-emerald-300 rounded-lg px-4 py-3 text-sm mb-4" data-testid="zelle-received-banner">
+              <p className="font-semibold text-emerald-900">Zelle payment recorded</p>
+              <p className="text-xs text-emerald-800 mt-0.5">
+                ${(c.payment.amount_cents / 100).toFixed(2)} received manually
+                {c.payment.zelle_received_at ? ` on ${c.payment.zelle_received_at.slice(0, 10)}` : ""}
+              </p>
+              <p className="text-xs text-emerald-700 mt-1">Client visible status not changed. Press Release when ready.</p>
             </div>
           )}
+
+          {/* Stripe paid */}
+          {["paid","verified"].includes(c.payment?.status) && (
+            <div className="bg-emerald-50 border border-emerald-300 rounded-lg px-4 py-3 text-sm mb-4" data-testid="stripe-paid-banner">
+              <p className="font-semibold text-emerald-900">Stripe payment confirmed</p>
+              <p className="text-xs text-emerald-800 mt-0.5">
+                ${c.payment?.amount_cents ? (c.payment.amount_cents / 100).toFixed(2) : "?"}
+                {c.payment?.stripe_paid_at ? ` on ${c.payment.stripe_paid_at.slice(0, 10)}` : ""}
+              </p>
+            </div>
+          )}
+
+          {/* Summary */}
+          <div className="text-sm space-y-1">
+            <div className="text-xs text-[#64748B]">
+              <span className="font-semibold">Status:</span> {c.payment?.status || "none"}
+              {c.payment?.amount_cents ? ` · $${(c.payment.amount_cents/100).toFixed(2)}` : ""}
+              {c.payment?.link_sent_at ? ` · link sent ${c.payment.link_sent_at.slice(0,10)}` : ""}
+            </div>
+          </div>
         </Section>
 
         <Section title="Trust Draft — Secure Preview">

@@ -29,7 +29,6 @@ import io
 import html as html_lib
 from zoneinfo import ZoneInfo
 from pdf_export import build_intake_pdf
-import esign
 import sms
 import whatsapp
 import notify
@@ -1208,10 +1207,29 @@ async def _clean_asset_item(body: AssetItemIn, case: dict, existing: Optional[di
         signed = bool(case.get("trust_unlocked")) or case.get("status") == "Completed"
         d.update({"id": new_id(), "created_at": now_iso(), "part": "II" if signed else "I"})
     d["updated_at"] = now_iso()
+    # Flag items added AFTER the trust was signed so admin can review before including in Schedule A.
+    if existing is None and signed:
+        d["post_completion"] = True
     return d
 
 
-@api_router.get("/transfer-methods")
+async def _alert_admin_asset_change(case: dict, action: str, description: str):
+    """Send ADMIN_NOTIFY_EMAIL when a client adds or changes an asset on a completed case."""
+    client_name = case.get("client_name") or case.get("client_email") or "A client"
+    case_id = case.get("id", "")
+    case_link = f"{FRONTEND_URL.rstrip('/')}/admin/cases/{case_id}"
+    subject = f"IGC: {client_name} {action} an asset"
+    body_html = (
+        f"<p>{client_name} <strong>{action}</strong> an asset on their completed trust:</p>"
+        f"<p style='margin:12px 0;padding:12px;background:#f6f4f0;border-left:3px solid #b89e6d;"
+        f"font-family:monospace;'>{description}</p>"
+        f"<p><a href='{case_link}' style='display:inline-block;background:#1C252E;color:#ffffff;"
+        f"padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;'>Review case</a></p>"
+    )
+    await send_email_notification(ADMIN_NOTIFY_EMAIL, subject, body_html)
+
+
+
 async def list_transfer_methods(kind: str, state: str = "", _: dict = Depends(get_current_user)):
     rows = await asset_items.methods_for(db, kind, state)
     return {"methods": [{"wording": r["wording"], "status": r["status"]} for r in rows]}
@@ -1222,7 +1240,11 @@ async def get_asset_items(case_id: str, user: dict = Depends(get_current_user)):
     case = await get_case(case_id, user)
     admin = user.get("role") == "admin"
     items = [asset_items.effective(i, admin) for i in (case.get("asset_items") or [])]
-    return {"items": items, "client_state": asset_items.client_state(case),
+    # Legacy assets from old schema (read-only)
+    legacy = [{"description": a} if isinstance(a, str) else a
+              for a in (case.get("assets") or [])]
+    return {"items": items, "legacy_assets": legacy,
+            "client_state": asset_items.client_state(case),
             "kinds": asset_items.KIND_LABELS, "other_kinds": asset_items.OTHER_KINDS}
 
 
@@ -1231,6 +1253,9 @@ async def add_asset_item(case_id: str, body: AssetItemIn, user: dict = Depends(g
     case = await get_case(case_id, user)
     item = await _clean_asset_item(body, case)
     await db.trust_cases.update_one({"id": case_id}, {"$push": {"asset_items": item}, "$set": {"updated_at": now_iso()}})
+    # Alert admin when a client adds an item to a completed/signed trust
+    if user.get("role") != "admin" and (case.get("trust_unlocked") or case.get("status") == "Completed"):
+        await _alert_admin_asset_change(case, "added", item.get("description", ""))
     return asset_items.effective(item, False)
 
 
@@ -1246,8 +1271,11 @@ async def update_asset_item(case_id: str, item_id: str, body: AssetItemIn, user:
         await db.trust_cases.update_one({"id": case_id, "asset_items.id": item_id},
                                         {"$set": {"asset_items.$.pending_admin": {**new, "edited_by": user["email"]}}})
     else:
-        new.update({k: old[k] for k in ("id", "created_at", "part", "pending_admin") if k in old})
+        new.update({k: old[k] for k in ("id", "created_at", "part", "pending_admin", "post_completion") if k in old})
         await db.trust_cases.update_one({"id": case_id, "asset_items.id": item_id}, {"$set": {"asset_items.$": new}})
+        # Alert admin when a client edits an item on a completed/signed trust
+        if case.get("trust_unlocked") or case.get("status") == "Completed":
+            await _alert_admin_asset_change(case, "updated", new.get("description", ""))
     return {"ok": True}
 
 
@@ -1256,6 +1284,21 @@ async def delete_asset_item(case_id: str, item_id: str, user: dict = Depends(get
     await get_case(case_id, user)
     await db.trust_cases.update_one({"id": case_id}, {"$pull": {"asset_items": {"id": item_id}}})
     return {"ok": True}
+
+
+class PartToggleIn(BaseModel):
+    part: str = Field(pattern="^(I|II)$")
+
+@api_router.patch("/admin/trust-cases/{case_id}/asset-items/{item_id}/part")
+async def toggle_item_part(case_id: str, item_id: str, body: PartToggleIn, _: dict = Depends(require_admin)):
+    """Admin toggles an item between Part I and Part II of Schedule A."""
+    result = await db.trust_cases.update_one(
+        {"id": case_id, "asset_items.id": item_id},
+        {"$set": {"asset_items.$.part": body.part, "asset_items.$.updated_at": now_iso()}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return {"ok": True, "part": body.part}
 
 
 class OrganizeReq(BaseModel):
@@ -1289,6 +1332,9 @@ async def confirm_organized_items(case_id: str, body: ConfirmOrganizedReq, user:
     await db.trust_cases.update_one({"id": case_id}, {
         "$push": {"asset_items": {"$each": saved}, "asset_raw_texts": {"text": body.text, "at": now_iso()}},
         "$set": {"updated_at": now_iso()}})
+    # Alert admin when client bulk-confirms items on a completed/signed trust
+    if user.get("role") != "admin" and (case.get("trust_unlocked") or case.get("status") == "Completed"):
+        await _alert_admin_asset_change(case, f"added {len(saved)}", f"{len(saved)} asset(s) via AI organizer")
     return {"ok": True, "saved": len(saved)}
 
 
@@ -5304,179 +5350,10 @@ async def admin_send_review_reminder(case_id: str, admin: dict = Depends(require
 
 
 # ---------- E-SIGN (Dropbox Sign) ----------
-@api_router.get("/admin/esign/health")
-async def esign_health(_: dict = Depends(require_admin)):
-    return {"enabled": esign.is_enabled(), "test_mode": esign.TEST_MODE}
 
 
-@api_router.post("/admin/trust-cases/{case_id}/send-for-signing")
-async def admin_send_for_signing(
-    case_id: str,
-    file: UploadFile = File(...),
-    signer_email: str = Form(...),
-    signer_name: str = Form(...),
-    title: Optional[str] = Form(None),
-    admin: dict = Depends(require_admin),
-):
-    if not esign.is_enabled():
-        raise HTTPException(status_code=503, detail="E-sign is not configured. Add DROPBOX_SIGN_API_KEY in backend/.env and restart backend.")
-    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
+# --- Dropbox Sign removed — clients sign and notarize trusts themselves ---
 
-    # Read file bytes
-    pdf_bytes = await file.read()
-    if not pdf_bytes:
-        raise HTTPException(status_code=400, detail="File is empty")
-
-    branding = await _branding_doc()
-    biz = branding.get("business_name", "Trust Portal")
-    doc_title = title or f"Trust Document — Case #{case_id[:8].upper()}"
-    try:
-        result = esign.send_signature_request(
-            pdf_bytes=pdf_bytes,
-            filename=file.filename or "trust.pdf",
-            signer_email=signer_email,
-            signer_name=signer_name,
-            title=doc_title,
-            subject=f"Please sign your trust document — {biz}",
-            message=f"Your trust is ready for signing. Please review and sign this document at your convenience. — {biz}",
-        )
-    except Exception as e:
-        logger.error(f"Dropbox Sign send failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Dropbox Sign error: {e}")
-
-    # Also store the unsigned PDF in object storage for record-keeping
-    stored_path = None
-    try:
-        ext = "pdf"
-        stored_path = f"{APP_NAME}/uploads/{admin['id']}/{case_id}/unsigned-{new_id()}.{ext}"
-        put_object(stored_path, pdf_bytes, "application/pdf")
-    except Exception as e:
-        logger.warning(f"Unsigned doc storage failed (non-fatal): {e}")
-
-    esign_record = {
-        "signature_request_id": result["signature_request_id"],
-        "title": doc_title,
-        "signer_email": signer_email,
-        "signer_name": signer_name,
-        "status": "sent",
-        "created_at": now_iso(),
-        "stored_unsigned_path": stored_path,
-        "details_url": result.get("details_url"),
-    }
-    await update_case(case_id, {
-        "esign": esign_record,
-        "status": "Ready for Payment",
-    })
-
-    # Status-change email already fires from admin_update_status; here we hand-send because we bypassed it
-    try:
-        html = _status_change_email_html(
-            business=biz,
-            accent=branding.get("accent_color", "#C5A880"),
-            primary=branding.get("primary_color", "#1C252E"),
-            client_name=case.get("client_name") or case.get("client_email"),
-            status="Ready for Payment",
-            case_id=case_id[:8].upper(),
-            link=f"{FRONTEND_URL}/portal",
-        )
-        await _client_auto_email_off(
-            case.get("client_email"),
-            f"Your trust is ready — {biz}",
-            html,
-        )
-    except Exception as e:
-        logger.error(f"Ready-for-payment email failed: {e}")
-
-    return {"ok": True, **esign_record}
-
-
-@api_router.get("/admin/trust-cases/{case_id}/signature-status")
-async def admin_signature_status(case_id: str, admin: dict = Depends(require_admin)):
-    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    rec = case.get("esign")
-    if not rec:
-        raise HTTPException(status_code=404, detail="No signature request for this case")
-    try:
-        status = esign.get_status(rec["signature_request_id"])
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Dropbox Sign error: {e}")
-
-    new_status = rec.get("status")
-    if status.get("is_complete") and rec.get("status") != "signed":
-        new_status = "signed"
-        rec["status"] = new_status
-        rec["signed_at"] = now_iso()
-        await update_case(case_id, {"esign": rec, "status": "Completed"})
-        # admin_update_status email side-effect won't fire (we set directly); mimic completion email w/ PDF
-        try:
-            branding = await _branding_doc()
-            biz = branding.get("business_name", "Trust Portal")
-            accent = branding.get("accent_color", "#C5A880")
-            primary = branding.get("primary_color", "#1C252E")
-            case["status"] = "Completed"
-            pdf_bytes = build_intake_pdf(case, branding)
-            referral_link = f"{FRONTEND_URL}/register?ref={case_id[:8]}"
-            inner = f"""
-<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Your signed trust is complete.</p>
-<p>Thank you. A PDF intake summary is attached for your records; the signed trust document itself will be available in your portal.</p>
-{_cta(f'{FRONTEND_URL}/portal', 'Open your portal', accent)}
-{_referral_block(biz, accent, referral_link)}
-"""
-            html = _email_shell(biz, primary, accent, inner)
-            await _client_auto_email_off(
-                to_email=case.get("client_email"),
-                subject=f"Your trust is signed & complete — {biz}",
-                html_body=html,
-                attachment_name=f"trust-intake-{case_id[:8]}.pdf",
-                attachment_bytes=pdf_bytes,
-                content_type="application/pdf",
-            )
-        except Exception as e:
-            logger.error(f"Post-sign email failed: {e}")
-    else:
-        rec.update({k: v for k, v in status.items() if k in ("signatures", "details_url")})
-        await update_case(case_id, {"esign": rec})
-    return {**rec, "remote_status": status}
-
-
-@api_router.get("/admin/trust-cases/{case_id}/download-signed")
-async def admin_download_signed(case_id: str, admin: dict = Depends(require_admin)):
-    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    rec = case.get("esign")
-    if not rec:
-        raise HTTPException(status_code=404, detail="No signature request")
-    try:
-        data = esign.download_signed_pdf(rec["signature_request_id"])
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Dropbox Sign error: {e}")
-    return StreamingResponse(
-        io.BytesIO(data),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="signed-trust-{case_id[:8]}.pdf"'},
-    )
-
-
-@api_router.get("/trust-cases/{case_id}/download-signed")
-async def client_download_signed(case_id: str, user: dict = Depends(get_current_user)):
-    case = await get_case(case_id, user)
-    rec = case.get("esign")
-    if not rec or rec.get("status") != "signed":
-        raise HTTPException(status_code=404, detail="No signed document available yet")
-    try:
-        data = esign.download_signed_pdf(rec["signature_request_id"])
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Dropbox Sign error: {e}")
-    return StreamingResponse(
-        io.BytesIO(data),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="signed-trust-{case_id[:8]}.pdf"'},
-    )
 
 @api_router.post("/admin/trust-cases/{case_id}/notes")
 async def admin_add_note(case_id: str, body: NoteCreate, admin: dict = Depends(require_admin)):
@@ -5931,15 +5808,9 @@ class PaymentAmountReq(BaseModel):
     amount_cents: int = Field(gt=0, le=100_000_00)
 
 
-class PaymentClaimedReq(BaseModel):
-    method: Literal["zelle", "cashapp", "square", "other"] = "other"
-    note: Optional[str] = None
-
-
 @api_router.put("/admin/trust-cases/{case_id}/payment-amount")
 async def admin_set_payment_amount(case_id: str, body: PaymentAmountReq, admin: dict = Depends(require_admin)):
-    """Set just the payment amount on a case (for Zelle/CashApp clients).
-    Does NOT create a Square invoice. Updates case status to Ready for Payment."""
+    """Set the payment amount on a case. Does NOT create a Stripe session."""
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -5949,89 +5820,11 @@ async def admin_set_payment_amount(case_id: str, body: PaymentAmountReq, admin: 
         payment["status"] = "amount_set"
     payment["amount_set_at"] = now_iso()
     payment["amount_set_by"] = admin["id"]
-    await update_case(case_id, {"payment": payment, "status": "Ready for Payment"})
+    await update_case(case_id, {"payment": payment})
     return {"ok": True, "payment": payment}
 
 
-@api_router.post("/trust-cases/{case_id}/payment-claimed")
-async def client_claimed_payment(case_id: str, body: PaymentClaimedReq, user: dict = Depends(get_current_user)):
-    """Client clicks 'I Made My Payment' — flips status to Pending Payment Verification
-    and notifies admin. No screenshot/upload required; admin verifies manually."""
-    case = await get_case(case_id, user)
-    if user.get("role") == "admin":
-        raise HTTPException(status_code=400, detail="Admins cannot claim a payment on behalf of a client.")
-
-    payment = dict(case.get("payment") or {})
-    if (payment.get("status") in {"paid", "paid_manual", "verified"}):
-        return {"ok": True, "already_paid": True, "status": payment.get("status")}
-
-    payment["claimed"] = True
-    payment["claimed_method"] = body.method
-    payment["claimed_at"] = now_iso()
-    payment["claimed_by"] = user["id"]
-    if body.note:
-        payment["claimed_note"] = body.note[:500]
-    payment["status"] = "pending_verification"
-
-    await update_case(case_id, {"payment": payment, "status": "Pending Payment Verification"})
-
-    # --- Email to client (subject + copy from spec) ---
-    try:
-        branding = await _branding_doc()
-        biz = branding.get("business_name", "Trust Portal")
-        accent = branding.get("accent_color", "#C5A880")
-        primary = branding.get("primary_color", "#1C252E")
-        method_label = {
-            "zelle": "Zelle",
-            "cashapp": "Cash App",
-            "square": "Square (debit/credit card)",
-            "other": "your selected method",
-        }.get(body.method, "your selected method")
-        inner = f"""
-<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Payment submitted — pending verification</p>
-<p>Thank you, your payment has been received. Your application is now pending verification. You will receive another email once your payment has been fully verified and your next steps are ready.</p>
-<p style="color:#64748B;font-size:13px;">Payment method: {method_label}</p>
-"""
-        html = _email_shell(biz, primary, accent, inner)
-        await _client_auto_email_off(
-            case.get("client_email"),
-            "Payment Submitted – Pending Verification",
-            html,
-        )
-    except Exception as e:
-        logger.error(f"Payment-claimed client email failed: {e}")
-
-    # --- Email + SMS admin ---
-    try:
-        admin_rec = await db.users.find_one({"role": "admin"})
-        if admin_rec:
-            link = f"{FRONTEND_URL}/admin/cases/{case_id}"
-            inner = f"""
-<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">Client claims payment was made</p>
-<p><b>{case.get('client_name') or case.get('client_email')}</b> reports they have completed payment via <b>{body.method.upper() if body.method else 'unspecified'}</b>.</p>
-<p>Case #{case_id[:8].upper()} · {case.get('trust_name') or ''}</p>
-<p style="color:#64748B;">Please verify the payment in your records and approve in the admin panel.</p>
-{_cta(link, "Open case to verify", branding.get('accent_color', '#C5A880'))}
-"""
-            html = _email_shell(biz, primary, accent, inner)
-            await send_email_notification(
-                admin_rec["email"],
-                f"Payment claimed — verify {case.get('client_name') or case.get('client_email')}",
-                html,
-            )
-    except Exception as e:
-        logger.error(f"Payment-claimed admin email failed: {e}")
-
-    try:
-        notify.notify_admin(
-            f"IGC: {case.get('client_name') or case.get('client_email')} claims payment via "
-            f"{body.method.upper()}. Case #{case_id[:8].upper()}. Please verify."
-        )
-    except Exception as e:
-        logger.error(f"Payment-claimed SMS failed: {e}")
-
-    return {"ok": True, "status": "pending_verification"}
-
+# --- Client "I have paid" button removed per product decision ---
 
 class PaymentVerifyReq(BaseModel):
     amount_cents: Optional[int] = None  # final amount override
@@ -6688,6 +6481,13 @@ neo_state.configure(
     secrets=secrets,
     get_jwt_secret=get_jwt_secret,
     JWT_ALGORITHM=JWT_ALGORITHM,
+    send_email_notification=send_email_notification,
+    email_shell=_email_shell,
+    cta=_cta,
+    ADMIN_NOTIFY_EMAIL=ADMIN_NOTIFY_EMAIL,
+    FRONTEND_URL=FRONTEND_URL,
+    branding_doc=_branding_doc,
+    client_auto_email_off=_client_auto_email_off,
 )
 # Build & include (order matters — commissions first so stripe_router's import works)
 neo_commissions.build_routes()
@@ -6709,7 +6509,247 @@ whatsapp_commands.configure(
 )
 
 
-# ---------- ROOT ----------
+import mcp_server as _mcp
+
+
+# =====================================================================
+# MCP SERVER — Claude integration endpoint
+# =====================================================================
+
+@api_router.post("/mcp/{key}")
+async def mcp_endpoint(key: str, request: Request):
+    """MCP HTTP transport endpoint. Accepts JSON-RPC 2.0 from Claude."""
+    # Validate key
+    key_doc = await db.mcp_keys.find_one({"key": key, "revoked": False}, {"_id": 0})
+    if not key_doc:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"jsonrpc": "2.0", "id": None,
+                             "error": {"code": -32001, "message": "Unauthorized"}}, status_code=401)
+    # Log access
+    await db.mcp_audit.insert_one({
+        "key_id": key_doc["id"],
+        "at": now_iso(),
+        "ip": request.client.host if request.client else "unknown",
+    })
+    try:
+        body = await request.json()
+    except Exception:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"jsonrpc": "2.0", "id": None,
+                             "error": {"code": -32700, "message": "Parse error"}}, status_code=400)
+    # Handle batch or single request
+    if isinstance(body, list):
+        results = [await _mcp.handle_request(b, db, key_doc["id"]) for b in body]
+        return results
+    result = await _mcp.handle_request(body, db, key_doc["id"])
+    # Notifications have no id — return 204
+    if body.get("id") is None and body.get("method", "").startswith("notifications/"):
+        from fastapi.responses import Response
+        return Response(status_code=204)
+    return result
+
+
+@api_router.get("/admin/mcp/status")
+async def mcp_status(_: dict = Depends(require_admin)):
+    """Return MCP key status."""
+    key_doc = await db.mcp_keys.find_one({"revoked": False}, {"_id": 0},
+                                          sort=[("created_at", -1)])
+    if not key_doc:
+        return {"has_key": False}
+    pending = await db.mcp_proposals.count_documents({"status": "pending"})
+    return {
+        "has_key": True,
+        "key_id": key_doc["id"],
+        "created_at": key_doc.get("created_at"),
+        "pending_proposals": pending,
+    }
+
+
+@api_router.post("/admin/mcp/generate-key")
+async def mcp_generate_key(admin: dict = Depends(require_admin)):
+    """Revoke any existing key and generate a new one. Key shown ONCE."""
+    import secrets as _sec
+    # Revoke all existing active keys
+    await db.mcp_keys.update_many({"revoked": False}, {"$set": {"revoked": True, "revoked_at": now_iso()}})
+    raw_key = "igc_mcp_" + _sec.token_hex(24)
+    key_doc = {
+        "id": new_id(),
+        "key": raw_key,
+        "revoked": False,
+        "created_at": now_iso(),
+        "created_by": admin["id"],
+    }
+    await db.mcp_keys.insert_one(key_doc)
+    return {
+        "ok": True,
+        "key": raw_key,  # Shown ONCE — not stored in plaintext after this response
+        "key_id": key_doc["id"],
+        "mcp_url": f"{FRONTEND_URL.rstrip('/')}/api/mcp/{raw_key}",
+    }
+
+
+@api_router.delete("/admin/mcp/key")
+async def mcp_revoke_key(_: dict = Depends(require_admin)):
+    """Revoke the active MCP key without generating a new one."""
+    r = await db.mcp_keys.update_many({"revoked": False},
+                                       {"$set": {"revoked": True, "revoked_at": now_iso()}})
+    return {"ok": True, "revoked": r.modified_count}
+
+
+@api_router.get("/admin/mcp/proposals")
+async def mcp_list_proposals(status_filter: str = "pending", _: dict = Depends(require_admin)):
+    query = {}
+    if status_filter != "all":
+        query["status"] = status_filter
+    rows = await db.mcp_proposals.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return {"proposals": rows}
+
+
+@api_router.post("/admin/mcp/proposals/{proposal_id}/approve")
+async def mcp_approve_proposal(proposal_id: str, admin: dict = Depends(require_admin)):
+    """Approve a proposal. For field_change, applies it to the case internally.
+    For client_message, marks approved (admin sends via send-message endpoint).
+    For admin_note, adds note to case."""
+    p = await db.mcp_proposals.find_one({"id": proposal_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Proposal not found")
+    if p["status"] != "pending":
+        raise HTTPException(400, f"Proposal is already {p['status']}")
+
+    result: dict = {"ok": True, "proposal_id": proposal_id, "type": p["type"]}
+
+    if p["type"] == "field_change":
+        await db.trust_cases.update_one(
+            {"id": p["case_id"]},
+            {"$set": {p["field_path"]: p["new_value"], "updated_at": now_iso()}}
+        )
+        result["applied"] = True
+
+    elif p["type"] == "admin_note":
+        case = await db.trust_cases.find_one({"id": p["case_id"]}, {"_id": 0})
+        if case:
+            notes = list(case.get("admin_notes") or [])
+            notes.append({"id": new_id(), "note": p["note"],
+                          "author": "Claude (via MCP)", "created_at": now_iso()})
+            await update_case(p["case_id"], {"admin_notes": notes})
+        result["applied"] = True
+
+    elif p["type"] == "client_message":
+        # Does NOT send — admin confirms separately via send-message endpoint
+        result["requires_send_confirm"] = True
+        result["to_email"] = p.get("to_email")
+        result["subject"] = p.get("subject")
+        result["message"] = p.get("message")
+
+    await db.mcp_proposals.update_one(
+        {"id": proposal_id},
+        {"$set": {"status": "approved", "reviewed_at": now_iso(), "reviewed_by": admin["id"]}}
+    )
+    return result
+
+
+@api_router.post("/admin/mcp/proposals/{proposal_id}/reject")
+async def mcp_reject_proposal(proposal_id: str, admin: dict = Depends(require_admin)):
+    p = await db.mcp_proposals.find_one({"id": proposal_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Proposal not found")
+    await db.mcp_proposals.update_one(
+        {"id": proposal_id},
+        {"$set": {"status": "rejected", "reviewed_at": now_iso(), "reviewed_by": admin["id"]}}
+    )
+    return {"ok": True}
+
+
+@api_router.post("/admin/mcp/proposals/{proposal_id}/send-message")
+async def mcp_send_approved_message(proposal_id: str, admin: dict = Depends(require_admin)):
+    """After approving a client_message proposal, admin confirms send here."""
+    p = await db.mcp_proposals.find_one({"id": proposal_id}, {"_id": 0})
+    if not p or p["type"] != "client_message":
+        raise HTTPException(404, "Message proposal not found")
+    if p.get("sent"):
+        return {"ok": True, "already_sent": True}
+
+    case = await db.trust_cases.find_one({"id": p["case_id"]}, {"_id": 0})
+    if not case:
+        raise HTTPException(404, "Case not found")
+
+    branding = await _branding_doc()
+    biz = branding.get("business_name", "Trust Portal")
+    accent = branding.get("accent_color", "#C5A880")
+    primary = branding.get("primary_color", "#1C252E")
+    inner = f"""
+<p style="font-size:20px;margin:0 0 12px 0;font-family:Georgia,serif;">{p['subject']}</p>
+<p>{p['message'].replace(chr(10), '</p><p>')}</p>
+"""
+    html = _email_shell(biz, primary, accent, inner)
+    await send_email_notification(p["to_email"], p["subject"], html)
+    await db.mcp_proposals.update_one(
+        {"id": proposal_id},
+        {"$set": {"sent": True, "sent_at": now_iso(), "sent_by": admin["id"]}}
+    )
+    return {"ok": True}
+
+
+# =====================================================================
+# ADMIN SETTINGS — Zelle phone + other settings
+# =====================================================================
+
+@api_router.get("/admin/settings/zelle-phone")
+async def get_zelle_phone(_: dict = Depends(require_admin)):
+    doc = await db.admin_settings.find_one({"key": "zelle_phone"}, {"_id": 0})
+    return {"phone": (doc or {}).get("value", "9545983681")}
+
+
+@api_router.patch("/admin/settings/zelle-phone")
+async def set_zelle_phone(body: dict, _: dict = Depends(require_admin)):
+    phone = str(body.get("phone", "")).strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    if not phone:
+        raise HTTPException(400, "phone required")
+    await db.admin_settings.update_one(
+        {"key": "zelle_phone"},
+        {"$set": {"key": "zelle_phone", "value": phone, "updated_at": now_iso()}},
+        upsert=True,
+    )
+    return {"ok": True, "phone": phone}
+
+
+@api_router.get("/payments/zelle-config")
+async def zelle_config_public(user: dict = Depends(get_current_user)):
+    """Returns Zelle phone for payment card — authenticated clients only."""
+    doc = await db.admin_settings.find_one({"key": "zelle_phone"}, {"_id": 0})
+    return {"phone": (doc or {}).get("value", "9545983681")}
+
+
+@api_router.post("/admin/trust-cases/{case_id}/mark-zelle-received")
+async def admin_mark_zelle_received(case_id: str, body: PaymentAmountReq, admin: dict = Depends(require_admin)):
+    """Admin manually records a Zelle payment as received. No email to client.
+    Client visible status unchanged — admin presses Release when ready."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(404, "Case not found")
+    payment = dict(case.get("payment") or {})
+    payment["status"] = "received_zelle"
+    payment["method"] = "zelle"
+    payment["amount_cents"] = body.amount_cents
+    payment["zelle_received_at"] = now_iso()
+    payment["zelle_received_by"] = admin["id"]
+    # Only update internal status — client_status unchanged until Release
+    await update_case(case_id, {"payment": payment, "status": "Payment Verified"})
+    # Alert admin (WhatsApp) for record
+    try:
+        who = case.get("client_name") or case.get("client_email")
+        amt = f"${body.amount_cents/100:,.2f}"
+        notify.notify_admin(
+            f"[IGC Zelle] {who} Zelle payment of {amt} manually recorded. Case #{case_id[:8].upper()}."
+        )
+    except Exception as e:
+        logger.error(f"Zelle received notify failed: {e}")
+    return {"ok": True, "payment": payment}
+
+
+# =====================================================================
+# (ROOT)
+# =====================================================================
 @api_router.get("/")
 async def root():
     return {"status": "ok", "service": "trust-portal"}
@@ -6909,6 +6949,17 @@ async def startup():
         asyncio.create_task(_release_scheduler())
     except Exception as e:
         logger.error(f"Release scheduler failed to start: {e}")
+
+    # --- Seed default admin settings ---
+    try:
+        existing_zelle = await db.admin_settings.find_one({"key": "zelle_phone"})
+        if not existing_zelle:
+            await db.admin_settings.insert_one({
+                "key": "zelle_phone", "value": "9545983681", "created_at": now_iso()
+            })
+            logger.info("Zelle phone seeded with default value.")
+    except Exception as e:
+        logger.error(f"Admin settings seed failed (non-fatal): {e}")
 
     # --- Stripe catalog (idempotent) ---
     try:

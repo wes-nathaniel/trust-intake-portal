@@ -1,0 +1,47 @@
+{
+  "summary": "Iteration 36 — Tested Part I/II toggle, post_completion flag, retirement filter, and client portal button label for completed cases. All 13 backend tests passed. Frontend UI verified via Playwright: all key features working.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter36_asset_part_toggle_post_completion.py",
+    "/app/test_reports/pytest/pytest_iter36.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_iter36_asset_part_toggle_post_completion.py"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 tests passed)",
+    "frontend": "100% (all features verified)"
+  },
+  "test_credentials": "Admin: support@igcfirm.com / Wllorenzo03!; Completed test case: 807ca20a-c028-4fc2-89b7-066a17274077 (Test Client)",
+  "seed_data_creation": "TEST_ items created and cleaned up during testing",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All iter36 features pass. Completed case 807ca20a-c028-4fc2-89b7-066a17274077 used for most tests. Admin /admin/cases/{id} shows AdminAssetsPanel with Summary/Items/Schedule A tabs. Items tab shows part-badge-{id} and toggle-part-{id} buttons. Post-completion items show 'Added after signing' badge and blue alert. Client intake OwnStep loads for completed case. Retirement warning shows in AssetItemForm and disables Save button.",
+  "features_verified": {
+    "admin_assets_panel_tabs": "PASS - Summary, Items, Schedule A tabs visible at data-testid=assets-tab-{key}",
+    "part_badge_and_toggle": "PASS - part-badge-{id} shows 'Schedule A: Part II' (default for completed case), toggle-part-{id} visible",
+    "patch_part_endpoint": "PASS - PATCH /admin/trust-cases/{id}/asset-items/{itemId}/part toggles I↔II with persistence",
+    "toggle_requires_admin": "PASS - unauthenticated gets 401/403",
+    "post_completion_flag": "PASS - POST asset to completed case sets post_completion=True in DB",
+    "post_completion_defaults_part_ii": "PASS - new item on completed case defaults to Part II",
+    "post_completion_badge": "PASS - 'Added after signing' badge shown in admin Items tab (post-completion-badge-{id})",
+    "post_completion_alert": "PASS - blue alert banner 'X items added after trust was signed' shown (post-completion-alert)",
+    "case_status_unchanged": "PASS - adding asset does NOT change case status (Completed stays Completed)",
+    "retirement_rejected_backend": "PASS - IRA, 401k descriptions return 400",
+    "schedule_a_no_retirement": "PASS - Schedule A GET contains no retirement keyword items",
+    "client_add_view_assets_btn": "PASS - completed case shows 'Add / View Assets' button in client portal",
+    "client_own_step_accessible": "PASS - /intake/{id}?step=assets loads OwnStep for completed case without 403",
+    "retirement_warning_in_form": "PASS - typing 'IRA' in description triggers retirement-warning banner",
+    "save_btn_disabled_on_retirement": "PASS - Save button disabled when retirement keyword detected"
+  }
+}

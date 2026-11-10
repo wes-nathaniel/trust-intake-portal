@@ -108,7 +108,14 @@ def effective(item: dict, admin: bool) -> dict:
 
 
 def schedule_a(items: list) -> dict:
-    moved = [i for i in items if i.get("status") == "moved" and not i.get("deleted")]
+    # Defense-in-depth: exclude retirement accounts even if one somehow
+    # slipped past the backend guard (e.g. older data, admin override).
+    moved = [
+        i for i in items
+        if i.get("status") == "moved"
+        and not i.get("deleted")
+        and not RETIREMENT_RE.search(i.get("description") or "")
+    ]
     moved.sort(key=lambda i: (i.get("date_delivered") or "", i.get("created_at") or ""))
     part1 = [i for i in moved if (i.get("part") or "I") == "I"]
     part2 = [i for i in moved if i.get("part") == "II"]
@@ -135,6 +142,10 @@ def schedule_a_csv(sa: dict) -> str:
 
 def intake_summary(case: dict) -> dict:
     items = [effective(i, True) for i in (case.get("asset_items") or []) if not i.get("deleted")]
+    # Retirement accounts are blocked from being saved, but surface any that
+    # slipped past (older data) so the admin can review.
+    retirement_items = [i["description"] for i in items if RETIREMENT_RE.search(i.get("description") or "")]
+    items = [i for i in items if not RETIREMENT_RE.search(i.get("description") or "")]
     by_kind, by_state = {}, {}
     for i in items:
         by_kind.setdefault(i["kind_label"], []).append(i)
@@ -151,6 +162,7 @@ def intake_summary(case: dict) -> dict:
         "other_items": [description_text(i) for i in items if i["flags"]["other"]],
         "review_items": [i["description"] for i in items if i["flags"]["review"]],
         "legacy_assets": case.get("assets") or [],
+        "retirement_items_in_list": retirement_items,  # should always be empty; non-empty = admin follow-up needed
     }
 
 
