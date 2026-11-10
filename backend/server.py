@@ -1060,7 +1060,7 @@ async def admin_release_preview(case_id: str, _: dict = Depends(require_admin)):
             "draft_held": snap["draft_held"], "asset_edits_held": len(snap["asset_edits"]),
             "client_email": case.get("client_email"), **(await _default_release_email(case, snap)),
             "scheduled_release": sched, "changed_since_scheduled": _release_changes(case, sched["snapshot"]) if sched else [],
-            "history": list(reversed(case.get("release_history") or []))[:10]}
+            "history": list(reversed(case.get("release_history") or []))}
 
 
 @api_router.post("/admin/trust-cases/{case_id}/release")
