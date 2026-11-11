@@ -6869,6 +6869,13 @@ app.add_middleware(
         FRONTEND_URL,
         "https://trust.igchq.com",
         "https://trust-intake-portal.preview.emergentagent.com",  # keep preview working for QA
+        # OAuth clients — Claude.ai and Claude.com need CORS on /api/mcp/* endpoints
+        "https://claude.ai",
+        "https://claude.com",
+        "https://app.claude.ai",
+        "https://www.claude.ai",
+        "https://anthropic.com",
+        "https://www.anthropic.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],

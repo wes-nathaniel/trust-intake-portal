@@ -1,0 +1,6 @@
+{
+  "resource": "https://trust.igchq.com/api/mcp",
+  "authorization_servers": ["https://trust.igchq.com/api/mcp/oauth"],
+  "bearer_methods_supported": ["header"],
+  "resource_documentation": "https://trust.igchq.com/admin/mcp"
+}

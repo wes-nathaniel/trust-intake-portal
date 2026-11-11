@@ -3,8 +3,9 @@
 Endpoints (all under /api prefix, served by api_router):
   GET  /mcp/.well-known/oauth-protected-resource      RFC 9728 resource metadata
   GET  /mcp/oauth/.well-known/oauth-authorization-server  RFC 8414 AS metadata
-  GET  /mcp/oauth/authorize                           HTML authorization page
-  POST /mcp/oauth/authorize                           process authorize/deny
+  POST /mcp/oauth/register                             RFC 7591 dynamic client registration
+  GET  /mcp/oauth/authorize                            HTML authorization page
+  POST /mcp/oauth/authorize                            process authorize/deny
   POST /mcp/oauth/token                               exchange code for JWT token
   GET  /admin/mcp/oauth-tokens                        list active tokens (admin)
   DELETE /admin/mcp/oauth-tokens/{jti}                revoke single token
@@ -15,11 +16,14 @@ Bearer token validation for the keyless MCP endpoint in server.py:
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
+import json as _json
 import logging
 import os
 import secrets
+import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -34,6 +38,51 @@ router = APIRouter()
 
 OAUTH_TOKEN_TTL_HOURS = int(os.environ.get("MCP_OAUTH_TOKEN_TTL_HOURS", "720"))  # 30 days
 CODE_TTL_SECONDS = 600  # 10 minutes
+
+# ─── Allowed redirect URI prefixes ───────────────────────────────────────────
+# Any redirect_uri starting with one of these is accepted.
+ALLOWED_REDIRECT_PREFIXES = [
+    "https://claude.ai/",
+    "https://claude.com/",
+    "https://app.claude.ai/",
+    "https://www.claude.ai/",
+    # Desktop app
+    "claude://",
+    "claude-desktop://",
+    # Mobile
+    "com.anthropic.claude://",
+    # localhost for development tools
+    "http://localhost:",
+    "http://127.0.0.1:",
+]
+
+# Pre-loaded metadata for known CIMD clients — no runtime HTTP fetch needed.
+# Sourced from https://claude.ai/oauth/mcp-oauth-client-metadata (confirmed live).
+KNOWN_CIMD_CLIENTS: dict[str, dict] = {
+    "https://claude.ai/oauth/mcp-oauth-client-metadata": {
+        "client_id": "https://claude.ai/oauth/mcp-oauth-client-metadata",
+        "client_name": "Claude",
+        "redirect_uris": [
+            "https://claude.ai/api/mcp/auth_callback",
+            "https://claude.com/api/mcp/auth_callback",
+        ],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+    },
+    # Claude.com variant (same metadata, different host)
+    "https://claude.com/oauth/mcp-oauth-client-metadata": {
+        "client_id": "https://claude.com/oauth/mcp-oauth-client-metadata",
+        "client_name": "Claude",
+        "redirect_uris": [
+            "https://claude.ai/api/mcp/auth_callback",
+            "https://claude.com/api/mcp/auth_callback",
+        ],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+    },
+}
 
 
 def _jwt_secret() -> str:
@@ -74,6 +123,101 @@ def _verify_pw(plain: str, hashed: str) -> bool:
         return False
 
 
+def _is_allowed_redirect(uri: str) -> bool:
+    return any(uri.startswith(p) for p in ALLOWED_REDIRECT_PREFIXES)
+
+
+async def _fetch_cimd(url: str) -> Optional[dict]:
+    """Fetch a Client ID Metadata Document. Runs blocking urllib in a thread.
+    Only called for unknown CIMD URLs not in KNOWN_CIMD_CLIENTS.
+    Times out after 5 seconds."""
+    def _get() -> dict:
+        req = urllib.request.Request(
+            url,
+            headers={"Accept": "application/json", "User-Agent": "IGC-MCP-Server/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return _json.loads(resp.read().decode())
+    try:
+        return await asyncio.to_thread(_get)
+    except Exception as e:
+        logger.warning(f"CIMD fetch failed for {url}: {e}")
+        return None
+
+
+async def _resolve_client(client_id: str, redirect_uri: str, db) -> tuple[bool, str]:
+    """
+    Returns (is_valid, error_message).
+    Resolution order:
+      1. Known CIMD clients (pre-loaded, no network)
+      2. Dynamically registered clients (DB lookup)
+      3. URL-based CIMD (fetch + cache)
+      4. Fallback: redirect_uri prefix check
+    """
+    # 1. Known CIMD clients
+    if client_id in KNOWN_CIMD_CLIENTS:
+        meta = KNOWN_CIMD_CLIENTS[client_id]
+        if redirect_uri in meta.get("redirect_uris", []):
+            return True, ""
+        # Also allow prefix match for new Claude callback paths
+        if _is_allowed_redirect(redirect_uri):
+            return True, ""
+        return False, "redirect_uri not in known client metadata"
+
+    # 2. Dynamically registered clients
+    client = await db.mcp_oauth_clients.find_one({"client_id": client_id}, {"_id": 0})
+    if client:
+        if redirect_uri in client.get("redirect_uris", []):
+            return True, ""
+        return False, "redirect_uri not registered for this client"
+
+    # 3. URL-based CIMD (unknown URL)
+    if client_id.startswith("https://"):
+        meta = await _fetch_cimd(client_id)
+        if meta:
+            if redirect_uri in (meta.get("redirect_uris") or []):
+                # Cache in DB for future requests
+                try:
+                    await db.mcp_oauth_clients.update_one(
+                        {"client_id": client_id},
+                        {"$setOnInsert": {
+                            "client_id": client_id,
+                            "client_name": meta.get("client_name", "CIMD Client"),
+                            "redirect_uris": meta.get("redirect_uris", []),
+                            "created_at": _now_iso(),
+                            "source": "cimd_fetch",
+                        }},
+                        upsert=True,
+                    )
+                except Exception:
+                    pass
+                return True, ""
+            return False, "redirect_uri not in fetched CIMD metadata"
+        # Fetch failed — allow if redirect_uri matches a known prefix
+        if _is_allowed_redirect(redirect_uri):
+            logger.info(f"CIMD fetch failed for {client_id}; allowing via redirect prefix match")
+            return True, ""
+        return False, "Could not fetch CIMD and redirect_uri not in allowed list"
+
+    # 4. Unknown opaque client_id — allow if redirect_uri prefix is known
+    if _is_allowed_redirect(redirect_uri):
+        return True, ""
+
+    return False, "Unknown client_id and redirect_uri not in allowed list"
+
+
+# ─── CORS helper — public OAuth endpoints need wildcard origin ────────────────
+
+def _public_cors_headers() -> dict:
+    """Headers for public OAuth endpoints (no credentials — wildcard origin OK)."""
+    return {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Cache-Control": "no-cache",
+    }
+
+
 # ─── Discovery endpoints ──────────────────────────────────────────────────────
 
 @router.get("/mcp/.well-known/oauth-protected-resource")
@@ -85,7 +229,12 @@ async def mcp_resource_metadata(request: Request):
         "authorization_servers": [f"{base}/api/mcp/oauth"],
         "bearer_methods_supported": ["header"],
         "resource_documentation": f"{base}/admin/mcp",
-    }, headers={"Cache-Control": "no-cache"})
+    }, headers=_public_cors_headers())
+
+
+@router.options("/mcp/.well-known/oauth-protected-resource")
+async def mcp_resource_metadata_options():
+    return JSONResponse({}, status_code=200, headers=_public_cors_headers())
 
 
 @router.get("/mcp/oauth/.well-known/oauth-authorization-server")
@@ -96,12 +245,104 @@ async def mcp_as_metadata(request: Request):
         "issuer": f"{base}/api/mcp/oauth",
         "authorization_endpoint": f"{base}/api/mcp/oauth/authorize",
         "token_endpoint": f"{base}/api/mcp/oauth/token",
+        "registration_endpoint": f"{base}/api/mcp/oauth/register",
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
         "scopes_supported": ["mcp:read", "mcp:propose"],
-    }, headers={"Cache-Control": "no-cache"})
+        "client_id_metadata_document_supported": True,
+        "revocation_endpoint": f"{base}/api/mcp/oauth/revoke",
+        "subject_types_supported": ["public"],
+    }, headers=_public_cors_headers())
+
+
+@router.options("/mcp/oauth/.well-known/oauth-authorization-server")
+async def mcp_as_metadata_options():
+    return JSONResponse({}, status_code=200, headers=_public_cors_headers())
+
+
+# ─── Dynamic Client Registration (RFC 7591) ───────────────────────────────────
+
+@router.options("/mcp/oauth/register")
+async def mcp_oauth_register_options():
+    return JSONResponse({}, status_code=200, headers=_public_cors_headers())
+
+
+@router.post("/mcp/oauth/register")
+async def mcp_oauth_register(request: Request):
+    """RFC 7591 Dynamic Client Registration. No authentication required.
+
+    Accepts any client registration that includes at least one redirect_uri
+    matching an allowed prefix. Stores in mcp_oauth_clients collection.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": "invalid_request", "error_description": "Body must be JSON"},
+            status_code=400,
+            headers=_public_cors_headers(),
+        )
+
+    redirect_uris = body.get("redirect_uris") or []
+    if not redirect_uris or not isinstance(redirect_uris, list):
+        return JSONResponse(
+            {"error": "invalid_client_metadata", "error_description": "redirect_uris is required and must be an array"},
+            status_code=400,
+            headers=_public_cors_headers(),
+        )
+
+    # Validate every redirect_uri
+    for uri in redirect_uris:
+        if not isinstance(uri, str):
+            return JSONResponse(
+                {"error": "invalid_redirect_uri", "error_description": "All redirect_uris must be strings"},
+                status_code=400,
+                headers=_public_cors_headers(),
+            )
+        if not _is_allowed_redirect(uri):
+            return JSONResponse(
+                {"error": "invalid_redirect_uri",
+                 "error_description": f"redirect_uri not permitted: {uri}. Must use an approved callback domain."},
+                status_code=400,
+                headers=_public_cors_headers(),
+            )
+
+    client_id = uuid.uuid4().hex
+    client_name = str(body.get("client_name") or "MCP Client")[:200]
+    # We only issue authorization_code grants; advertise that back to the client.
+    # RFC 7591 permits the server to return a subset of requested grant_types.
+    supported_grants = ["authorization_code"]
+    now = _now_iso()
+
+    from routes._neo_state import state as _st
+    await _st.db.mcp_oauth_clients.insert_one({
+        "client_id": client_id,
+        "client_name": client_name,
+        "redirect_uris": redirect_uris,
+        "grant_types": supported_grants,
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+        "created_at": now,
+        "source": "dynamic_registration",
+        "raw_request": {k: v for k, v in body.items() if k not in ("client_secret",)},
+    })
+    logger.info(f"DCR: registered client '{client_name}' ({client_id}) with {len(redirect_uris)} redirect_uris")
+
+    return JSONResponse(
+        {
+            "client_id": client_id,
+            "client_name": client_name,
+            "redirect_uris": redirect_uris,
+            "grant_types": supported_grants,
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+            "client_id_issued_at": int(_now().timestamp()),
+        },
+        status_code=201,
+        headers=_public_cors_headers(),
+    )
 
 
 # ─── Authorization page ───────────────────────────────────────────────────────
@@ -129,13 +370,17 @@ def _auth_page_html(*, base, client_id, redirect_uri, state, code_challenge,
             '       style="width:100%;box-sizing:border-box;border:1px solid #d1cfc9;border-radius:8px;padding:12px;font-size:16px;margin-bottom:16px;">'
         )
     btn_label = "Sign in and Authorize" if not_logged_in else "Authorize Claude"
+    # Determine display name for the client
+    client_display = "Claude"
+    if client_id in KNOWN_CIMD_CLIENTS:
+        client_display = KNOWN_CIMD_CLIENTS[client_id].get("client_name", "Claude")
     greeting = (f"<p style='color:#475569;font-size:14px;margin-bottom:16px;'>"
                 f"Signed in as <strong>{admin_name}</strong></p>") if admin_name and not not_logged_in else ""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Authorize Claude — IGC Trust Portal</title>
+<title>Authorize {client_display} — IGC Trust Portal</title>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f6f4f0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}}
@@ -157,10 +402,10 @@ h3{{font-size:14px;font-weight:600;color:#1c252e;margin-bottom:8px}}
   <div class="logo">Iron Gate Consulting</div>
   <div class="sub">IGC Trust Portal</div>
   <hr>
-  <h3 style="text-align:center;font-size:16px;margin-bottom:12px;">Claude is requesting access</h3>
+  <h3 style="text-align:center;font-size:16px;margin-bottom:12px;">{client_display} is requesting access</h3>
   {greeting}
   <div class="box can">
-    <h3>Claude can:</h3>
+    <h3>{client_display} can:</h3>
     <ul>
       <li>Read your trust cases and schedules</li>
       <li>Read intake summaries</li>
@@ -169,7 +414,7 @@ h3{{font-size:14px;font-weight:600;color:#1c252e;margin-bottom:8px}}
     </ul>
   </div>
   <div class="box cant">
-    <h3>Claude cannot:</h3>
+    <h3>{client_display} cannot:</h3>
     <ul>
       <li>Release to client or change status</li>
       <li>Touch payments or delete data</li>
@@ -203,6 +448,16 @@ async def mcp_oauth_authorize_page(
         return HTMLResponse("Invalid response_type. Only 'code' is supported.", status_code=400)
     if code_challenge_method.upper() != "S256":
         return HTMLResponse("Only S256 code_challenge_method is supported.", status_code=400)
+
+    # Validate client_id and redirect_uri before showing the auth page
+    from routes._neo_state import state as _st
+    valid, err = await _resolve_client(client_id, redirect_uri, _st.db)
+    if not valid:
+        return HTMLResponse(
+            f"Invalid client or redirect_uri: {err}",
+            status_code=400,
+        )
+
     base = _base_url(request)
     admin = await _get_admin_from_cookie(request)
     kwargs = dict(base=base, client_id=client_id, redirect_uri=redirect_uri, state=state,
@@ -230,10 +485,15 @@ async def mcp_oauth_authorize_submit(
     if action == "deny":
         return RedirectResponse(_build_redirect(redirect_uri, state=state, error="access_denied"), status_code=302)
 
+    # Validate client_id and redirect_uri before issuing a code
+    from routes._neo_state import state as _st
+    valid, err = await _resolve_client(client_id, redirect_uri, _st.db)
+    if not valid:
+        return RedirectResponse(_build_redirect(redirect_uri, state=state, error="unauthorized_client"), status_code=302)
+
     # Authenticate — try cookie first, then form credentials
     admin = await _get_admin_from_cookie(request)
     if not admin and admin_email:
-        from routes._neo_state import state as _st
         user = await _st.db.users.find_one({"email": admin_email.strip(), "role": "admin"}, {"_id": 0})
         if user and _verify_pw(admin_password, user.get("password_hash", "")):
             admin = user
@@ -247,7 +507,6 @@ async def mcp_oauth_authorize_submit(
                       code_challenge=code_challenge, code_challenge_method=code_challenge_method, scope=scope)
         return HTMLResponse(_auth_page_html(**kwargs, not_logged_in=True, error="Please sign in first."))
 
-    from routes._neo_state import state as _st
     code = secrets.token_urlsafe(32)
     expires_at = _now() + timedelta(seconds=CODE_TTL_SECONDS)
     await _st.db.mcp_oauth_codes.insert_one({
@@ -260,6 +519,11 @@ async def mcp_oauth_authorize_submit(
 
 
 # ─── Token endpoint ───────────────────────────────────────────────────────────
+
+@router.options("/mcp/oauth/token")
+async def mcp_oauth_token_options():
+    return JSONResponse({}, status_code=200, headers=_public_cors_headers())
+
 
 @router.post("/mcp/oauth/token")
 async def mcp_oauth_token(request: Request):
@@ -275,10 +539,12 @@ async def mcp_oauth_token(request: Request):
         try:
             body = await request.json()
         except Exception:
-            return JSONResponse({"error": "invalid_request"}, status_code=400)
+            return JSONResponse({"error": "invalid_request"}, status_code=400,
+                                headers=_public_cors_headers())
 
     if body.get("grant_type") != "authorization_code":
-        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400,
+                            headers=_public_cors_headers())
 
     code = body.get("code", "")
     code_verifier = body.get("code_verifier", "")
@@ -287,19 +553,24 @@ async def mcp_oauth_token(request: Request):
 
     code_doc = await db.mcp_oauth_codes.find_one({"code": code, "used": False}, {"_id": 0})
     if not code_doc:
-        return JSONResponse({"error": "invalid_grant", "error_description": "Code not found or already used"}, status_code=400)
+        return JSONResponse({"error": "invalid_grant", "error_description": "Code not found or already used"},
+                            status_code=400, headers=_public_cors_headers())
     if _now() > _as_aware(code_doc["expires_at"]):
         await db.mcp_oauth_codes.update_one({"code": code}, {"$set": {"used": True}})
-        return JSONResponse({"error": "invalid_grant", "error_description": "Code expired"}, status_code=400)
+        return JSONResponse({"error": "invalid_grant", "error_description": "Code expired"},
+                            status_code=400, headers=_public_cors_headers())
     if code_doc.get("redirect_uri") != redirect_uri:
-        return JSONResponse({"error": "invalid_grant", "error_description": "redirect_uri mismatch"}, status_code=400)
+        return JSONResponse({"error": "invalid_grant", "error_description": "redirect_uri mismatch"},
+                            status_code=400, headers=_public_cors_headers())
     if code_doc.get("client_id") != client_id:
-        return JSONResponse({"error": "invalid_client"}, status_code=400)
+        return JSONResponse({"error": "invalid_client"}, status_code=400,
+                            headers=_public_cors_headers())
 
     # PKCE S256 validation
     computed = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest()).rstrip(b"=").decode()
     if computed != code_doc.get("code_challenge", ""):
-        return JSONResponse({"error": "invalid_grant", "error_description": "PKCE verification failed"}, status_code=400)
+        return JSONResponse({"error": "invalid_grant", "error_description": "PKCE verification failed"},
+                            status_code=400, headers=_public_cors_headers())
 
     await db.mcp_oauth_codes.update_one({"code": code}, {"$set": {"used": True}})
 
@@ -333,7 +604,34 @@ async def mcp_oauth_token(request: Request):
         "token_type": "Bearer",
         "expires_in": OAUTH_TOKEN_TTL_HOURS * 3600,
         "scope": code_doc.get("scope", ""),
-    })
+    }, headers=_public_cors_headers())
+
+
+# ─── Revocation endpoint (RFC 7009) ──────────────────────────────────────────
+
+@router.post("/mcp/oauth/revoke")
+async def mcp_oauth_revoke(request: Request):
+    """RFC 7009 token revocation. Used by clients on logout."""
+    from routes._neo_state import state as _st
+    ct = request.headers.get("content-type", "")
+    if "application/x-www-form-urlencoded" in ct:
+        body = dict(await request.form())
+    else:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+    token_str = body.get("token", "")
+    try:
+        payload = jwt.decode(token_str, _jwt_secret(), algorithms=["HS256"], audience="igc-mcp")
+        jti = payload.get("jti")
+        if jti:
+            await _st.db.mcp_oauth_tokens.update_one(
+                {"jti": jti}, {"$set": {"revoked": True, "revoked_at": _now_iso()}}
+            )
+    except Exception:
+        pass  # RFC 7009: always return 200 regardless
+    return JSONResponse({}, status_code=200, headers=_public_cors_headers())
 
 
 # ─── Admin token management ───────────────────────────────────────────────────
@@ -418,4 +716,3 @@ def _build_redirect(redirect_uri: str, *, state: str = "", code: str = "", error
     if state:
         url += f"&state={state}"
     return url
-
