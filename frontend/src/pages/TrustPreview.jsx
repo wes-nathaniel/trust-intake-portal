@@ -116,8 +116,8 @@ export default function TrustPreview() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Fetch one page + cache it. Returns blob url.
-  const fetchPage = useCallback(async (n) => {
+  // Fetch one page + cache it. Retries up to 3 times with 1.5 s back-off (handles cold-start / transient 502).
+  const fetchPage = useCallback(async (n, _attempt = 1) => {
     if (!n || n < 1) return null;
     if (pageCacheRef.current[n]) return pageCacheRef.current[n];
     try {
@@ -126,6 +126,11 @@ export default function TrustPreview() {
       pageCacheRef.current[n] = url;
       return url;
     } catch (e) {
+      if (_attempt < 3) {
+        // Brief back-off then retry (covers pod cold-start and transient storage errors)
+        await new Promise((r) => setTimeout(r, _attempt * 1500));
+        return fetchPage(n, _attempt + 1);
+      }
       return null;
     }
   }, [caseId]);

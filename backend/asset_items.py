@@ -17,6 +17,8 @@ KIND_LABELS = {
     "business": "Business Ownership", "belongings": "Personal Belongings", "life_insurance": "Life Insurance Policy",
     "cash": "Cash", "other": "Other", "unsure": "I am not sure",
 }
+# Kinds that carry a full account / policy number (encrypted at rest).
+ACCT_KINDS = {"bank", "investment", "life_insurance"}
 OTHER_KINDS = ["Cryptocurrency", "Collectibles (coins, cards, antiques)", "Money Someone Owes You",
                "Royalties or Creative Work (books, music, patents)", "Equipment or Livestock",
                "Online Accounts or Digital Items", "Something Else"]

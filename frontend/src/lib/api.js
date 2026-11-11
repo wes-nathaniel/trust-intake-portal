@@ -6,6 +6,15 @@ export const API = `${BASE}/api`;
 const api = axios.create({
   baseURL: API,
   withCredentials: true,
+  timeout: 60000, // 60 s — covers large PDF downloads and slow cold starts
+});
+
+// Never timeout file / blob downloads (export.pdf can be large)
+api.interceptors.request.use((config) => {
+  if (config.responseType === "blob") {
+    config.timeout = 0; // unlimited for binary downloads
+  }
+  return config;
 });
 
 export default api;

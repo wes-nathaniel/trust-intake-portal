@@ -3345,7 +3345,7 @@ async def download_document(case_id: str, doc_id: str, user: dict = Depends(get_
     doc = next((d for d in case.get("documents", []) if d["id"] == doc_id and not d.get("is_deleted")), None)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    data, ct = get_object(doc["storage_path"])
+    data, ct = await asyncio.to_thread(get_object, doc["storage_path"])
     return StreamingResponse(io.BytesIO(data), media_type=doc.get("content_type", ct),
                              headers={"Content-Disposition": f'attachment; filename="{doc.get("filename","file")}"'})
 
@@ -4052,7 +4052,8 @@ async def admin_update_status(case_id: str, body: StatusUpdate, admin: dict = De
 async def export_pdf(case_id: str, user: dict = Depends(get_current_user)):
     case = await get_case(case_id, user)
     branding = await _branding_doc()
-    pdf_bytes = build_intake_pdf(case, branding)
+    # build_intake_pdf is CPU-bound — run in a thread to avoid blocking the event loop
+    pdf_bytes = await asyncio.to_thread(build_intake_pdf, case, branding)
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
@@ -4148,7 +4149,7 @@ async def admin_auto_extract_trust_sections(case_id: str, response: Response,
     if not storage_path:
         raise HTTPException(status_code=400, detail="No trust draft PDF uploaded yet.")
     try:
-        data, _ct = get_object(storage_path)
+        data, _ct = await asyncio.to_thread(get_object, storage_path)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not read PDF from storage: {e}")
 
@@ -4498,7 +4499,7 @@ async def admin_regenerate_failed_pages(case_id: str, admin: dict = Depends(requ
     if not failed:
         return {"ok": True, "failed_pages": [], "status": "completed"}
     try:
-        data, _ct = get_object(draft["storage_path"])
+        data, _ct = await asyncio.to_thread(get_object, draft["storage_path"])
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not read PDF from storage: {e}")
     job = await page_explanation_jobs.start_failed_pages_job(
@@ -4520,7 +4521,7 @@ async def admin_regenerate_trust_page_explanations(case_id: str,
     if not draft.get("storage_path"):
         raise HTTPException(status_code=400, detail="No trust draft PDF uploaded yet.")
     try:
-        data, _ct = get_object(draft["storage_path"])
+        data, _ct = await asyncio.to_thread(get_object, draft["storage_path"])
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not read PDF from storage: {e}")
     job = await page_explanation_jobs.start_page_explain_job(
@@ -4551,7 +4552,7 @@ async def admin_regenerate_single_page(case_id: str, page_num: int,
     if not draft.get("storage_path"):
         raise HTTPException(status_code=400, detail="No trust draft PDF uploaded yet.")
     try:
-        data, _ct = get_object(draft["storage_path"])
+        data, _ct = await asyncio.to_thread(get_object, draft["storage_path"])
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not read PDF from storage: {e}")
     job = await single_page_jobs.start_single_page_regenerate(
@@ -4642,7 +4643,7 @@ async def admin_import_trust_draft_to_explainer(case_id: str,
 
     # Fetch the bytes from the existing storage object
     try:
-        data, ct = get_object(src_path)
+        data, ct = await asyncio.to_thread(get_object, src_path)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not read trust draft from storage: {e}")
 
@@ -4763,7 +4764,7 @@ async def admin_regenerate_explainer(case_id: str, doc_id: str, admin: dict = De
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     try:
-        data, ct = get_object(doc["storage_path"])
+        data, ct = await asyncio.to_thread(get_object, doc["storage_path"])
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not read file from storage: {e}")
     text = doc_explainer.extract_text(data, doc.get("filename", ""), ct or doc.get("content_type", ""))
@@ -5040,7 +5041,7 @@ async def download_explainer_doc(case_id: str, doc_id: str, user: dict = Depends
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     try:
-        data, ct = get_object(doc["storage_path"])
+        data, ct = await asyncio.to_thread(get_object, doc["storage_path"])
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not read file from storage: {e}")
     safe_name = (doc.get("filename") or f"document-{doc_id[:8]}").replace('"', "'")
@@ -5134,7 +5135,10 @@ async def admin_download_trust_draft(case_id: str, _: dict = Depends(require_adm
     draft = case.get("trust_draft")
     if not draft:
         raise HTTPException(status_code=404, detail="No trust draft uploaded")
-    data, _ct = get_object(draft["storage_path"])
+    try:
+        data, _ct = await asyncio.to_thread(get_object, draft["storage_path"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Storage read error: {e}")
     return StreamingResponse(
         io.BytesIO(data), media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="draft-trust-{case_id[:8]}.pdf"'},
@@ -5196,7 +5200,10 @@ async def client_download_final_trust(case_id: str, user: dict = Depends(get_cur
     case, draft = await _get_trust_draft(case_id, user)
     if not case.get("trust_unlocked"):
         raise HTTPException(status_code=403, detail="Final trust is locked. Payment required.")
-    data, _ct = get_object(draft["storage_path"])
+    try:
+        data, _ct = await asyncio.to_thread(get_object, draft["storage_path"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Storage read error: {e}")
     safe_name = (case.get("trust_name") or f"trust-{case_id[:8]}").replace("/", "-")
     return StreamingResponse(
         io.BytesIO(data), media_type="application/pdf",
@@ -6820,7 +6827,7 @@ async def startup():
                 path = draft.get("storage_path")
                 if not path:
                     return False
-                data, _ct = get_object(path)
+                data, _ct = await asyncio.to_thread(get_object, path)
                 await page_explanation_jobs.start_page_explain_job(
                     case_id=case_id,
                     pdf_bytes=data,
