@@ -80,6 +80,28 @@ export default function AdminMcpPage() {
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
+  const [disablingKey, setDisablingKey] = useState(false);
+
+  const disableKeyAuth = async () => {
+    if (!window.confirm("Turn off legacy key access? Claude will only connect via OAuth from now on. You can re-enable this if needed.")) return;
+    setDisablingKey(true);
+    try {
+      await api.post("/admin/mcp/disable-key-auth");
+      toast.success("Legacy key access is off. Claude will use OAuth only.");
+      load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setDisablingKey(false); }
+  };
+
+  const enableKeyAuth = async () => {
+    if (!window.confirm("Re-enable legacy key access?")) return;
+    try {
+      await api.post("/admin/mcp/enable-key-auth");
+      toast.success("Legacy key access re-enabled. Generate a new key below.");
+      load();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
+
   const copy = (val) => navigator.clipboard?.writeText(val).then(() => toast.success("Copied!"));
   const saveZelle = async () => {
     setSavingZelle(true);
@@ -177,57 +199,97 @@ export default function AdminMcpPage() {
           </div>
           <p className="text-sm text-[#64748B]">Static key embedded in the URL. Use only if the OAuth method does not work with your Claude plan.</p>
 
-          <div className={`flex items-center gap-2 text-sm px-3 py-2 rounded-lg ${status?.has_key ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`} data-testid="mcp-key-status">
-            {status?.has_key
-              ? <><CheckCircle className="h-4 w-4" /> Key active</>
-              : <><AlertTriangle className="h-4 w-4" /> No active key</>}
-          </div>
-
-          {status?.has_key && (
-            <div className="text-xs text-[#64748B] space-y-1">
-              <p>Key ID: <span className="font-mono">{status.key_id?.slice(0, 12)}…</span></p>
-              <p>Created: {status.created_at ? new Date(status.created_at).toLocaleString() : "—"}</p>
-              {status.pending_proposals > 0 && (
-                <p className="text-amber-700 font-semibold">
-                  {status.pending_proposals} proposal(s) waiting — <Link to="/admin/mcp/proposals" className="underline">Review now</Link>
-                </p>
-              )}
-            </div>
-          )}
-
-          {newKey && (
-            <div className="border border-amber-300 bg-amber-50 rounded-xl p-4 space-y-3" data-testid="new-key-reveal">
-              <p className="text-sm font-semibold text-amber-900 flex items-center gap-2"><AlertTriangle className="h-4 w-4" /> Copy this key now. It will not be shown again.</p>
-              <div className="bg-white border border-amber-200 rounded-lg px-3 py-3 font-mono text-sm break-all" data-testid="new-key-value">{newKey.key}</div>
-              <button type="button" onClick={() => copy(newKey.key)} className="btn-secondary min-h-[44px] flex items-center gap-2 text-sm" data-testid="copy-key-btn">
-                <Copy className="h-4 w-4" /> Copy key
+          {/* Key auth disabled banner */}
+          {status?.key_auth_disabled ? (
+            <div className="flex items-start gap-3 bg-emerald-50 border border-emerald-200 rounded-xl p-4" data-testid="key-auth-disabled-banner">
+              <CheckCircle className="h-5 w-5 text-emerald-700 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="font-semibold text-emerald-900 text-sm">Legacy key access is off</p>
+                <p className="text-sm text-emerald-800 mt-0.5">Claude can only connect through OAuth. All old keys have been revoked.</p>
+              </div>
+              <button type="button" onClick={enableKeyAuth}
+                className="text-xs text-emerald-700 underline min-h-[36px] px-2 shrink-0" data-testid="enable-key-auth-btn">
+                Re-enable
               </button>
-              {mcpUrl && (
-                <div className="border-t border-amber-200 pt-3">
-                  <p className="text-xs text-amber-900 font-semibold mb-1">Legacy MCP URL (key embedded):</p>
-                  <div className="bg-white border border-amber-200 rounded-lg px-3 py-2 font-mono text-xs break-all" data-testid="mcp-url-value">{mcpUrl}</div>
-                  <button type="button" onClick={() => copy(mcpUrl)} className="mt-2 btn-secondary min-h-[44px] flex items-center gap-2 text-sm" data-testid="copy-url-btn">
-                    <Copy className="h-4 w-4" /> Copy legacy URL
+            </div>
+          ) : (
+            <>
+              {/* OAuth is active — recommend turning off legacy key */}
+              {oauthTokens.length > 0 && (
+                <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl p-4" data-testid="key-auth-recommend-off">
+                  <AlertTriangle className="h-5 w-5 text-amber-700 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="font-semibold text-amber-900 text-sm">OAuth is active</p>
+                    <p className="text-sm text-amber-800 mt-0.5">Claude is connected via OAuth. You can safely turn off legacy key access.</p>
+                  </div>
+                  <button type="button" onClick={disableKeyAuth} disabled={disablingKey}
+                    className="shrink-0 min-h-[44px] px-4 text-sm font-semibold bg-amber-700 hover:bg-amber-800 text-white rounded-lg disabled:opacity-50"
+                    data-testid="turn-off-old-key-btn">
+                    {disablingKey ? "Turning off…" : "Turn off old key"}
                   </button>
                 </div>
               )}
-            </div>
-          )}
 
-          <div className="flex flex-wrap gap-3 pt-1">
-            <button type="button" onClick={generate} disabled={generating}
-              className="btn-primary min-h-[48px] flex items-center gap-2 text-sm" data-testid="generate-key-btn">
-              <RefreshCw className="h-4 w-4" />
-              {status?.has_key ? (generating ? "Regenerating…" : "Regenerate key") : (generating ? "Generating…" : "Generate key")}
-            </button>
-            {status?.has_key && (
-              <button type="button" onClick={revoke} disabled={revoking}
-                className="btn-secondary min-h-[48px] flex items-center gap-2 text-sm text-red-600 border-red-200 hover:border-red-400"
-                data-testid="revoke-key-btn">
-                <Trash2 className="h-4 w-4" /> {revoking ? "Revoking…" : "Revoke key"}
-              </button>
-            )}
-          </div>
+              <div className={`flex items-center gap-2 text-sm px-3 py-2 rounded-lg ${status?.has_key ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`} data-testid="mcp-key-status">
+                {status?.has_key
+                  ? <><CheckCircle className="h-4 w-4" /> Key active</>
+                  : <><AlertTriangle className="h-4 w-4" /> No active key</>}
+              </div>
+
+              {status?.has_key && (
+                <div className="text-xs text-[#64748B] space-y-1">
+                  <p>Key ID: <span className="font-mono">{status.key_id?.slice(0, 12)}…</span></p>
+                  <p>Created: {status.created_at ? new Date(status.created_at).toLocaleString() : "—"}</p>
+                  {status.pending_proposals > 0 && (
+                    <p className="text-amber-700 font-semibold">
+                      {status.pending_proposals} proposal(s) waiting — <Link to="/admin/mcp/proposals" className="underline">Review now</Link>
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {newKey && (
+                <div className="border border-amber-300 bg-amber-50 rounded-xl p-4 space-y-3" data-testid="new-key-reveal">
+                  <p className="text-sm font-semibold text-amber-900 flex items-center gap-2"><AlertTriangle className="h-4 w-4" /> Copy this key now. It will not be shown again.</p>
+                  <div className="bg-white border border-amber-200 rounded-lg px-3 py-3 font-mono text-sm break-all" data-testid="new-key-value">{newKey.key}</div>
+                  <button type="button" onClick={() => copy(newKey.key)} className="btn-secondary min-h-[44px] flex items-center gap-2 text-sm" data-testid="copy-key-btn">
+                    <Copy className="h-4 w-4" /> Copy key
+                  </button>
+                  {mcpUrl && (
+                    <div className="border-t border-amber-200 pt-3">
+                      <p className="text-xs text-amber-900 font-semibold mb-1">Legacy MCP URL (key embedded):</p>
+                      <div className="bg-white border border-amber-200 rounded-lg px-3 py-2 font-mono text-xs break-all" data-testid="mcp-url-value">{mcpUrl}</div>
+                      <button type="button" onClick={() => copy(mcpUrl)} className="mt-2 btn-secondary min-h-[44px] flex items-center gap-2 text-sm" data-testid="copy-url-btn">
+                        <Copy className="h-4 w-4" /> Copy legacy URL
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-3 pt-1">
+                <button type="button" onClick={generate} disabled={generating}
+                  className="btn-primary min-h-[48px] flex items-center gap-2 text-sm" data-testid="generate-key-btn">
+                  <RefreshCw className="h-4 w-4" />
+                  {status?.has_key ? (generating ? "Regenerating…" : "Regenerate key") : (generating ? "Generating…" : "Generate key")}
+                </button>
+                {status?.has_key && (
+                  <button type="button" onClick={revoke} disabled={revoking}
+                    className="btn-secondary min-h-[48px] flex items-center gap-2 text-sm text-red-600 border-red-200 hover:border-red-400"
+                    data-testid="revoke-key-btn">
+                    <Trash2 className="h-4 w-4" /> {revoking ? "Revoking…" : "Revoke key"}
+                  </button>
+                )}
+                {!status?.has_key && (
+                  <button type="button" onClick={disableKeyAuth} disabled={disablingKey}
+                    className="min-h-[48px] flex items-center gap-2 text-sm text-[#64748B] border border-[#E2E0DA] rounded-xl px-4"
+                    data-testid="turn-off-old-key-btn">
+                    Turn off legacy key access
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </section>
 
         {/* What Claude can/cannot do */}

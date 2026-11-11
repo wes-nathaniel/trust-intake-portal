@@ -6547,6 +6547,12 @@ import mcp_server as _mcp
 async def mcp_endpoint(key: str, request: Request):
     """MCP HTTP transport endpoint. Accepts JSON-RPC 2.0 from Claude.
     Authentication: URL key (legacy) — use POST /api/mcp with Bearer token for OAuth."""
+    # Check if legacy key auth has been disabled by admin
+    disabled_doc = await db.admin_settings.find_one({"key": "mcp_key_auth_disabled"}, {"_id": 0})
+    if disabled_doc and disabled_doc.get("value"):
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"jsonrpc": "2.0", "id": None,
+                             "error": {"code": -32001, "message": "Legacy key auth is disabled. Use OAuth."}}, status_code=403)
     # Validate key
     key_doc = await db.mcp_keys.find_one({"key": key, "revoked": False}, {"_id": 0})
     if not key_doc:
@@ -6625,18 +6631,43 @@ async def mcp_endpoint_oauth(request: Request):
 
 @api_router.get("/admin/mcp/status")
 async def mcp_status(_: dict = Depends(require_admin)):
-    """Return MCP key status."""
+    """Return MCP key status and whether legacy key auth is disabled."""
     key_doc = await db.mcp_keys.find_one({"revoked": False}, {"_id": 0},
                                           sort=[("created_at", -1)])
-    if not key_doc:
-        return {"has_key": False}
+    setting = await db.admin_settings.find_one({"key": "mcp_key_auth_disabled"}, {"_id": 0})
+    key_auth_disabled = bool(setting and setting.get("value"))
     pending = await db.mcp_proposals.count_documents({"status": "pending"})
     return {
-        "has_key": True,
-        "key_id": key_doc["id"],
-        "created_at": key_doc.get("created_at"),
+        "has_key": bool(key_doc),
+        "key_id": key_doc["id"] if key_doc else None,
+        "created_at": key_doc.get("created_at") if key_doc else None,
         "pending_proposals": pending,
+        "key_auth_disabled": key_auth_disabled,
     }
+
+
+@api_router.post("/admin/mcp/disable-key-auth")
+async def mcp_disable_key_auth(admin: dict = Depends(require_admin)):
+    """Permanently block the legacy /mcp/{key} endpoint. OAuth remains active."""
+    await db.admin_settings.update_one(
+        {"key": "mcp_key_auth_disabled"},
+        {"$set": {"key": "mcp_key_auth_disabled", "value": True, "updated_at": now_iso(), "updated_by": admin["email"]}},
+        upsert=True
+    )
+    # Also revoke all active keys so they can't be re-enabled by accident
+    await db.mcp_keys.update_many({"revoked": False}, {"$set": {"revoked": True, "revoked_at": now_iso()}})
+    return {"ok": True, "key_auth_disabled": True}
+
+
+@api_router.post("/admin/mcp/enable-key-auth")
+async def mcp_enable_key_auth(admin: dict = Depends(require_admin)):
+    """Re-enable legacy key auth (rollback). Requires generating a new key."""
+    await db.admin_settings.update_one(
+        {"key": "mcp_key_auth_disabled"},
+        {"$set": {"key": "mcp_key_auth_disabled", "value": False, "updated_at": now_iso(), "updated_by": admin["email"]}},
+        upsert=True
+    )
+    return {"ok": True, "key_auth_disabled": False}
 
 
 @api_router.post("/admin/mcp/generate-key")
