@@ -7,7 +7,7 @@ import AdminDocumentsManager from "@/components/AdminDocumentsManager";
 import MessageThread from "@/components/MessageThread";
 import WhatsAppPanel from "@/components/WhatsAppPanel";
 import { toast } from "sonner";
-import { ArrowLeft, Upload, Download, FileText, StickyNote, RefreshCw, MailPlus, Clock, BellRing, ExternalLink, Trash2, Send, CreditCard, Smartphone, ChevronDown } from "lucide-react";
+import { ArrowLeft, Upload, Download, FileText, StickyNote, RefreshCw, MailPlus, Clock, BellRing, ExternalLink, Trash2, Send, CreditCard, Smartphone, ChevronDown, Lock, Unlock } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { displaySSN } from "@/pages/intake/_shared";
 import DocRequestsPanel from "@/components/DocRequestsPanel";
@@ -17,6 +17,7 @@ import PasswordHistory from "@/components/PasswordHistory";
 import AdminCaseFieldsEditor from "@/components/AdminCaseFieldsEditor";
 import AdminAssetsPanel from "@/components/AdminAssetsPanel";
 import ExplainerHealthBadge from "@/components/ExplainerHealthBadge";
+import AdminErrorBoundary from "@/components/AdminErrorBoundary";
 import { startViewAsClient } from "@/components/ViewAsBanner";
 import ReleaseBar from "@/components/ReleaseBar";
 import { useAuth } from "@/context/AuthContext";
@@ -384,6 +385,7 @@ export default function AdminCaseDetail() {
   };
 
   return (
+    <AdminErrorBoundary>
     <Layout>
       <Link to="/admin" className="text-sm text-[#64748B] hover:text-navy inline-flex items-center gap-1 mb-6" data-testid="admin-back-btn">
         <ArrowLeft className="h-4 w-4" /> Back to cases
@@ -1023,5 +1025,6 @@ export default function AdminCaseDetail() {
       )}
       <ReleaseBar caseId={caseId} reloadKey={c.updated_at} onReleased={load} />
     </Layout>
+    </AdminErrorBoundary>
   );
 }

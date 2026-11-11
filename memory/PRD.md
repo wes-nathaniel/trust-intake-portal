@@ -3,6 +3,11 @@
 ## Problem Statement
 Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facing 8-step intake wizard, admin dashboard, secure page-by-page trust draft preview (watermarked, anti-copy/print), Stripe-powered payment workflow (Basic Living Trust $1,497 / Private Trust $2,497), final trust unlock with notarization instructions, legal disclosures + acknowledgments, business asset SOS advisory, EIN admin-filing, branding, and messaging.
 
+## Project Health (2026-11-11)
+- ✅ FIXED: `AdminCaseDetail.jsx` — `Lock` and `Unlock` added to lucide-react import (line 10). Blank-screen crash on cases with a released trust_draft is resolved.
+- ✅ FIXED: `AdminErrorBoundary.jsx` created — wraps entire AdminCaseDetail; shows friendly error message + Reload button instead of blank screen on any future crash.
+- Mocked: None.
+
 ## Removed Features (no longer in codebase)
 - **Assets on all statuses** (Feb 2026): `POST_COMPLETION_STATUSES` constant added. `post_completion` flag, Part II default, Planned, and admin alert now trigger for any case at or after "Ready for Client Review" (not just Completed). Admin alert fires on add/edit/delete for ANY non-admin user at ANY status. `ClientPortal.jsx`: dedicated "Add / View Assets" button always visible; "0 asset(s)" count is a tappable link; "Continue Intake" only shown for Intake Started / Intake In Progress. Delete asset now also fires admin alert.: Backend endpoints `/release-credit-repair`, `/revoke-credit-repair`, `/credit-repair-link`, Zoho URL, frontend admin block, client portal block, CSV export columns, `StartNew.jsx` wording, `ReviewStep.jsx` wording — all removed. Existing DB records with `credit_repair_released` fields left intact (no data deleted).
 - **Zelle phone `9545983681`** (replaced Feb 2026): Now stores `support@igchq.com`. Admin setting field renamed to "Zelle Contact Email". New client UI: send-to label + large email + tap-copy button + case ref + tap-copy button + 5-step plain-language instructions.
