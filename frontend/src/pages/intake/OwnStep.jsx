@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Pencil, Plus, Trash2, Sparkles, Info } from "lucide-react";
+import { Pencil, Plus, Trash2, Sparkles, Info, Lock } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 import AssetItemForm from "@/components/AssetItemForm";
 import { COPY, KIND_OPTIONS, KIND_LABEL, STATUS_LABEL, OTHER_KINDS } from "@/lib/assetCopy";
 
+const ACCT_KINDS = new Set(["bank", "investment", "life_insurance"]);
 const big = "w-full min-h-[56px] rounded-xl border-2 text-base font-semibold flex items-center justify-center gap-2 px-4";
 
 function JustTypeIt({ caseId, onDone }) {
@@ -112,6 +113,15 @@ export default function OwnStep({ caseId, reload }) {
                 <>
                   <p className="text-base font-semibold text-navy break-words">{it.description}</p>
                   <p className="text-sm text-[#64748B]">{KIND_LABEL[it.kind] || it.kind}{it.state ? `, ${it.state}` : ""}</p>
+                  {/* Account number summary — only for bank, investment, life_insurance */}
+                  {ACCT_KINDS.has(it.kind) && (
+                    <p className="text-sm text-[#475569] flex items-center gap-1 mt-0.5" data-testid={`item-acct-hint-${it.id}`}>
+                      <Lock className="h-3.5 w-3.5 shrink-0 text-bronze" />
+                      {it.has_account_number
+                        ? <>Account ending in <span className="font-semibold">{it.account_number_last4}</span> (tap Edit to view or change)</>
+                        : <span className="text-amber-700">No account number saved yet. Tap Edit to add it.</span>}
+                    </p>
+                  )}
                   <div className="flex flex-wrap gap-2 mt-2">
                     <span className={`inline-block text-sm px-3 py-1 rounded-full ${it.status === "moved" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}>{STATUS_LABEL[it.status]}</span>
                     {it.post_completion && (

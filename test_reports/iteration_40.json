@@ -1,0 +1,43 @@
+{
+  "summary": "P1 Protected Full Account Number feature: 9/9 backend tests pass, all 14 frontend test scenarios verified via Playwright and API. Full end-to-end testing of account number encryption, admin reveal, audit log, enforcement, and UI elements.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_account_numbers.py",
+    "/app/test_reports/pytest/pytest_account_numbers.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": ["/app/backend/tests/test_account_numbers.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Created and deleted TEST_UI Bank Account and TEST_UI Investment No Acct items on case 702dcd89. All cleaned up.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "P1 account number feature fully tested and passing. Backend tests in /app/backend/tests/test_account_numbers.py. Test case: 702dcd89-7bc9-4374-b8e0-989e792b506c (clean, no TEST_ items). All 14 test scenarios verified: encryption (enc:v1: prefix confirmed in DB), admin reveal returns decrypted number, audit log writes on reveal, 400 enforcement on moved+no-account, house_land no account_number_missing, MCP tool registered, AssetItemForm shows account-number-section for bank/investment, hidden for house_land, admin panel shows acct-missing-badge and acct-reveal-btn, Schedule A include-acct-nums-toggle present and checked by default.",
+  "test_results_detail": {
+    "backend_verified": [
+      "POST bank item with account_number=9876543210 -> has_account_number=true, last4=3210, no raw number in response",
+      "MongoDB raw value starts with enc:v1: (AES-256-GCM encrypted)",
+      "GET /api/admin/trust-cases/{case_id}/asset-items/{item_id}/account-number -> returns 9876543210",
+      "account_number_audit_log entry created with action=admin_reveal after reveal call",
+      "investment item with status=moved and no account_number returns HTTP 400",
+      "investment item with not_done=True and no account_number succeeds (HTTP 200)",
+      "house_land item has account_number_missing=false (not in ACCT_KINDS)",
+      "read_asset_account_numbers tool present in mcp_server.py TOOLS list"
+    ],
+    "frontend_verified": [
+      "AssetItemForm shows account-number-section for bank kind",
+      "AssetItemForm does NOT show account-number-section for house_land kind",
+      "Admin Items panel shows 'Full account number needed' badge (acct-missing-badge-*) for investment without number",
+      "Admin Items panel shows 'Reveal' link (acct-reveal-btn-*) for bank with account number",
+      "Schedule A tab shows 'Include full account numbers in export' toggle checkbox (include-acct-nums-toggle), checked by default"
+    ]
+  }
+}

@@ -658,3 +658,22 @@ See `/app/memory/test_credentials.md` — admin: support@igcfirm.com / Wllorenzo
 - Still ON (manual or client/security): welcome on signup, password/email-change/security, invite + resend invite, admin typed message, question reply, review reminder button. Dropbox Sign sends its own signing email.
 - Tested: iteration_33/34 (100%). NEXT (wait for user go-ahead): asset form phone fixes, then Claude MCP connection.
 
+
+## 2026-11-11 — P0 Async Fix (all blocking I/O eliminated) + P1 Protected Full Account Number
+
+### P0: Event-loop blocking fix (COMPLETE — ready to publish)
+- All 16 blocking storage calls wrapped in asyncio.to_thread: get_object ×12 + put_object ×4 (server.py)
+- All 3 blocking Stripe network calls wrapped: create_checkout_session ×2, retrieve_session ×1 (routes/stripe_router.py)
+- Zero synchronous I/O calls remain in any async route
+- Worker count note: --workers 2 edit in backend/supervisord.conf has NO effect. Production reads platform-managed /etc/supervisor/conf.d/supervisord.conf (--workers 1). Needs Emergent support ticket to bump to 2 workers.
+
+### P1: Protected Full Account Number (COMPLETE — ready to publish after P0)
+- Scope: bank, investment, life_insurance items. Optional on create, required before "Moved into trust".
+- crypto.py: encrypt_account_number(), decrypt_account_number(), last4_account_number()
+- server.py: _mask_item_acct(), _clean_asset_item() encrypts, blocks moved without acct, audit logs on set/edit/reveal/export
+- Endpoints: GET /trust-cases/{id}/asset-items/{item_id}/account-number (client reveal), GET /admin/.../account-number (admin reveal, audit-logged)
+- admin_schedule_a: include_account_numbers param, decrypts for export, audit-logs every export
+- mcp_server.py: read_asset_account_numbers tool, writes mcp_read audit log every call
+- Frontend: AssetItemForm (account-number-section), OwnStep (last4 display), AdminAssetsPanel (Reveal button + missing badge + Schedule A toggle)
+- Security: ciphertext never in API response, never in emails/AI organizer/preview, audit log on every admin access
+- Testing: 14/14 passed (iteration_40.json)

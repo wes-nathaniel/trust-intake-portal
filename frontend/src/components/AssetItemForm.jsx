@@ -1,11 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Upload, AlertTriangle } from "lucide-react";
+import { Upload, AlertTriangle, Eye, EyeOff, Lock } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 import { KIND_OPTIONS, OTHER_KINDS, STATE_KINDS, EXAMPLES, US_STATES, METHOD_OTHER, METHOD_UNSURE, COPY, HELP } from "@/lib/assetCopy";
 
-// Same pattern as backend RETIREMENT_RE — blocks IRA, 401k, 403b, 457b, pension, etc.
+// Same pattern as backend RETIREMENT_RE
 const RETIREMENT_RE = /\b(ira|401\s*\(?k\)?|403\s*\(?b\)?|457\s*\(?b\)?\s*(plan|account)?|roth\s+(ira|401|account)|sep\s+ira|simple\s+ira|pension(\s+(plan|account))?|retirement\s+(account|plan|savings|fund)|tsp\s+account|thrift\s+savings)\b/i;
+
+// Kinds that need a full account / policy number
+const ACCT_KINDS = new Set(["bank", "investment", "life_insurance"]);
 
 const inp = "w-full border border-[#E2E0DA] rounded-md px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-bronze/40";
 const lab = "block text-base font-semibold text-navy mb-1";
@@ -22,23 +25,56 @@ function Help({ text, id }) {
   );
 }
 
-const blank = (state) => ({ description: "", kind: "", other_kind: "", other_text: "", state, in_trust: "", not_done: true,
-  date_delivered: "", method: "", method_other: "", attachment_doc_id: "" });
+const blank = (state) => ({
+  description: "", kind: "", other_kind: "", other_text: "",
+  state, in_trust: "", not_done: true, date_delivered: "",
+  method: "", method_other: "", attachment_doc_id: "", account_number: ""
+});
 
 export default function AssetItemForm({ caseId, clientState, item, onSaved, onCancel }) {
-  const [f, setF] = useState(() => ({ ...blank(clientState), ...(item || {}) }));
+  const [f, setF] = useState(() => ({ ...blank(clientState), ...(item || {}), account_number: "" }));
   const [methods, setMethods] = useState([]);
   const [saving, setSaving] = useState(false);
+  // Account number reveal state
+  const [showAcctInput, setShowAcctInput] = useState(!item?.has_account_number);
+  const [revealedNumber, setRevealedNumber] = useState("");
+  const [revealing, setRevealing] = useState(false);
+  const [showRevealed, setShowRevealed] = useState(false);
+
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
   const showState = STATE_KINDS.has(f.kind);
   const unsureAny = f.kind === "unsure" || f.in_trust === "unsure" || f.method === METHOD_UNSURE;
   const isRetirement = RETIREMENT_RE.test(f.description);
+  const needsAcct = ACCT_KINDS.has(f.kind);
 
   useEffect(() => {
     if (!f.kind || f.not_done) return;
     api.get("/transfer-methods", { params: { kind: f.kind, state: showState ? f.state : clientState } })
       .then(({ data }) => setMethods(data.methods || [])).catch(() => setMethods([]));
   }, [f.kind, f.state, f.not_done, showState, clientState]);
+
+  // When kind changes away from ACCT_KINDS, reset account number UI
+  useEffect(() => {
+    if (!needsAcct) {
+      setShowAcctInput(false);
+      setRevealedNumber("");
+      setF(x => ({ ...x, account_number: "" }));
+    }
+  }, [f.kind, needsAcct]);
+
+  const revealNumber = async () => {
+    if (!item?.id) return;
+    setRevealing(true);
+    try {
+      const { data } = await api.get(`/trust-cases/${caseId}/asset-items/${item.id}/account-number`);
+      setRevealedNumber(data.account_number || "");
+      setShowRevealed(true);
+    } catch {
+      toast.error("Could not load your account number. Please try again.");
+    } finally {
+      setRevealing(false);
+    }
+  };
 
   const upload = async (file) => {
     if (!file) return;
@@ -54,6 +90,11 @@ export default function AssetItemForm({ caseId, clientState, item, onSaved, onCa
 
   const save = async (e) => {
     e.preventDefault();
+    // Client-side guard: account number required when marking as moved for ACCT_KINDS
+    if (needsAcct && !f.not_done && !f.account_number && !item?.has_account_number) {
+      toast.error("Please add the full account number before marking this item as moved into the trust.");
+      return;
+    }
     setSaving(true);
     try {
       if (item?.id) await api.put(`/trust-cases/${caseId}/asset-items/${item.id}`, f);
@@ -101,6 +142,75 @@ export default function AssetItemForm({ caseId, clientState, item, onSaved, onCa
           </div>
         )}
       </div>
+
+      {/* Full account number — only for bank, investment, life_insurance */}
+      {needsAcct && (
+        <div className="rounded-xl border border-[#E2E0DA] bg-[#FAFAF8] p-4 space-y-2" data-testid="account-number-section">
+          <div className="flex items-center gap-2">
+            <Lock className="h-4 w-4 text-bronze shrink-0" />
+            <label className={`${lab} mb-0`}>Full account number (optional now)</label>
+          </div>
+          <p className="text-sm text-[#475569]">
+            This lets us identify your account exactly on your trust papers. Type it only in this box, not in the description. It is protected.
+          </p>
+
+          {/* Existing number saved — show masked view unless editing */}
+          {item?.has_account_number && !showAcctInput && (
+            <div className="space-y-2">
+              {showRevealed ? (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-mono text-base bg-white border border-[#E2E0DA] rounded-md px-3 py-2 select-all" data-testid="account-number-revealed">
+                    {revealedNumber}
+                  </span>
+                  <button type="button" onClick={() => { setShowRevealed(false); setRevealedNumber(""); }}
+                    className="text-sm text-[#64748B] underline min-h-[44px] px-2" data-testid="account-number-hide-btn">
+                    Hide
+                  </button>
+                  <button type="button" onClick={() => { setShowAcctInput(true); setShowRevealed(false); setRevealedNumber(""); }}
+                    className="text-sm text-bronze underline min-h-[44px] px-2" data-testid="account-number-change-btn">
+                    Change
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="text-base text-navy font-medium" data-testid="account-number-last4">
+                    Account ending in {item.account_number_last4}
+                  </span>
+                  <button type="button" onClick={revealNumber} disabled={revealing}
+                    className="inline-flex items-center gap-1 text-sm text-bronze underline min-h-[44px] px-2" data-testid="account-number-show-btn">
+                    <Eye className="h-4 w-4" /> {revealing ? "Loading" : "Show"}
+                  </button>
+                  <button type="button" onClick={() => setShowAcctInput(true)}
+                    className="text-sm text-[#64748B] underline min-h-[44px] px-2" data-testid="account-number-change-btn">
+                    Change
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Input — show when no existing number, or when user taps Change */}
+          {(!item?.has_account_number || showAcctInput) && (
+            <div className="space-y-1">
+              <input
+                className={inp}
+                value={f.account_number}
+                onChange={(e) => set("account_number", e.target.value)}
+                placeholder={f.kind === "life_insurance" ? "Policy number" : "Account number"}
+                autoComplete="off"
+                data-testid="account-number-input"
+              />
+              {item?.has_account_number && (
+                <button type="button" onClick={() => { setShowAcctInput(false); set("account_number", ""); }}
+                  className="text-sm text-[#64748B] underline min-h-[44px] px-1" data-testid="account-number-cancel-change-btn">
+                  Keep existing number
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {showState && (
         <div>
           <label className={lab}>What state is it in? *</label><Help text={HELP.state(clientState)} id="state" />
@@ -126,6 +236,12 @@ export default function AssetItemForm({ caseId, clientState, item, onSaved, onCa
         </label>
         {!f.not_done && (
           <>
+            {needsAcct && !f.account_number && !item?.has_account_number && (
+              <div className="flex gap-2 items-start bg-amber-50 border border-amber-300 rounded-lg p-3 mb-3" data-testid="acct-required-warning">
+                <AlertTriangle className="h-5 w-5 shrink-0 text-amber-700 mt-0.5" />
+                <p className="text-sm text-amber-900">Please add the full account number above before marking this item as moved into the trust.</p>
+              </div>
+            )}
             <input type="date" className={inp} value={f.date_delivered} onChange={(e) => set("date_delivered", e.target.value)} required data-testid="asset-date" />
             <p className="text-sm text-[#64748B] mt-1">{HELP.date}</p>
             <label className={`${lab} mt-4`}>What paper did you sign, or what form did you fill out, to move it into the trust? *</label>

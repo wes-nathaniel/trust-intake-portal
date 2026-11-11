@@ -154,6 +154,15 @@ def description_text(item: dict) -> str:
     return d
 
 
+def description_text_with_acct(item: dict) -> str:
+    """Like description_text but appends decrypted account number for Schedule A exports."""
+    base = description_text(item)
+    plain = (item.get("account_number_plain") or "").strip()
+    if plain and item.get("kind") in ACCT_KINDS:
+        return f"{base}, account number {plain}"
+    return base
+
+
 def effective(item: dict, admin: bool) -> dict:
     """Admins see pending internal edits merged in; clients see the released layer only."""
     base = {k: v for k, v in item.items() if k != "pending_admin"}
@@ -162,7 +171,7 @@ def effective(item: dict, admin: bool) -> dict:
     return {**base, "flags": flags(base), "kind_label": KIND_LABELS.get(base.get("kind"), base.get("kind"))}
 
 
-def schedule_a(items: list) -> dict:
+def schedule_a(items: list, include_account_numbers: bool = False) -> dict:
     # Defense-in-depth: exclude retirement accounts even if one somehow
     # slipped past the backend guard (e.g. older data, admin override).
     moved = [
@@ -175,10 +184,11 @@ def schedule_a(items: list) -> dict:
     part1 = [i for i in moved if (i.get("part") or "I") == "I"]
     part2 = [i for i in moved if i.get("part") == "II"]
     rows, n = {"part_i": [], "part_ii": []}, 0
+    desc_fn = description_text_with_acct if include_account_numbers else description_text
     for key, group in (("part_i", part1), ("part_ii", part2)):
         for i in group:
             n += 1
-            rows[key].append({"number": n, "description_of_property": description_text(i),
+            rows[key].append({"number": n, "description_of_property": desc_fn(i),
                               "date_delivered": i.get("date_delivered") or "",
                               "instrument_or_method_of_transfer": method_text(i), "trustee_initials": ""})
     return rows

@@ -117,3 +117,56 @@ def mask_ssn(value: str) -> str:
     if len(digits) < 4:
         return ""
     return f"XXX-XX-{digits[-4:]}"
+
+
+# ---------------------------------------------------------------------------
+# Account number encryption (bank, investment, life insurance policy numbers)
+# Reuses the same AES-256-GCM key as SSN so operators manage one secret.
+# ---------------------------------------------------------------------------
+
+def encrypt_account_number(plaintext: str) -> str:
+    """Encrypt a full account / policy number. Already-encrypted input is
+    returned unchanged so accidental double-encryption is impossible."""
+    if not plaintext:
+        return ""
+    if is_encrypted(plaintext):
+        return plaintext
+    nonce = os.urandom(_NONCE_LEN)
+    ct = _AESGCM.encrypt(nonce, plaintext.encode("utf-8"), None)
+    return (
+        _PREFIX
+        + base64.urlsafe_b64encode(nonce).decode("ascii")
+        + ":"
+        + base64.urlsafe_b64encode(ct).decode("ascii")
+    )
+
+
+def decrypt_account_number(value: str) -> str:
+    """Decrypt an account / policy number. Passes legacy plaintext through."""
+    if not value:
+        return ""
+    if not is_encrypted(value):
+        return value
+    try:
+        _, _, body = value.partition(_PREFIX)
+        nonce_b64, _, ct_b64 = body.partition(":")
+        nonce = base64.urlsafe_b64decode(nonce_b64.encode("ascii"))
+        ct = base64.urlsafe_b64decode(ct_b64.encode("ascii"))
+        return _AESGCM.decrypt(nonce, ct, None).decode("utf-8")
+    except Exception as e:
+        logger.error(f"Account number decrypt failed: {e}")
+        return ""
+
+
+def last4_account_number(value: str) -> str:
+    """Return the last 4 digits of an account number for masked display.
+    Accepts encrypted or plaintext input. Returns empty string when empty."""
+    if not value:
+        return ""
+    plain = decrypt_account_number(value) if is_encrypted(value) else value
+    if not plain:
+        return ""
+    digits = _DIGITS.sub("", plain)
+    if len(digits) >= 4:
+        return digits[-4:]
+    return plain[-4:] if len(plain) >= 4 else plain

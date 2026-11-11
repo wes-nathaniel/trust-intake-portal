@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Download, Pencil, ArrowRightLeft, AlertTriangle } from "lucide-react";
+import { Download, Pencil, ArrowRightLeft, AlertTriangle, Lock, Eye, EyeOff } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 import AssetItemForm from "@/components/AssetItemForm";
 import { KIND_LABEL, STATUS_LABEL, METHOD_OTHER, METHOD_UNSURE } from "@/lib/assetCopy";
 
+const ACCT_KINDS = new Set(["bank", "investment", "life_insurance"]);
 const TABS = [["summary", "Summary"], ["items", "Items"], ["schedule", "Schedule A"]];
 const badge = "text-xs font-semibold px-2 py-1 rounded-full";
 
@@ -52,9 +53,61 @@ function Summary({ s }) {
   );
 }
 
+function AccountNumberReveal({ caseId, item }) {
+  const [revealed, setRevealed] = useState("");
+  const [revealing, setRevealing] = useState(false);
+  const [show, setShow] = useState(false);
+
+  if (!ACCT_KINDS.has(item.kind)) return null;
+
+  const reveal = async () => {
+    if (revealed) { setShow(true); return; }
+    setRevealing(true);
+    try {
+      const { data } = await api.get(`/admin/trust-cases/${caseId}/asset-items/${item.id}/account-number`);
+      setRevealed(data.account_number || "");
+      setShow(true);
+    } catch { toast.error("Could not load account number."); }
+    finally { setRevealing(false); }
+  };
+
+  if (!item.has_account_number) {
+    return (
+      <span className={`${badge} bg-orange-100 text-orange-900 border border-orange-300`} data-testid={`acct-missing-badge-${item.id}`}>
+        Full account number needed
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs" data-testid={`acct-reveal-${item.id}`}>
+      <Lock className="h-3 w-3 text-bronze" />
+      {show && revealed ? (
+        <>
+          <span className="font-mono font-semibold">{revealed}</span>
+          <button type="button" onClick={() => setShow(false)} className="underline text-[#64748B] min-h-[32px] px-1" data-testid={`acct-hide-${item.id}`}>Hide</button>
+        </>
+      ) : (
+        <>
+          <span className="text-navy">••••{item.account_number_last4}</span>
+          <button type="button" onClick={reveal} disabled={revealing}
+            className="underline text-bronze inline-flex items-center gap-0.5 min-h-[32px] px-1" data-testid={`acct-reveal-btn-${item.id}`}>
+            <Eye className="h-3 w-3" />{revealing ? "Loading" : "Reveal"}
+          </button>
+        </>
+      )}
+    </span>
+  );
+}
+
 function ScheduleA({ caseId, sa }) {
+  const [includeAcctNums, setIncludeAcctNums] = useState(true);
+
   const exportData = async (format) => {
-    const { data } = await api.get(`/admin/trust-cases/${caseId}/schedule-a`, { params: { format }, responseType: format === "csv" ? "blob" : "json" });
+    const { data } = await api.get(`/admin/trust-cases/${caseId}/schedule-a`, {
+      params: { format, include_account_numbers: includeAcctNums },
+      responseType: format === "csv" ? "blob" : "json"
+    });
     const blob = format === "csv" ? data : new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -80,9 +133,16 @@ function ScheduleA({ caseId, sa }) {
       <p className="text-sm italic text-[#64748B] mb-3">This is a preview. Your trustee will sign and initial the final copy.</p>
       <Part title="Part I" rows={sa.part_i} />
       <Part title="Part II" rows={sa.part_ii} />
-      <div className="flex flex-col sm:flex-row gap-2">
-        <button onClick={() => exportData("csv")} className="btn-primary min-h-[48px] inline-flex items-center justify-center gap-2" data-testid="export-schedule-csv"><Download className="h-4 w-4" /> Export Schedule A data (CSV)</button>
-        <button onClick={() => exportData("json")} className="min-h-[48px] border rounded-md px-4 inline-flex items-center justify-center gap-2" data-testid="export-schedule-json"><Download className="h-4 w-4" /> JSON</button>
+      <div className="border-t border-[#E2E0DA] pt-3 mt-2 space-y-3">
+        <label className="flex items-center gap-2 cursor-pointer min-h-[44px]" data-testid="include-acct-nums-toggle">
+          <input type="checkbox" className="h-5 w-5 accent-[#C5A880]" checked={includeAcctNums} onChange={(e) => setIncludeAcctNums(e.target.checked)} />
+          <span className="text-sm font-semibold text-navy">Include full account numbers in export</span>
+        </label>
+        <p className="text-xs text-[#64748B]">When checked, the full account number appears in the Description column of the exported file. The preview above never shows them.</p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button onClick={() => exportData("csv")} className="btn-primary min-h-[48px] inline-flex items-center justify-center gap-2" data-testid="export-schedule-csv"><Download className="h-4 w-4" /> Export Schedule A data (CSV)</button>
+          <button onClick={() => exportData("json")} className="min-h-[48px] border rounded-md px-4 inline-flex items-center justify-center gap-2" data-testid="export-schedule-json"><Download className="h-4 w-4" /> JSON</button>
+        </div>
       </div>
     </div>
   );
@@ -228,6 +288,7 @@ export default function AdminAssetsPanel({ caseId }) {
                       <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-300" data-testid={`post-completion-badge-${i.id}`}>Added after signing</span>
                     )}
                     {i.has_unreleased_edits && <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-900">Edit not visible to client</span>}
+                    <AccountNumberReveal caseId={caseId} item={i} />
                   </div>
                   <p className="font-semibold text-navy break-words">{i.description}</p>
                   <p className="text-[#64748B]">{KIND_LABEL[i.kind]}{i.other_kind ? ` (${i.other_kind === "Something Else" ? i.other_text : i.other_kind})` : ""}{i.state ? `, ${i.state}` : ""}</p>

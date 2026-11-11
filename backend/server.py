@@ -15,6 +15,7 @@ from typing import List, Optional, Literal
 
 import bcrypt
 import crypto as ssn_crypto
+from crypto import encrypt_account_number, decrypt_account_number, last4_account_number
 import httpx
 import jwt
 import requests
@@ -1085,10 +1086,23 @@ class AssetItemIn(BaseModel):
     method_other: Optional[str] = Field(default="", max_length=300)
     attachment_doc_id: Optional[str] = ""
     source: Optional[str] = "form"
+    account_number: Optional[str] = Field(default="", max_length=200)
 
 
 def _asset_error(msg: str):
     raise HTTPException(status_code=400, detail=msg)
+
+
+def _mask_item_acct(item: dict) -> dict:
+    """Strip encrypted account_number, surface only safe fields for API responses.
+    Both client and admin routes call this — neither receives the raw ciphertext."""
+    raw = item.get("account_number", "")
+    has = bool(raw)
+    result = {k: v for k, v in item.items() if k != "account_number"}
+    result["has_account_number"] = has
+    result["account_number_last4"] = last4_account_number(raw) if has else ""
+    result["account_number_missing"] = (item.get("kind") in asset_items.ACCT_KINDS and not has)
+    return result
 
 
 async def _clean_asset_item(body: AssetItemIn, case: dict, existing: Optional[dict] = None) -> dict:
@@ -1133,6 +1147,22 @@ async def _clean_asset_item(body: AssetItemIn, case: dict, existing: Optional[di
         rows = await asset_items.methods_for(db, d["kind"], d["state"])
         match = next((r for r in rows if r["wording"] == d["method"]), None)
         d["method_status"] = match["status"] if match else "needs_check"
+    # --- Account number (bank / investment / life_insurance only) ---
+    if d.get("kind") in asset_items.ACCT_KINDS:
+        raw_acct = (d.get("account_number") or "").strip()
+        if raw_acct and not ssn_crypto.is_encrypted(raw_acct):
+            d["account_number"] = encrypt_account_number(raw_acct)
+        elif raw_acct and ssn_crypto.is_encrypted(raw_acct):
+            d["account_number"] = raw_acct  # already encrypted, preserve
+        elif not raw_acct and existing and existing.get("account_number"):
+            d["account_number"] = existing["account_number"]  # keep existing
+        else:
+            d["account_number"] = ""
+        # Cannot mark "moved into trust" without an account number
+        if status == "moved" and not d.get("account_number"):
+            _asset_error("Please add the full account number before marking this item as moved into the trust.")
+    else:
+        d["account_number"] = ""  # strip for non-applicable kinds
     d.update({"description": desc, "status": status, "source": d.get("source") if d.get("source") in ("form", "ai") else "form"})
     if existing is None:
         signed = bool(case.get("_trust_unlocked") or case.get("trust_unlocked")) or \
@@ -1191,7 +1221,7 @@ async def get_transfer_methods(kind: str = "", state: str = "", user: dict = Dep
 async def get_asset_items(case_id: str, user: dict = Depends(get_current_user)):
     case = await get_case(case_id, user)
     admin = user.get("role") == "admin"
-    items = [asset_items.effective(i, admin) for i in (case.get("asset_items") or [])]
+    items = [_mask_item_acct(asset_items.effective(i, admin)) for i in (case.get("asset_items") or [])]
     # Legacy assets from old schema (read-only)
     legacy = [{"description": a} if isinstance(a, str) else a
               for a in (case.get("assets") or [])]
@@ -1205,10 +1235,23 @@ async def add_asset_item(case_id: str, body: AssetItemIn, user: dict = Depends(g
     case = await get_case(case_id, user)
     item = await _clean_asset_item(body, case)
     await db.trust_cases.update_one({"id": case_id}, {"$push": {"asset_items": item}, "$set": {"updated_at": now_iso()}})
+    # Log if account number was set on creation
+    if item.get("account_number") and item.get("kind") in asset_items.ACCT_KINDS:
+        try:
+            await db.account_number_audit_log.insert_one({
+                "id": new_id(), "action": "set",
+                "case_id": case_id, "item_id": item["id"],
+                "item_description": item.get("description", ""),
+                "actor_role": user.get("role", "client"),
+                "actor_email": user.get("email", ""),
+                "at": now_iso()
+            })
+        except Exception as e:
+            logger.warning(f"account_number_audit_log write failed: {e}")
     # Alert admin whenever a client adds an asset — any status
     if user.get("role") != "admin":
         await _alert_admin_asset_change(case, "added", item.get("description", ""))
-    return asset_items.effective(item, False)
+    return _mask_item_acct(asset_items.effective(item, False))
 
 
 @api_router.put("/trust-cases/{case_id}/asset-items/{item_id}")
@@ -1218,6 +1261,21 @@ async def update_asset_item(case_id: str, item_id: str, body: AssetItemIn, user:
     if not old:
         raise HTTPException(status_code=404, detail="Item not found")
     new = await _clean_asset_item(body, case, existing=old)
+    # Log if account number changed
+    old_acct = old.get("account_number", "")
+    new_acct = new.get("account_number", "")
+    if new_acct and new_acct != old_acct and new.get("kind") in asset_items.ACCT_KINDS:
+        try:
+            await db.account_number_audit_log.insert_one({
+                "id": new_id(), "action": "edit",
+                "case_id": case_id, "item_id": item_id,
+                "item_description": new.get("description", ""),
+                "actor_role": user.get("role", "client"),
+                "actor_email": user.get("email", ""),
+                "at": now_iso()
+            })
+        except Exception as e:
+            logger.warning(f"account_number_audit_log write failed: {e}")
     if user.get("role") == "admin":
         # Admin edits stay internal until "Release to client for review"
         await db.trust_cases.update_one({"id": case_id, "asset_items.id": item_id},
@@ -1239,6 +1297,45 @@ async def delete_asset_item(case_id: str, item_id: str, user: dict = Depends(get
     if user.get("role") != "admin" and old:
         await _alert_admin_asset_change(case, "removed", old.get("description", ""))
     return {"ok": True}
+
+
+@api_router.get("/trust-cases/{case_id}/asset-items/{item_id}/account-number")
+async def reveal_client_account_number(case_id: str, item_id: str, user: dict = Depends(get_current_user)):
+    """Client: view their own full account number. No audit log (they own this data)."""
+    case = await get_case(case_id, user)
+    item = next((i for i in (case.get("asset_items") or []) if i.get("id") == item_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    raw = item.get("account_number", "")
+    if not raw:
+        return {"account_number": "", "has_account_number": False}
+    plain = decrypt_account_number(raw)
+    return {"account_number": plain, "has_account_number": True}
+
+
+@api_router.get("/admin/trust-cases/{case_id}/asset-items/{item_id}/account-number")
+async def admin_reveal_account_number(case_id: str, item_id: str, admin: dict = Depends(require_admin), request: Request = None):
+    """Admin: reveal full account number. Every call is written to audit log."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "asset_items": 1})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    item = next((i for i in (case.get("asset_items") or []) if i.get("id") == item_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    raw = item.get("account_number", "")
+    plain = decrypt_account_number(raw) if raw else ""
+    try:
+        await db.account_number_audit_log.insert_one({
+            "id": new_id(), "action": "admin_reveal",
+            "case_id": case_id, "item_id": item_id,
+            "item_description": item.get("description", ""),
+            "admin_email": admin.get("email", ""),
+            "ip": (request.client.host if request and request.client else ""),
+            "at": now_iso()
+        })
+    except Exception as e:
+        logger.warning(f"account_number_audit_log write failed: {e}")
+    return {"account_number": plain, "has_account_number": bool(raw)}
 
 
 class PartToggleIn(BaseModel):
@@ -1302,12 +1399,34 @@ async def admin_intake_summary(case_id: str, _: dict = Depends(require_admin)):
 
 
 @api_router.get("/admin/trust-cases/{case_id}/schedule-a")
-async def admin_schedule_a(case_id: str, format: str = "json", _: dict = Depends(require_admin)):
+async def admin_schedule_a(case_id: str, format: str = "json",
+                            include_account_numbers: bool = True,
+                            admin: dict = Depends(require_admin)):
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0})
     if not case:
         raise HTTPException(status_code=404, detail="Not found")
     items = [asset_items.effective(i, True) for i in (case.get("asset_items") or [])]
-    sa = asset_items.schedule_a(items)
+    # Inject decrypted account numbers for export (never sent in regular item responses)
+    if include_account_numbers:
+        for it in items:
+            raw = it.get("account_number", "")
+            if raw and it.get("kind") in asset_items.ACCT_KINDS:
+                it["account_number_plain"] = decrypt_account_number(raw)
+    # Strip encrypted field — never serialise ciphertext
+    for it in items:
+        it.pop("account_number", None)
+    sa = asset_items.schedule_a(items, include_account_numbers=include_account_numbers)
+    # Audit log every export
+    try:
+        await db.account_number_audit_log.insert_one({
+            "id": new_id(), "action": "schedule_a_export",
+            "case_id": case_id, "format": format,
+            "include_account_numbers": include_account_numbers,
+            "admin_email": admin.get("email", ""),
+            "at": now_iso()
+        })
+    except Exception:
+        pass
     if format == "csv":
         return Response(content=asset_items.schedule_a_csv(sa), media_type="text/csv",
                         headers={"Content-Disposition": f'attachment; filename="schedule_a_{case_id[:8]}.csv"'})
@@ -3268,7 +3387,7 @@ async def upload_document(case_id: str,
     ext = (file.filename.rsplit(".", 1)[-1] if "." in (file.filename or "") else "bin").lower()
     path = f"{APP_NAME}/uploads/{user['id']}/{case_id}/{new_id()}.{ext}"
     data = await file.read()
-    result = put_object(path, data, file.content_type or "application/octet-stream")
+    result = await asyncio.to_thread(put_object, path, data, file.content_type or "application/octet-stream")
     doc = {
         "id": new_id(),
         "doc_type": doc_type,
@@ -4293,7 +4412,7 @@ async def admin_upload_trust_draft(case_id: str,
 
     # Store the raw PDF privately (admin-only access)
     path = f"{APP_NAME}/trust-drafts/{case_id}/{new_id()}.pdf"
-    put_object(path, data, "application/pdf")
+    await asyncio.to_thread(put_object, path, data, "application/pdf")
 
     draft = {
         "id": new_id(),
@@ -4706,7 +4825,7 @@ async def admin_upload_explainer_doc(case_id: str,
         raise HTTPException(status_code=400, detail=f"File exceeds max size ({MAX_EXPLAINER_SIZE // (1024*1024)} MB).")
 
     path = f"{APP_NAME}/admin-docs/{case_id}/{new_id()}.{ext}"
-    result = put_object(path, data, file.content_type or "application/octet-stream")
+    result = await asyncio.to_thread(put_object, path, data, file.content_type or "application/octet-stream")
 
     # Extract text (best-effort) and call the LLM for a structured explanation.
     text = doc_explainer.extract_text(data, file.filename or "", file.content_type or "")
@@ -4812,7 +4931,7 @@ async def admin_replace_explainer_doc(case_id: str, doc_id: str,
         raise HTTPException(status_code=400, detail=f"File exceeds max size ({MAX_EXPLAINER_SIZE // (1024*1024)} MB).")
 
     new_path = f"{APP_NAME}/admin-docs/{case_id}/{new_id()}.{ext}"
-    result = put_object(new_path, data, file.content_type or "application/octet-stream")
+    result = await asyncio.to_thread(put_object, new_path, data, file.content_type or "application/octet-stream")
 
     # Regenerate AI explanation with the (possibly updated) label + new file
     new_label = (label or doc.get("label") or "").strip()[:160] or doc.get("label") or ""

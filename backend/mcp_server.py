@@ -78,6 +78,19 @@ TOOLS = [
         },
     },
     {
+        "name": "read_asset_account_numbers",
+        "description": (
+            "Read the full account numbers for all bank, investment, and life insurance "
+            "items on a trust case. Required to draft Schedule A with the exact identifier "
+            "for each account. Every call is written to the audit log."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"case_id": {"type": "string", "description": "Full UUID case_id"}},
+            "required": ["case_id"],
+        },
+    },
+    {
         "name": "propose_field_change",
         "description": (
             "Propose a change to a case field. Admin must approve before it takes effect. "
@@ -198,6 +211,8 @@ async def _call_tool(name: str, args: dict, db, audit_key_id: str) -> dict:
         return await _read_schedule_a(args, db)
     if name == "read_intake_summary":
         return await _read_intake_summary(args, db)
+    if name == "read_asset_account_numbers":
+        return await _read_asset_account_numbers(args, db, audit_key_id)
     if name == "propose_field_change":
         return await _propose_field_change(args, db, audit_key_id)
     if name == "propose_client_message":
@@ -234,6 +249,9 @@ async def _read_case(args: dict, db) -> dict:
     for g in (case.get("grantors") or []):
         g.pop("ssn", None)
         g.pop("ssn_encrypted", None)
+    # Strip encrypted account numbers — use read_asset_account_numbers tool for those
+    for it in (case.get("asset_items") or []):
+        it.pop("account_number", None)
     pay = case.get("payment") or {}
     pay.pop("stripe_client_secret", None)
     return _text(json.dumps(case, default=str, indent=2))
@@ -266,6 +284,40 @@ async def _read_intake_summary(args: dict, db) -> dict:
     if not case:
         return _text(f"Case not found: {cid}")
     return _text(json.dumps(intake_summary(case), default=str, indent=2))
+
+
+async def _read_asset_account_numbers(args: dict, db, actor_key_id: str = "") -> dict:
+    """Return full decrypted account numbers for ACCT_KINDS items. Writes audit log every call."""
+    import sys, os, uuid as _uuid, datetime as _dt
+    sys.path.insert(0, os.path.dirname(__file__))
+    import crypto as _crypto
+    from asset_items import ACCT_KINDS
+    cid = args.get("case_id", "")
+    case = await db.trust_cases.find_one({"id": cid}, {"_id": 0, "asset_items": 1, "client_name": 1})
+    if not case:
+        return _text(f"Case not found: {cid}")
+    items = [
+        i for i in (case.get("asset_items") or [])
+        if not i.get("deleted") and i.get("kind") in ACCT_KINDS
+    ]
+    if not items:
+        return _text("No bank, investment, or life insurance items found on this case.")
+    lines = []
+    for it in items:
+        raw = it.get("account_number", "")
+        plain = _crypto.decrypt_account_number(raw) if raw else "(not provided)"
+        lines.append(f"- {it.get('description','?')} [{it.get('kind','?')}]: account number {plain}")
+    try:
+        await db.account_number_audit_log.insert_one({
+            "id": str(_uuid.uuid4()), "action": "mcp_read",
+            "case_id": cid, "mcp_key_id": actor_key_id,
+            "client_name": case.get("client_name", ""),
+            "at": _dt.datetime.now(_dt.timezone.utc).isoformat()
+        })
+    except Exception:
+        pass
+    result = f"Full account numbers for {case.get('client_name','?')} ({cid[:8]}):\n" + "\n".join(lines)
+    return _text(result)
 
 
 async def _propose_field_change(args: dict, db, audit_key_id: str) -> dict:

@@ -7,6 +7,7 @@ The `_stripe_apply_paid` helper is exposed at module level so unit tests
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal, Optional
 
@@ -130,11 +131,11 @@ def build_routes():
 
     @router.get("/admin/stripe/health")
     async def stripe_health(_: dict = Depends(require_admin)):
-        return stripe_service.health()
+        return await asyncio.to_thread(stripe_service.health)
 
     @router.post("/admin/stripe/setup-catalog")
     async def stripe_setup_catalog(_: dict = Depends(require_admin)):
-        result = stripe_service.setup_catalog()
+        result = await asyncio.to_thread(stripe_service.setup_catalog)
         if not result:
             raise HTTPException(502, "Stripe catalog setup returned no prices — see server logs.")
         return {"ok": True, "prices": result}
@@ -169,7 +170,8 @@ def build_routes():
 
         origin = body.origin_url.rstrip("/")
         try:
-            session = stripe_service.create_checkout_session(
+            session = await asyncio.to_thread(
+                stripe_service.create_checkout_session,
                 lookup_key=body.lookup_key,
                 origin_url=origin,
                 metadata={
@@ -252,7 +254,8 @@ def build_routes():
             raise HTTPException(503, "Stripe is not configured.")
 
         try:
-            session = stripe_service.create_checkout_session(
+            session = await asyncio.to_thread(
+                stripe_service.create_checkout_session,
                 lookup_key=body.lookup_key,
                 origin_url=body.origin_url.rstrip("/"),
                 metadata={
@@ -320,7 +323,7 @@ def build_routes():
             raise HTTPException(404, "Transaction not found")
         if record.get("payment_status") != "paid":
             try:
-                s = stripe_service.retrieve_session(session_id)
+                s = await asyncio.to_thread(stripe_service.retrieve_session, session_id)
                 if s.payment_status == "paid" or s.status == "complete":
                     await db.payment_transactions.update_one(
                         {"session_id": session_id, "payment_status": {"$ne": "paid"}},
