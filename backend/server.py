@@ -6596,7 +6596,10 @@ async def mcp_endpoint_oauth(request: Request):
         return JSONResponse(
             {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "Unauthorized — Bearer token required"}},
             status_code=401,
-            headers={"WWW-Authenticate": f'Bearer resource_metadata="{resource_meta_url}"'},
+            headers={
+                "WWW-Authenticate": f'Bearer resource_metadata="{resource_meta_url}"',
+                "Access-Control-Expose-Headers": "WWW-Authenticate, Mcp-Session-Id",
+            },
         )
 
     token_str = auth_header[len("Bearer "):]
@@ -6605,7 +6608,10 @@ async def mcp_endpoint_oauth(request: Request):
         return JSONResponse(
             {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "Invalid or expired token"}},
             status_code=401,
-            headers={"WWW-Authenticate": f'Bearer resource_metadata="{resource_meta_url}", error="invalid_token"'},
+            headers={
+                "WWW-Authenticate": f'Bearer resource_metadata="{resource_meta_url}", error="invalid_token"',
+                "Access-Control-Expose-Headers": "WWW-Authenticate, Mcp-Session-Id",
+            },
         )
 
     # Log OAuth access
@@ -6880,6 +6886,14 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Expose these so browser-based MCP clients (Claude.ai) can read them from fetch() responses.
+    # Without expose_headers, WWW-Authenticate is invisible to JavaScript even though it is sent.
+    expose_headers=[
+        "WWW-Authenticate",
+        "Mcp-Session-Id",
+        "MCP-Protocol-Version",
+        "Retry-After",
+    ],
 )
 
 
