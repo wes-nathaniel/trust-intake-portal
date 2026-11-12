@@ -78,40 +78,37 @@ if (isDevServer) {
 
 // ── OAuth well-known discovery endpoints ──────────────────────────────────────
 // MUST run AFTER withVisualEdits so we wrap (not replace) whatever devServer it sets.
-// RFC 8414 §3: for issuer https://HOST/api/mcp/oauth the discovery URL is
+// RFC 8414 §3: for issuer https://trust.igchq.com/api/mcp/oauth the discovery URL is
 // https://HOST/.well-known/oauth-authorization-server/api/mcp/oauth  (host ++ /.well-known/ ++ path).
-// All non-/api paths route to this dev-server pod (not the backend), so we intercept here.
+// For the custom domain (trust.igchq.com) /.well-known/ routes to this dev-server (port 3000),
+// not to the backend. We intercept here and serve the static files from public/.well-known/
+// so the production URLs (trust.igchq.com) are always returned — not the preview env URL.
 if (isDevServer) {
-  const backendUrl = (process.env.REACT_APP_BACKEND_URL || "https://trust.igchq.com").replace(/\/$/, "");
+  const fs = require("fs");
 
-  const asMetadata = {
-    issuer: `${backendUrl}/api/mcp/oauth`,
-    authorization_endpoint: `${backendUrl}/api/mcp/oauth/authorize`,
-    token_endpoint: `${backendUrl}/api/mcp/oauth/token`,
-    registration_endpoint: `${backendUrl}/api/mcp/oauth/register`,
-    response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code", "refresh_token"],
-    code_challenge_methods_supported: ["S256"],
-    token_endpoint_auth_methods_supported: ["none"],
-    scopes_supported: ["mcp:read", "mcp:propose"],
-    client_id_metadata_document_supported: true,
-    revocation_endpoint: `${backendUrl}/api/mcp/oauth/revoke`,
-  };
-
-  const resourceMetadata = {
-    resource: `${backendUrl}/api/mcp`,
-    authorization_servers: [`${backendUrl}/api/mcp/oauth`],
-    bearer_methods_supported: ["header"],
-    resource_documentation: `${backendUrl}/admin/mcp`,
+  const readWellKnownFile = (relPath) => {
+    try {
+      return fs.readFileSync(path.join(__dirname, "public", ".well-known", relPath), "utf8");
+    } catch (_) {
+      return null;
+    }
   };
 
   const oauthWellKnownMiddleware = (req, res, next) => {
     const url = req.url.split("?")[0];
-    const hit =
+
+    // Map well-known paths to their static file counterparts
+    let filePath = null;
+    if (
       url === "/.well-known/oauth-authorization-server/api/mcp/oauth" ||
-      url === "/.well-known/oauth-authorization-server" ||
-      url === "/.well-known/oauth-protected-resource";
-    if (!hit) return next();
+      url === "/.well-known/oauth-authorization-server"
+    ) {
+      filePath = "oauth-authorization-server/api/mcp/oauth";
+    } else if (url === "/.well-known/oauth-protected-resource") {
+      filePath = "oauth-protected-resource";
+    }
+
+    if (!filePath) return next();
 
     if (req.method === "OPTIONS") {
       res.setHeader("Access-Control-Allow-Origin", "*");
@@ -122,12 +119,14 @@ if (isDevServer) {
       return;
     }
 
-    const body = url === "/.well-known/oauth-protected-resource" ? resourceMetadata : asMetadata;
+    const content = readWellKnownFile(filePath);
+    if (!content) return next();
+
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Cache-Control", "no-cache");
     res.writeHead(200);
-    res.end(JSON.stringify(body));
+    res.end(content);
   };
 
   const prevDevServerFn = webpackConfig.devServer;

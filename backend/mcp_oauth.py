@@ -262,6 +262,36 @@ async def mcp_as_metadata_options():
     return JSONResponse({}, status_code=200, headers=_public_cors_headers())
 
 
+# ─── RFC 8414 strict discovery (host-relative, no /api prefix) ───────────────
+# Mounted directly on `app` in server.py so it is accessible without /api prefix.
+well_known_router = APIRouter()
+
+
+@well_known_router.get("/.well-known/oauth-authorization-server/api/mcp/oauth")
+async def mcp_strict_discovery(request: Request):
+    """RFC 8414 strict discovery URL constructed by Claude from the issuer path."""
+    base = _base_url(request)
+    return JSONResponse({
+        "issuer": f"{base}/api/mcp/oauth",
+        "authorization_endpoint": f"{base}/api/mcp/oauth/authorize",
+        "token_endpoint": f"{base}/api/mcp/oauth/token",
+        "registration_endpoint": f"{base}/api/mcp/oauth/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "scopes_supported": ["mcp:read", "mcp:propose"],
+        "client_id_metadata_document_supported": True,
+        "revocation_endpoint": f"{base}/api/mcp/oauth/revoke",
+        "subject_types_supported": ["public"],
+    }, headers=_public_cors_headers())
+
+
+@well_known_router.options("/.well-known/oauth-authorization-server/api/mcp/oauth")
+async def mcp_strict_discovery_options():
+    return JSONResponse({}, status_code=200, headers=_public_cors_headers())
+
+
 # ─── Dynamic Client Registration (RFC 7591) ───────────────────────────────────
 
 @router.options("/mcp/oauth/register")

@@ -6868,6 +6868,8 @@ async def root():
 
 # ---------- STARTUP ----------
 app.include_router(api_router)
+# RFC 8414 strict discovery route — mounted WITHOUT /api prefix so Claude can reach it
+app.include_router(mcp_oauth.well_known_router)
 
 app.add_middleware(
     CORSMiddleware,
