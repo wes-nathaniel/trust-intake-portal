@@ -91,6 +91,19 @@ TOOLS = [
         },
     },
     {
+        "name": "read_business_eins",
+        "description": (
+            "Read the full EIN (Employer Identification Number) for all business ownership "
+            "items on a trust case. Required to draft Schedule A with the exact EIN for each business. "
+            "Every call is written to the audit log."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"case_id": {"type": "string", "description": "Full UUID case_id"}},
+            "required": ["case_id"],
+        },
+    },
+    {
         "name": "propose_field_change",
         "description": (
             "Propose a change to a case field. Admin must approve before it takes effect. "

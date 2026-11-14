@@ -11,7 +11,7 @@ import secrets
 import re
 import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Literal
+from typing import Dict, List, Optional, Literal
 
 import bcrypt
 import crypto as ssn_crypto
@@ -1073,6 +1073,40 @@ async def _release_scheduler():
 
 
 # ---------- "TELL US WHAT YOU OWN" ASSET ITEMS ----------
+class BusinessInfoIn(BaseModel):
+    legal_name: str = Field(default="", max_length=200)
+    dba: str = Field(default="", max_length=200)
+    biz_type: str = Field(default="", max_length=50)
+    biz_type_other: str = Field(default="", max_length=200)
+    state_formed: str = Field(default="", max_length=40)
+    date_formed: str = Field(default="", max_length=20)
+    ein: str = Field(default="", max_length=200)   # plaintext on input, encrypted at rest
+    biz_address_street: str = Field(default="", max_length=200)
+    biz_address_city: str = Field(default="", max_length=100)
+    biz_address_state: str = Field(default="", max_length=40)
+    biz_address_zip: str = Field(default="", max_length=20)
+    mailing_same: bool = True
+    mail_address_street: str = Field(default="", max_length=200)
+    mail_address_city: str = Field(default="", max_length=100)
+    mail_address_state: str = Field(default="", max_length=40)
+    mail_address_zip: str = Field(default="", max_length=20)
+    biz_phone: str = Field(default="", max_length=30)
+    biz_email: str = Field(default="", max_length=200)
+    biz_description: str = Field(default="", max_length=500)
+    ownership_pct: str = Field(default="", max_length=10)
+    other_owners: List[Dict[str, str]] = Field(default_factory=list)
+    managers: List[Dict[str, str]] = Field(default_factory=list)
+    reg_agent_name: str = Field(default="", max_length=200)
+    reg_agent_address: str = Field(default="", max_length=300)
+    state_file_number: str = Field(default="", max_length=100)
+    has_operating_agreement: str = Field(default="", max_length=10)
+    has_certs: str = Field(default="", max_length=10)
+    cert_count: str = Field(default="", max_length=20)
+    owned_by_trust: str = Field(default="", max_length=10)
+    owned_by_trust_detail: str = Field(default="", max_length=300)
+    has_biz_bank: str = Field(default="", max_length=10)
+
+
 class AssetItemIn(BaseModel):
     description: str = Field(min_length=1, max_length=500)
     kind: str
@@ -1084,9 +1118,10 @@ class AssetItemIn(BaseModel):
     date_delivered: Optional[str] = ""
     method: Optional[str] = ""
     method_other: Optional[str] = Field(default="", max_length=300)
-    attachment_doc_id: Optional[str] = ""
+    attachment_doc_id: Optional[str] = ""   # kept for backward-compat only; never added to new items
     source: Optional[str] = "form"
     account_number: Optional[str] = Field(default="", max_length=200)
+    business_info: Optional[BusinessInfoIn] = None
 
 
 def _asset_error(msg: str):
@@ -1094,7 +1129,7 @@ def _asset_error(msg: str):
 
 
 def _mask_item_acct(item: dict) -> dict:
-    """Strip encrypted account_number, surface only safe fields for API responses.
+    """Strip encrypted account_number and EIN, surface only safe fields for API responses.
     Both client and admin routes call this — neither receives the raw ciphertext."""
     raw = item.get("account_number", "")
     has = bool(raw)
@@ -1102,6 +1137,13 @@ def _mask_item_acct(item: dict) -> dict:
     result["has_account_number"] = has
     result["account_number_last4"] = last4_account_number(raw) if has else ""
     result["account_number_missing"] = (item.get("kind") in asset_items.ACCT_KINDS and not has)
+    # Mask EIN inside business_info
+    if result.get("business_info"):
+        bi = dict(result["business_info"])
+        ein_raw = bi.pop("ein", "") or ""
+        bi["has_ein"] = bool(ein_raw)
+        bi["ein_last4"] = last4_account_number(ein_raw) if ein_raw else ""
+        result["business_info"] = bi
     return result
 
 
@@ -1110,8 +1152,11 @@ async def _clean_asset_item(body: AssetItemIn, case: dict, existing: Optional[di
     desc = d["description"].strip()
     if asset_items.RETIREMENT_RE.search(desc):
         _asset_error("Retirement accounts stay in your name. Please do not list them here. We will talk with you about them.")
+    # EIN-format check (XX-XXXXXXX) in description
+    if re.search(r"\b\d{2}-\d{7}\b", desc):
+        _asset_error("That looks like a protected EIN. Please type it in the EIN box, not in the description.")
     if re.search(r"\d{9,}", desc.replace(" ", "").replace("-", "")):
-        _asset_error("Please do not type full account numbers or Social Security numbers. Use only the last 4 numbers.")
+        _asset_error("Please do not type full account numbers, Social Security numbers, or EINs here. Use only the last 4 numbers.")
     if d["kind"] not in asset_items.KINDS:
         _asset_error("Please pick what kind of item this is.")
     if d["kind"] == "other":
@@ -1153,23 +1198,51 @@ async def _clean_asset_item(body: AssetItemIn, case: dict, existing: Optional[di
         if raw_acct and not ssn_crypto.is_encrypted(raw_acct):
             d["account_number"] = encrypt_account_number(raw_acct)
         elif raw_acct and ssn_crypto.is_encrypted(raw_acct):
-            d["account_number"] = raw_acct  # already encrypted, preserve
+            d["account_number"] = raw_acct
         elif not raw_acct and existing and existing.get("account_number"):
-            d["account_number"] = existing["account_number"]  # keep existing
+            d["account_number"] = existing["account_number"]
         else:
             d["account_number"] = ""
-        # Cannot mark "moved into trust" without an account number
         if status == "moved" and not d.get("account_number"):
             _asset_error("Please add the full account number before marking this item as moved into the trust.")
     else:
-        d["account_number"] = ""  # strip for non-applicable kinds
+        d["account_number"] = ""
+    # --- Business info + EIN (business only) ---
+    if d.get("kind") == "business":
+        bi_in = d.get("business_info") or {}
+        if isinstance(bi_in, dict):
+            bi = dict(bi_in)
+        else:
+            bi = bi_in if isinstance(bi_in, dict) else {}
+        # Validate and encrypt EIN
+        raw_ein = re.sub(r"[^0-9]", "", str(bi.get("ein") or ""))
+        if raw_ein and len(raw_ein) != 9:
+            _asset_error("EIN must be 9 digits (format XX-XXXXXXX). Please check the number and try again.")
+        if raw_ein and len(raw_ein) == 9 and not ssn_crypto.is_encrypted(raw_ein):
+            bi["ein"] = encrypt_account_number(raw_ein)
+        elif raw_ein and ssn_crypto.is_encrypted(raw_ein):
+            bi["ein"] = raw_ein  # already encrypted
+        elif not raw_ein:
+            # Preserve existing encrypted EIN if not changing
+            existing_ein = ((existing or {}).get("business_info") or {}).get("ein") or ""
+            bi["ein"] = existing_ein
+        # Validate required fields before "moved into trust"
+        if status == "moved":
+            if not (bi.get("legal_name") or "").strip():
+                _asset_error("Please add the business name before marking it as moved into the trust.")
+            if not (bi.get("ein") or ""):
+                _asset_error("Please add the EIN before marking this item as moved into the trust.")
+            if not (bi.get("biz_address_street") or "").strip():
+                _asset_error("Please add the business address before marking it as moved into the trust.")
+        d["business_info"] = bi
+    else:
+        d.pop("business_info", None)
     d.update({"description": desc, "status": status, "source": d.get("source") if d.get("source") in ("form", "ai") else "form"})
     if existing is None:
         signed = bool(case.get("_trust_unlocked") or case.get("trust_unlocked")) or \
                  (case.get("_internal_status") or case.get("status")) in POST_COMPLETION_STATUSES
         d.update({"id": new_id(), "created_at": now_iso(), "part": "II" if signed else "I"})
     d["updated_at"] = now_iso()
-    # Flag items added AFTER the draft trust is ready so admin can review before including in Schedule A.
     if existing is None and signed:
         d["post_completion"] = True
     return d
@@ -1313,8 +1386,70 @@ async def reveal_client_account_number(case_id: str, item_id: str, user: dict = 
     return {"account_number": plain, "has_account_number": True}
 
 
+@api_router.get("/trust-cases/{case_id}/asset-items/{item_id}/ein")
+async def reveal_client_ein(case_id: str, item_id: str, user: dict = Depends(get_current_user)):
+    """Client: view their own EIN. No audit log (they own this data)."""
+    case = await get_case(case_id, user)
+    item = next((i for i in (case.get("asset_items") or []) if i.get("id") == item_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    bi = item.get("business_info") or {}
+    raw = bi.get("ein") or ""
+    if not raw:
+        return {"ein": "", "has_ein": False}
+    plain = decrypt_account_number(raw)
+    return {"ein": plain, "has_ein": True}
+
+
 @api_router.get("/admin/trust-cases/{case_id}/asset-items/{item_id}/account-number")
 async def admin_reveal_account_number(case_id: str, item_id: str, admin: dict = Depends(require_admin), request: Request = None):
+    """Admin: reveal full account number. Every call is written to audit log."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "asset_items": 1})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    item = next((i for i in (case.get("asset_items") or []) if i.get("id") == item_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    raw = item.get("account_number", "")
+    plain = decrypt_account_number(raw) if raw else ""
+    try:
+        await db.account_number_audit_log.insert_one({
+            "id": new_id(), "action": "admin_reveal",
+            "case_id": case_id, "item_id": item_id,
+            "item_description": item.get("description", ""),
+            "admin_email": admin.get("email", ""),
+            "ip": (request.client.host if request and request.client else ""),
+            "at": now_iso()
+        })
+    except Exception as e:
+        logger.warning(f"account_number_audit_log write failed: {e}")
+    return {"account_number": plain, "has_account_number": bool(raw)}
+
+
+@api_router.get("/admin/trust-cases/{case_id}/asset-items/{item_id}/ein")
+async def admin_reveal_ein(case_id: str, item_id: str, admin: dict = Depends(require_admin), request: Request = None):
+    """Admin: reveal full EIN. Every call is written to audit log."""
+    case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "asset_items": 1})
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    item = next((i for i in (case.get("asset_items") or []) if i.get("id") == item_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    bi = item.get("business_info") or {}
+    raw = bi.get("ein") or ""
+    plain = decrypt_account_number(raw) if raw else ""
+    try:
+        await db.account_number_audit_log.insert_one({
+            "id": new_id(), "action": "admin_reveal_ein",
+            "case_id": case_id, "item_id": item_id,
+            "item_description": item.get("description", ""),
+            "admin_email": admin.get("email", ""),
+            "ip": (request.client.host if request and request.client else ""),
+            "at": now_iso()
+        })
+    except Exception as e:
+        logger.warning(f"ein_audit_log write failed: {e}")
+    return {"ein": plain, "has_ein": bool(raw)}
     """Admin: reveal full account number. Every call is written to audit log."""
     case = await db.trust_cases.find_one({"id": case_id}, {"_id": 0, "asset_items": 1})
     if not case:
@@ -1406,15 +1541,24 @@ async def admin_schedule_a(case_id: str, format: str = "json",
     if not case:
         raise HTTPException(status_code=404, detail="Not found")
     items = [asset_items.effective(i, True) for i in (case.get("asset_items") or [])]
-    # Inject decrypted account numbers for export (never sent in regular item responses)
+    # Inject decrypted numbers for export (never sent in regular item responses)
     if include_account_numbers:
         for it in items:
             raw = it.get("account_number", "")
             if raw and it.get("kind") in asset_items.ACCT_KINDS:
                 it["account_number_plain"] = decrypt_account_number(raw)
-    # Strip encrypted field — never serialise ciphertext
+            # Inject decrypted EIN for business items
+            bi = it.get("business_info") or {}
+            ein_raw = bi.get("ein") or ""
+            if ein_raw and it.get("kind") == "business":
+                if "business_info" not in it:
+                    it["business_info"] = {}
+                it["business_info"]["ein_plain"] = decrypt_account_number(ein_raw)
+    # Strip encrypted fields — never serialise ciphertext
     for it in items:
         it.pop("account_number", None)
+        if it.get("business_info"):
+            it["business_info"].pop("ein", None)
     sa = asset_items.schedule_a(items, include_account_numbers=include_account_numbers)
     # Audit log every export
     try:

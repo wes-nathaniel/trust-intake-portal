@@ -19,6 +19,8 @@ KIND_LABELS = {
 }
 # Kinds that carry a full account / policy number (encrypted at rest).
 ACCT_KINDS = {"bank", "investment", "life_insurance"}
+# Business items always get admin review; EIN is encrypted like account numbers.
+BUSINESS_KINDS = {"business"}
 OTHER_KINDS = ["Cryptocurrency", "Collectibles (coins, cards, antiques)", "Money Someone Owes You",
                "Royalties or Creative Work (books, music, patents)", "Equipment or Livestock",
                "Online Accounts or Digital Items", "Something Else"]
@@ -49,7 +51,10 @@ GENERIC_METHODS = {
     "bank": ["Bank form changing the name on the account to the trust"],
     "investment": ["Brokerage form retitling the account to the trust"],
     "vehicle": [VEHICLE_GENERIC_WORDING],
-    "business": ["Signed ownership transfer form (called an assignment)"],
+    "business": [
+        "Signed assignment of ownership interest (called an assignment)",
+        "Stock or membership certificates reissued in the name of the trust",
+    ],
     "belongings": ["Signed General Assignment of personal property"],
     "life_insurance": [LIFE_INSURANCE_GENERIC_WORDING],
     "cash": ["Deposit into the trust bank account"],
@@ -129,11 +134,68 @@ def client_state(case: dict) -> str:
 
 
 def flags(item: dict) -> dict:
+    bi = item.get("business_info") or {}
+    biz_unsure = (bi.get("biz_type") == "unsure"
+                  or bi.get("has_operating_agreement") == "unsure"
+                  or bi.get("has_certs") == "unsure"
+                  or bi.get("owned_by_trust") == "unsure"
+                  or bi.get("has_biz_bank") == "unsure")
     other = item.get("kind") == "other" or item.get("method") == METHOD_OTHER
-    unsure = item.get("kind") == "unsure" or item.get("in_trust") == "unsure" or item.get("method") == METHOD_UNSURE
-    review = (item.get("kind") in REVIEW_KINDS or item.get("source") == "ai"
+    unsure = (item.get("kind") == "unsure" or item.get("in_trust") == "unsure"
+              or item.get("method") == METHOD_UNSURE or biz_unsure)
+    review = (item.get("kind") in REVIEW_KINDS
+              or item.get("kind") in BUSINESS_KINDS  # every business item goes to Wes
+              or item.get("source") == "ai"
               or item.get("method_status") == "needs_check")
     return {"other": other, "unsure": unsure, "review": review}
+
+
+def _business_description_line(bi: dict) -> str:
+    """Build Schedule A description from business_info dict.
+    No crypto imports needed: server.py injects ein_plain for full-EIN exports;
+    _mask_item_acct injects ein_last4 for display-only paths.
+    """
+    type_map = {
+        "llc": "LLC", "corp": "corporation", "s_corp": "S corporation",
+        "partnership": "partnership", "sole_prop": "sole proprietorship",
+        "nonprofit": "nonprofit",
+    }
+    parts = []
+    pct   = (bi.get("ownership_pct") or "").strip()
+    name  = (bi.get("legal_name") or "").strip()
+    btype = (bi.get("biz_type") or "").strip()
+    state = (bi.get("state_formed") or "").strip()
+    ein_plain = (bi.get("ein_plain") or "").strip()   # injected by server.py for full export
+    ein_last4 = (bi.get("ein_last4") or "").strip()   # from _mask_item_acct
+    street     = (bi.get("biz_address_street") or "").strip()
+    city       = (bi.get("biz_address_city") or "").strip()
+    state_addr = (bi.get("biz_address_state") or "").strip()
+
+    if pct:
+        parts.append(f"{pct} percent ownership interest in")
+    elif name:
+        parts.append("Ownership interest in")
+    if name:
+        parts.append(name)
+    type_str = type_map.get(btype, "")
+    if type_str and state:
+        parts.append(f"a {state} {type_str}")
+    elif type_str:
+        parts.append(f"a {type_str}")
+    elif state:
+        parts.append(f"formed in {state}")
+    if ein_plain and len(ein_plain) == 9:
+        parts.append(f"EIN {ein_plain[:2]}-{ein_plain[2:]}")
+    elif ein_last4:
+        parts.append(f"EIN ending in {ein_last4}")
+    if street:
+        addr = f"located at {street}"
+        if city:
+            addr += f", {city}"
+        if state_addr:
+            addr += f", {state_addr}"
+        parts.append(addr)
+    return re.sub(r",\s*,", ",", ", ".join(parts)).rstrip(",").strip()
 
 
 def method_text(item: dict) -> str:
@@ -188,7 +250,12 @@ def schedule_a(items: list, include_account_numbers: bool = False) -> dict:
     for key, group in (("part_i", part1), ("part_ii", part2)):
         for i in group:
             n += 1
-            rows[key].append({"number": n, "description_of_property": desc_fn(i),
+            bi = i.get("business_info") or {}
+            if i.get("kind") == "business" and (bi.get("legal_name") or bi.get("ownership_pct")):
+                desc = _business_description_line(bi)
+            else:
+                desc = desc_fn(i)
+            rows[key].append({"number": n, "description_of_property": desc,
                               "date_delivered": i.get("date_delivered") or "",
                               "instrument_or_method_of_transfer": method_text(i), "trustee_initials": ""})
     return rows
@@ -232,14 +299,26 @@ def intake_summary(case: dict) -> dict:
 
 
 ORGANIZE_PROMPT = (
-    "You split a person's plain description of what they own into separate items for a living trust intake. "
-    "Return VALID JSON only: {\"items\": [{\"description\": str, \"kind\": one of "
-    + json.dumps([k for k in KINDS if k != "unsure"]) + ", \"other_kind\": str or null}], \"retirement_left_out\": [str]}. "
-    "Keep each description short, in the person's own words, specific enough for a stranger to find it. "
-    "Never include full account numbers; keep only last 4 digits if given. "
-    "Retirement accounts (IRA, Roth, 401k, 403b, pension, and similar) must NOT be items; list them in retirement_left_out. "
-    "Use kind 'other' with other_kind from " + json.dumps(OTHER_KINDS) + " when nothing else fits. "
-    "Do not use dashes. Do not invent items."
+    "You split a person's plain description of what they own into separate items for a living trust intake.\n"
+    "Return VALID JSON only:\n"
+    "{\"items\": [{\"description\": str, \"kind\": one of "
+    + json.dumps([k for k in KINDS if k != "unsure"])
+    + ", \"other_kind\": str or null, \"business_info\": null or object}], "
+    "\"retirement_left_out\": [str]}\n"
+    "Rules:\n"
+    "- Each description: short, in the person's words, specific. Never include full account numbers.\n"
+    "- Retirement accounts (IRA, Roth, 401k, 403b, pension, similar) go in retirement_left_out only.\n"
+    "- Use kind 'other' with other_kind from " + json.dumps(OTHER_KINDS) + " when nothing fits.\n"
+    "- Do not use dashes. Do not invent items.\n\n"
+    "For Business Ownership items (kind='business'), set business_info to:\n"
+    "{\"legal_name\": str, \"biz_type\": one of ['llc','corp','s_corp','partnership','sole_prop','nonprofit','other','unsure'] or empty, "
+    "\"state_formed\": full US state name or empty, \"ownership_pct\": percent as a number string or empty, "
+    "\"biz_address_street\": street address or empty, "
+    "\"ein\": nine digits if EIN XX-XXXXXXX pattern found else empty, "
+    "\"ein_detected_in_text\": true if EIN was in the text}\n"
+    "If you see an EIN (like '12-3456789'), put the nine digits in ein, set ein_detected_in_text=true, "
+    "and do NOT include the EIN anywhere in the description field.\n"
+    "For non-business items set business_info to null."
 )
 
 
@@ -261,6 +340,24 @@ async def organize(text: str) -> dict:
             continue
         kind = it.get("kind") if it.get("kind") in KINDS else "other"
         ok = it.get("other_kind") if it.get("other_kind") in OTHER_KINDS else ("Something Else" if kind == "other" else None)
-        items.append({"description": desc.replace("—", ",").replace("–", ","), "kind": kind, "other_kind": ok,
-                      "other_text": desc if ok == "Something Else" else ""})
+        item_data = {"description": desc.replace("—", ",").replace("–", ","), "kind": kind, "other_kind": ok,
+                     "other_text": desc if ok == "Something Else" else ""}
+        # Extract business_info for business items
+        if kind == "business" and it.get("business_info"):
+            raw_bi = it["business_info"]
+            ein_raw = re.sub(r"[^0-9]", "", str(raw_bi.get("ein") or ""))
+            valid_biz_types = {"llc", "corp", "s_corp", "partnership", "sole_prop", "nonprofit", "other", "unsure", ""}
+            btype = raw_bi.get("biz_type") or ""
+            if btype not in valid_biz_types:
+                btype = ""
+            item_data["business_info"] = {
+                "legal_name": str(raw_bi.get("legal_name") or "").strip()[:200],
+                "biz_type": btype,
+                "state_formed": str(raw_bi.get("state_formed") or "").strip()[:40],
+                "ownership_pct": str(raw_bi.get("ownership_pct") or "").strip()[:10],
+                "biz_address_street": str(raw_bi.get("biz_address_street") or "").strip()[:200],
+                "ein": ein_raw if len(ein_raw) == 9 else "",
+                "ein_detected": bool(raw_bi.get("ein_detected_in_text")) and len(ein_raw) == 9,
+            }
+        items.append(item_data)
     return {"items": items, "retirement_left_out": left_out}
