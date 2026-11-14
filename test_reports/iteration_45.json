@@ -1,0 +1,41 @@
+{
+  "summary": "Targeted tests N, J, L, V on throwaway client testclient_ntest_1794677456@example.com. Created case 'NTest Revocable Trust', added 3 assets (house, business, bank). All 4 tests PASS. Throwaway client deleted. 5 users remain.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "DELETE /api/admin/users/{user_id}", "issue": "Returns 404 - pre-existing issue. Used direct MongoDB delete as workaround."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_results": {
+    "SETUP": "PASS - Registered testclient_ntest_1794677456@example.com, created case 'NTest Revocable Trust'. Heading says 'Start a new trust setup' (not intake).",
+    "ADD_HOUSE": "PASS - Added 'My Home' (house_land, Florida). 'Saved.' toast shown.",
+    "ADD_BUSINESS": "PASS - Added 'Walker Consulting LLC' (business, LLC, Florida, 100%). 'Saved.' toast shown.",
+    "ADD_BANK": "PASS - Added 'Checking Account - Chase' (bank). 'Saved.' toast shown.",
+    "N": "PASS - Review step shows 'Assets (3)'. All 3 items visible in h3/h4 heading. ReviewStep now reads both trustCase.assets AND trustCase.asset_items combined.",
+    "J": "PASS - 'Walker Consulting LLC' business item shows NO 'Needs more info' badge. All required fields filled.",
+    "L": "PASS - Review subtitle reads 'read and agree to the notices below'. No 'acknowledge the legal disclosures' in subtitle. Note: 'acknowledge' appears in legal checkbox labels ('I acknowledge this service is not a substitute...' and 'I acknowledge I am responsible for filing...') which are intentional legal acknowledgment checkboxes, not the subtitle/helper text.",
+    "V": "PASS - Admin dashboard and admin case detail show no 'Publish', 'Go Live', or 'Deploy' buttons. Admin buttons are: Download Intake PDF, Archive, Delete, Edit, Summary, Items, Schedule A, etc.",
+    "CLEANUP": "PASS - Case deleted via DELETE /api/admin/trust-cases/{id}. User deleted via MongoDB. 5 users remain: wes@igchq.com, support@igcfirm.com, igc.acquisitions@gmail.com, vepetti@me.com, test_release_72aeeb2f@example.com."
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ReviewStep fix confirmed working: trustCase.assets + trustCase.asset_items are combined into allItems for Assets(N) count",
+    "Heading on /portal/new correctly says 'Start a new trust setup' (not 'intake')"
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100% (4/4 tests N, J, L, V all PASS)"},
+  "test_credentials": {
+    "admin": "wes@igchq.com / Wllorenzo03!",
+    "throwaway_deleted": "testclient_ntest_1794677456@example.com"
+  },
+  "seed_data_creation": "Created and deleted: testclient_ntest_1794677456@example.com, case 99448833-ca3a-46d3-9116-4daf3d799568 (NTest Revocable Trust). Asset items deleted with case.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 4 targeted tests confirmed PASS. ReviewStep fix works: Assets(3) shown after adding 3 items via OwnStep. Admin DELETE /users returns 404 - use direct MongoDB delete. 5 users in DB: wes@igchq.com, support@igcfirm.com, igc.acquisitions@gmail.com, vepetti@me.com, test_release_72aeeb2f@example.com."
+}

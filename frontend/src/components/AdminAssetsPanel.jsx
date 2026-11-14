@@ -181,7 +181,7 @@ function ScheduleA({ caseId, sa }) {
   );
   return (
     <div data-testid="schedule-a-preview">
-      <p className="text-sm italic text-[#64748B] mb-3">This is a preview. Your trustee will sign and initial the final copy.</p>
+      <p className="text-sm italic text-[#64748B] mb-3">This is a preview. Your trustee will sign next to each line on the final copy.</p>
       <Part title="Part I" rows={sa.part_i} />
       <Part title="Part II" rows={sa.part_ii} />
       <div className="border-t border-[#E2E0DA] pt-3 mt-2 space-y-3">

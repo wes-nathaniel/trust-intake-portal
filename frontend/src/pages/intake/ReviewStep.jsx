@@ -20,11 +20,15 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
   const t = trustCase.trustees?.[0];
   const sct = trustCase.successor_trustees || [];
   const b = trustCase.beneficiaries || [];
-  const a = trustCase.assets || [];
+  const a   = trustCase.assets       || [];   // Schedule-A style entries
+  const ai  = trustCase.asset_items  || [];   // OwnStep entries (What You Own)
+  // Combine for display — different stores so no duplicate IDs possible
+  const allItems = [...a, ...ai];
   const docs = (trustCase.documents || []).filter((d) => !d.is_deleted);
 
   const hasBusinessAsset =
     a.some(x => x.asset_type === "business") ||
+    ai.some(x => x.kind === "business") ||
     docs.some(d => d.doc_type === "business_document");
 
   const acks = trustCase.acknowledgments || {};
@@ -226,14 +230,40 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
         </section>
 
         <section>
-          <h3 className="font-serif text-2xl text-navy mb-3">Assets ({a.length})</h3>
+          <h3 className="font-serif text-2xl text-navy mb-3">Assets ({allItems.length})</h3>
+          {/* Schedule-A entries (older store) */}
           {a.map((x) => (
             <div key={x.id} className="bg-sand-200/40 rounded-md p-4 mb-2">
               <LINE l="Type" v={x.asset_type} />
-              <LINE l="Institution/Property" v={x.institution_name || x.property_address} />
+              <LINE l="Institution / Property" v={x.institution_name || x.property_address} />
               {x.estimated_value && <LINE l="Est. value" v={`$${Number(x.estimated_value).toLocaleString()}`} />}
             </div>
           ))}
+          {/* asset_items entries (What You Own step) */}
+          {ai.map((x) => {
+            const KIND_LABEL = {
+              real_estate: "Real Estate", bank: "Bank / Credit Union",
+              business: "Business", vehicle: "Vehicle",
+              investment: "Investment / Brokerage",
+              life_insurance: "Life Insurance", retirement: "Retirement Account",
+              crypto: "Cryptocurrency", other: "Other",
+            };
+            const bizInfo = x.business_info || {};
+            return (
+              <div key={x.id} className="bg-sand-200/40 rounded-md p-4 mb-2">
+                <LINE l="Item" v={x.description} />
+                <LINE l="Type" v={KIND_LABEL[x.kind] || x.kind} />
+                {x.kind === "business" && bizInfo.legal_name && (
+                  <LINE l="Legal name" v={bizInfo.legal_name} />
+                )}
+                {x.kind === "business" && bizInfo.biz_type && (
+                  <LINE l="Business type" v={bizInfo.biz_type?.toUpperCase()} />
+                )}
+                {x.account_last4 && <LINE l="Account ending" v={`••••${x.account_last4}`} />}
+                {x.in_trust && <LINE l="In trust" v={x.in_trust} />}
+              </div>
+            );
+          })}
         </section>
           </>
         )}
@@ -292,7 +322,7 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
               <div className="text-sm text-[#334155] leading-relaxed p-4 bg-amber-50 border border-amber-300 rounded-md flex items-start gap-2">
                 <Building2 className="h-4 w-4 shrink-0 mt-0.5 text-amber-800" />
                 <span>
-                  <b>Secretary of State — Business Ownership Transfer.</b> If you are placing a business under your trust, most states require you to file a Change of Ownership/Change of Responsible Party form with the Secretary of State. This updates the business registration from your personal name to the trust name. Please contact your Secretary of State's office to complete this step.
+                  <b>Secretary of State: Business Ownership Transfer.</b> If you are placing a business under your trust, most states require you to file a Change of Ownership/Change of Responsible Party form with the Secretary of State. This updates the business registration from your personal name to the trust name. Please contact your Secretary of State's office to complete this step.
                 </span>
               </div>
               <label className="flex items-start gap-3 p-3 border border-[#E2E0DA] rounded-md cursor-pointer" data-testid="ack-business-sos-label">
@@ -330,7 +360,7 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
             {saving ? "Submitting…" : "✓  Submit for Review"}
           </button>
           <p className="mt-3 text-center text-xs text-[#64748B]">
-            Pressing this button notifies your agent. They will review your intake and prepare your trust draft — you'll get a portal notification when it's ready to review.
+            Pressing this button notifies your agent. They will review your intake and prepare your trust draft. You will get a portal notification when it is ready to review.
           </p>
         </div>
       ) : (
@@ -338,7 +368,7 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
           <CheckCircle2 className="h-10 w-10 text-green-700 mx-auto mb-2" />
           <p className="font-serif text-2xl text-navy mb-1">Intake submitted</p>
           <p className="text-sm text-[#334155] max-w-lg mx-auto">
-            Thank you — your agent has been notified. You'll be alerted here when your drafted trust is ready to review.
+            Thank you. Your agent has been notified. You will be alerted here when your drafted trust is ready to review.
           </p>
           <div className="mt-5 flex flex-col sm:flex-row gap-3 justify-center">
             <a href="/portal" className="btn-primary inline-flex items-center justify-center gap-1" data-testid="review-back-to-portal">

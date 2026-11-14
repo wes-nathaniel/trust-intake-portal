@@ -162,7 +162,7 @@ export default function AssetStep({ caseId, trustCase, reload }) {
 
       {hasBusinessAsset && (
         <div className="mb-6 p-4 bg-amber-50 border border-amber-300 rounded-md text-sm text-amber-900" data-testid="business-sos-advisory-asset">
-          <p className="font-semibold mb-1">Secretary of State — Business Ownership Transfer</p>
+          <p className="font-semibold mb-1">Secretary of State: Business Ownership Transfer</p>
           <p className="text-amber-900/90">
             If you are placing a business under your trust, most states require you to file a <b>Change of Ownership / Change of Responsible Party</b> form with the Secretary of State.
             This updates the business registration from your personal name to the trust name. Please contact your Secretary of State's office to complete this step.

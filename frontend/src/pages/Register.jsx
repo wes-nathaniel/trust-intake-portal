@@ -31,7 +31,7 @@ export default function Register() {
         <div className="absolute inset-0 bg-navy/60" />
         <div className="absolute inset-0 flex flex-col justify-end p-12 text-white">
           <h1 className="font-serif text-5xl leading-tight mb-4">Begin your<br/>legacy plan.</h1>
-          <p className="text-sand/90 max-w-md text-lg">Start a secure trust intake in minutes. We'll guide you through every step.</p>
+          <p className="text-sand/90 max-w-md text-lg">Start a secure trust setup in minutes. We'll guide you through every step.</p>
         </div>
       </div>
 
@@ -66,7 +66,7 @@ export default function Register() {
               draggable={false}
             />
             <h2 className="font-serif text-4xl text-navy mb-1">Get started</h2>
-            <p className="text-[#64748B]">Join {branding.business_name} to begin your trust intake.</p>
+            <p className="text-[#64748B]">Join {branding.business_name} to begin your trust setup.</p>
           </div>
           {error && (
             <div className="flex items-start gap-2 p-3 rounded-md bg-red-50 border border-red-200 text-red-700 text-sm" data-testid="register-error">

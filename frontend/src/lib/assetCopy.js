@@ -23,7 +23,7 @@ export const COPY = {
   intro: "Your trust is like an empty box. Whatever you put in the box belongs to the trust. Tell us what you own and what you would like to put in. Just type it the way you would tell a friend. We will help with the rest.",
   retirement: "Retirement accounts like an IRA or 401k stay in your name. Do not list them here. We will talk with you about them separately.",
   noNumbers: "Please do not type full account numbers, Social Security numbers, or passwords.",
-  initials: "Your trustee will initial each line after you both sign.",
+  initials: "Your trustee will sign next to each line when you both meet to sign.",
   infoOnly: "This form collects information only. It does not replace your signed trust documents.",
   unsure: "No problem. We will help you with this step.",
   typeLabel: "In your own words, tell us what you own. List as many things as you like.",

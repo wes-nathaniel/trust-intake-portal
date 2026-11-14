@@ -64,7 +64,7 @@ export default function StartNew() {
 
   return (
     <Layout>
-      <h1 className="font-serif text-3xl sm:text-4xl text-navy mb-2">Start a new trust intake</h1>
+      <h1 className="font-serif text-3xl sm:text-4xl text-navy mb-2">Start a new trust setup</h1>
       <p className="text-[#64748B] mb-8 max-w-2xl">
         First, tell us whether you already have a trust. We'll guide you through the right path.
       </p>
