@@ -1226,10 +1226,20 @@ async def _clean_asset_item(body: AssetItemIn, case: dict, existing: Optional[di
             # Preserve existing encrypted EIN if not changing
             existing_ein = ((existing or {}).get("business_info") or {}).get("ein") or ""
             bi["ein"] = existing_ein
-        # Validate required fields before "moved into trust"
+        # Enforce 4 required fields on every save
+        _biz_missing = []
+        if not (bi.get("legal_name") or "").strip():
+            _biz_missing.append("Business name")
+        if not (bi.get("biz_type") or "").strip():
+            _biz_missing.append("Type of business")
+        if not (bi.get("state_formed") or "").strip():
+            _biz_missing.append("State it was formed in")
+        if not (bi.get("ownership_pct") or "").strip():
+            _biz_missing.append("Percent you own")
+        if _biz_missing:
+            _asset_error(f"Please fill in these fields to continue: {', '.join(_biz_missing)}.")
+        # Additional checks when marking as moved into trust
         if status == "moved":
-            if not (bi.get("legal_name") or "").strip():
-                _asset_error("Please add the business name before marking it as moved into the trust.")
             if not (bi.get("ein") or ""):
                 _asset_error("Please add the EIN before marking this item as moved into the trust.")
             if not (bi.get("biz_address_street") or "").strip():

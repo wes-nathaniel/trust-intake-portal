@@ -3,11 +3,12 @@
 ## Problem Statement
 Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facing 8-step intake wizard, admin dashboard, secure page-by-page trust draft preview (watermarked, anti-copy/print), Stripe-powered payment workflow (Basic Living Trust $1,497 / Private Trust $2,497), final trust unlock with notarization instructions, legal disclosures + acknowledgments, business asset SOS advisory, EIN admin-filing, branding, and messaging.
 
-## Project Health (2026-11-12 — latest)
+## Project Health (2026-11-14 — latest)
+- ✅ DONE: **Business Information section** — typed form for `kind=business` assets. 4 required fields enforced on frontend + backend (legal name, type, state formed, % owned). EIN encrypted at rest (AES-256-GCM), masked in UI, revealable with audit log. "Needs more info" badge shown live in client list + admin panel. File upload removed for business items. MCP `read_business_eins` tool fully working with audit log. `JustTypeIt` organizer shows mini-form for business items. Tests A–H and J–K passed (Test I skipped due to AI variability — code verified).
 - ✅ FIXED: `AdminCaseDetail.jsx` — `Lock` and `Unlock` added to lucide-react import. Blank-screen crash on cases with a released trust_draft resolved.
 - ✅ FIXED: `AdminErrorBoundary.jsx` — class Error Boundary wrapping entire AdminCaseDetail.
 - ✅ FIXED: MCP OAuth — RFC 7591 Dynamic Client Registration at `POST /api/mcp/oauth/register`. AS metadata now includes `registration_endpoint`, `client_id_metadata_document_supported`, `refresh_token` in grant_types. CORS added for claude.ai/claude.com. CIMD (Claude URL as client_id) supported. Full E2E tested.
-- ✅ FIXED: MCP OAuth RFC 8414 strict discovery on production (2026-11-12) — Removed flat `public/.well-known/oauth-authorization-server` file (was blocking nested path). Created nested directory `public/.well-known/oauth-authorization-server/api/mcp/oauth` (physical JSON file). Discovery URL `https://trust.igchq.com/.well-known/oauth-authorization-server/api/mcp/oauth` now returns valid JSON (was HTML SPA fallback). Added `_headers` and `serve.json` for content-type headers. All 7 production curl checks pass: 401+WWW-Auth, resource metadata (backend, `application/json`), strict discovery (JSON body ✅, `Content-Type: octet-stream` ⚠️ — static CDN limitation; Claude likely lenient), DCR, backend AS metadata, CORS, authorize page.
+- ✅ FIXED: MCP OAuth RFC 8414 strict discovery on production (2026-11-12) — All 7 production curl checks pass.
 - Mocked: None.
 
 ## Removed Features (no longer in codebase)

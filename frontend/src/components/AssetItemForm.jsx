@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Upload, AlertTriangle, Eye, EyeOff, Lock } from "lucide-react";
+import { Upload, AlertTriangle, Eye, Lock } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 import { KIND_OPTIONS, OTHER_KINDS, STATE_KINDS, EXAMPLES, US_STATES, METHOD_OTHER, METHOD_UNSURE, COPY, HELP } from "@/lib/assetCopy";
 
@@ -10,7 +10,25 @@ const RETIREMENT_RE = /\b(ira|401\s*\(?k\)?|403\s*\(?b\)?|457\s*\(?b\)?\s*(plan|
 // Kinds that need a full account / policy number
 const ACCT_KINDS = new Set(["bank", "investment", "life_insurance"]);
 
+export const BIZ_TYPE_OPTIONS = [
+  ["llc",        "LLC (Limited Liability Company)"],
+  ["s_corp",     "S Corporation"],
+  ["corp",       "C Corporation"],
+  ["partnership","Partnership"],
+  ["sole_prop",  "Sole Proprietorship"],
+  ["nonprofit",  "Non-Profit"],
+  ["other",      "Other"],
+  ["unsure",     "I am not sure"],
+];
+
+export function bizNeedsMoreInfo(item) {
+  if (item.kind !== "business") return false;
+  const bi = item.business_info || {};
+  return !bi.legal_name?.trim() || !bi.biz_type?.trim() || !bi.state_formed?.trim() || !bi.ownership_pct?.trim();
+}
+
 const inp = "w-full border border-[#E2E0DA] rounded-md px-3 py-3 text-base bg-white focus:outline-none focus:ring-2 focus:ring-bronze/40";
+const inpErr = "w-full border-2 border-red-400 rounded-md px-3 py-3 text-base bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-300";
 const lab = "block text-base font-semibold text-navy mb-1";
 
 function Help({ text, id }) {
@@ -31,21 +49,53 @@ const blank = (state) => ({
   method: "", method_other: "", attachment_doc_id: "", account_number: ""
 });
 
+const blankBi = () => ({
+  legal_name: "", dba: "", biz_type: "", state_formed: "", date_formed: "",
+  ownership_pct: "", ein: "", biz_description: "",
+  biz_address_street: "", biz_address_city: "", biz_address_state: "", biz_address_zip: "",
+});
+
+// Field label map used in validation messages
+const BIZ_REQUIRED_LABELS = {
+  legal_name:    "Business name",
+  biz_type:      "Type of business",
+  state_formed:  "State it was formed in",
+  ownership_pct: "Percent you own",
+};
+
 export default function AssetItemForm({ caseId, clientState, item, onSaved, onCancel }) {
   const [f, setF] = useState(() => ({ ...blank(clientState), ...(item || {}), account_number: "" }));
+  const [bi, setBi] = useState(() => item?.business_info ? { ...blankBi(), ...item.business_info, ein: "" } : blankBi());
+  const [missingBiz, setMissingBiz] = useState([]); // list of field keys missing
   const [methods, setMethods] = useState([]);
   const [saving, setSaving] = useState(false);
+
   // Account number reveal state
   const [showAcctInput, setShowAcctInput] = useState(!item?.has_account_number);
   const [revealedNumber, setRevealedNumber] = useState("");
   const [revealing, setRevealing] = useState(false);
   const [showRevealed, setShowRevealed] = useState(false);
 
+  // EIN reveal state (business items)
+  const [showEinInput, setShowEinInput] = useState(!item?.business_info?.has_ein);
+  const [revealedEin, setRevealedEin] = useState("");
+  const [revealingEin, setRevealingEin] = useState(false);
+  const [showRevealedEin, setShowRevealedEin] = useState(false);
+
+  // Refs for scrolling to first missing business field
+  const legalNameRef  = useRef(null);
+  const bizTypeRef    = useRef(null);
+  const stateFormedRef = useRef(null);
+  const ownershipRef  = useRef(null);
+  const bizValidRef   = useRef(null);
+
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const setBiField = (k, v) => { setBi((x) => ({ ...x, [k]: v })); setMissingBiz((m) => m.filter((f) => f !== k)); };
   const showState = STATE_KINDS.has(f.kind);
   const unsureAny = f.kind === "unsure" || f.in_trust === "unsure" || f.method === METHOD_UNSURE;
   const isRetirement = RETIREMENT_RE.test(f.description);
   const needsAcct = ACCT_KINDS.has(f.kind);
+  const isBusiness = f.kind === "business";
 
   useEffect(() => {
     if (!f.kind || f.not_done) return;
@@ -62,6 +112,11 @@ export default function AssetItemForm({ caseId, clientState, item, onSaved, onCa
     }
   }, [f.kind, needsAcct]);
 
+  // When kind changes away from business, clear missing flags
+  useEffect(() => {
+    if (!isBusiness) setMissingBiz([]);
+  }, [f.kind, isBusiness]);
+
   const revealNumber = async () => {
     if (!item?.id) return;
     setRevealing(true);
@@ -73,6 +128,20 @@ export default function AssetItemForm({ caseId, clientState, item, onSaved, onCa
       toast.error("Could not load your account number. Please try again.");
     } finally {
       setRevealing(false);
+    }
+  };
+
+  const revealEin = async () => {
+    if (!item?.id) return;
+    setRevealingEin(true);
+    try {
+      const { data } = await api.get(`/trust-cases/${caseId}/asset-items/${item.id}/ein`);
+      setRevealedEin(data.ein || "");
+      setShowRevealedEin(true);
+    } catch {
+      toast.error("Could not load the EIN. Please try again.");
+    } finally {
+      setRevealingEin(false);
     }
   };
 
@@ -88,8 +157,20 @@ export default function AssetItemForm({ caseId, clientState, item, onSaved, onCa
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   };
 
+  const validateBusiness = () => {
+    const missing = ["legal_name", "biz_type", "state_formed", "ownership_pct"].filter(k => !bi[k]?.trim());
+    setMissingBiz(missing);
+    if (missing.length > 0) {
+      // Scroll to validation message
+      if (bizValidRef.current) bizValidRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+      return false;
+    }
+    return true;
+  };
+
   const save = async (e) => {
     e.preventDefault();
+    if (isBusiness && !validateBusiness()) return;
     // Client-side guard: account number required when marking as moved for ACCT_KINDS
     if (needsAcct && !f.not_done && !f.account_number && !item?.has_account_number) {
       toast.error("Please add the full account number before marking this item as moved into the trust.");
@@ -97,13 +178,17 @@ export default function AssetItemForm({ caseId, clientState, item, onSaved, onCa
     }
     setSaving(true);
     try {
-      if (item?.id) await api.put(`/trust-cases/${caseId}/asset-items/${item.id}`, f);
-      else await api.post(`/trust-cases/${caseId}/asset-items`, f);
+      const payload = { ...f };
+      if (isBusiness) payload.business_info = { ...bi };
+      if (item?.id) await api.put(`/trust-cases/${caseId}/asset-items/${item.id}`, payload);
+      else await api.post(`/trust-cases/${caseId}/asset-items`, payload);
       toast.success("Saved.");
       onSaved?.();
     } catch (err) { toast.error(formatApiError(err.response?.data?.detail)); }
     finally { setSaving(false); }
   };
+
+  const fieldClass = (key) => missingBiz.includes(key) ? inpErr : inp;
 
   return (
     <form onSubmit={save} className="space-y-5 bg-white border border-[#E2E0DA] rounded-xl p-4 sm:p-6" data-testid="asset-item-form">
@@ -143,6 +228,152 @@ export default function AssetItemForm({ caseId, clientState, item, onSaved, onCa
         )}
       </div>
 
+      {/* ---- Business Information section (only for kind === "business") ---- */}
+      {isBusiness && (
+        <div className="rounded-xl border border-navy/20 bg-[#F8F7F4] p-4 space-y-4" data-testid="business-info-section">
+          <p className="text-base font-semibold text-navy">Business information</p>
+
+          {/* Validation message */}
+          {missingBiz.length > 0 && (
+            <div ref={bizValidRef} className="rounded-lg bg-amber-50 border border-amber-300 p-3" data-testid="biz-validation-msg">
+              <p className="text-sm text-amber-900 font-medium">
+                Please fill in these fields to continue: {missingBiz.map(k => BIZ_REQUIRED_LABELS[k]).join(", ")}.
+              </p>
+            </div>
+          )}
+
+          {/* Business legal name (required) */}
+          <div>
+            <label className={lab}>Business legal name *</label>
+            <input
+              ref={legalNameRef}
+              className={fieldClass("legal_name")}
+              value={bi.legal_name}
+              onChange={(e) => setBiField("legal_name", e.target.value)}
+              placeholder="Smith Consulting LLC"
+              data-testid="biz-legal-name"
+            />
+          </div>
+
+          {/* Type of business (required — "I am not sure" is a valid answer) */}
+          <div>
+            <label className={lab}>Type of business *</label>
+            <select
+              ref={bizTypeRef}
+              className={fieldClass("biz_type")}
+              value={bi.biz_type}
+              onChange={(e) => setBiField("biz_type", e.target.value)}
+              data-testid="biz-type"
+            >
+              <option value="">Pick one</option>
+              {BIZ_TYPE_OPTIONS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </div>
+
+          {/* State formed (required) */}
+          <div>
+            <label className={lab}>State where it was formed *</label>
+            <select
+              ref={stateFormedRef}
+              className={fieldClass("state_formed")}
+              value={bi.state_formed}
+              onChange={(e) => setBiField("state_formed", e.target.value)}
+              data-testid="biz-state-formed"
+            >
+              <option value="">Pick a state</option>
+              {US_STATES.map((s) => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+
+          {/* Percent owned (required) */}
+          <div>
+            <label className={lab}>Percent you own *</label>
+            <input
+              ref={ownershipRef}
+              className={fieldClass("ownership_pct")}
+              value={bi.ownership_pct}
+              onChange={(e) => setBiField("ownership_pct", e.target.value)}
+              placeholder="50"
+              inputMode="decimal"
+              data-testid="biz-ownership-pct"
+            />
+            <p className="text-sm text-[#64748B] mt-1">Just the number, for example: 100, 50, 33.3</p>
+          </div>
+
+          {/* DBA (optional) */}
+          <div>
+            <label className={lab}>Doing business as (DBA) <span className="font-normal text-[#94A3B8]">optional</span></label>
+            <input className={inp} value={bi.dba} onChange={(e) => setBiField("dba", e.target.value)}
+              placeholder="If the business uses a different name" data-testid="biz-dba" />
+          </div>
+
+          {/* Date formed (optional) */}
+          <div>
+            <label className={lab}>Date formed <span className="font-normal text-[#94A3B8]">optional</span></label>
+            <input type="date" className={inp} value={bi.date_formed} onChange={(e) => setBiField("date_formed", e.target.value)} data-testid="biz-date-formed" />
+          </div>
+
+          {/* EIN — protected, same pattern as account number */}
+          <div className="rounded-lg border border-[#E2E0DA] bg-white p-3 space-y-2" data-testid="biz-ein-section">
+            <div className="flex items-center gap-2">
+              <Lock className="h-4 w-4 text-bronze shrink-0" />
+              <label className={`${lab} mb-0`}>EIN (Employer Identification Number) <span className="font-normal text-[#94A3B8]">optional</span></label>
+            </div>
+            <p className="text-sm text-[#475569]">Type it only here, not in the description. It is protected the same way as a Social Security number.</p>
+
+            {/* Existing EIN — masked view */}
+            {item?.business_info?.has_ein && !showEinInput && (
+              <div className="space-y-2">
+                {showRevealedEin ? (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-mono text-base bg-white border border-[#E2E0DA] rounded-md px-3 py-2 select-all" data-testid="biz-ein-revealed">
+                      {revealedEin}
+                    </span>
+                    <button type="button" onClick={() => { setShowRevealedEin(false); setRevealedEin(""); }}
+                      className="text-sm text-[#64748B] underline min-h-[44px] px-2" data-testid="biz-ein-hide-btn">Hide</button>
+                    <button type="button" onClick={() => { setShowEinInput(true); setShowRevealedEin(false); setRevealedEin(""); }}
+                      className="text-sm text-bronze underline min-h-[44px] px-2" data-testid="biz-ein-change-btn">Change</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className="text-base text-navy font-medium" data-testid="biz-ein-last4">
+                      EIN ending in {item.business_info.ein_last4}
+                    </span>
+                    <button type="button" onClick={revealEin} disabled={revealingEin}
+                      className="inline-flex items-center gap-1 text-sm text-bronze underline min-h-[44px] px-2" data-testid="biz-ein-show-btn">
+                      <Eye className="h-4 w-4" /> {revealingEin ? "Loading" : "Show"}
+                    </button>
+                    <button type="button" onClick={() => setShowEinInput(true)}
+                      className="text-sm text-[#64748B] underline min-h-[44px] px-2" data-testid="biz-ein-change-btn">Change</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* EIN input — when no existing EIN or when user taps Change */}
+            {(!item?.business_info?.has_ein || showEinInput) && (
+              <div className="space-y-1">
+                <input
+                  className={inp}
+                  value={bi.ein}
+                  onChange={(e) => setBiField("ein", e.target.value)}
+                  placeholder="XX-XXXXXXX"
+                  autoComplete="off"
+                  inputMode="numeric"
+                  data-testid="biz-ein-input"
+                />
+                {item?.business_info?.has_ein && (
+                  <button type="button" onClick={() => { setShowEinInput(false); setBiField("ein", ""); }}
+                    className="text-sm text-[#64748B] underline min-h-[44px] px-1" data-testid="biz-ein-cancel-change-btn">
+                    Keep existing EIN
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Full account number — only for bank, investment, life_insurance */}
       {needsAcct && (
         <div className="rounded-xl border border-[#E2E0DA] bg-[#FAFAF8] p-4 space-y-2" data-testid="account-number-section">
@@ -153,8 +384,6 @@ export default function AssetItemForm({ caseId, clientState, item, onSaved, onCa
           <p className="text-sm text-[#475569]">
             This lets us identify your account exactly on your trust papers. Type it only in this box, not in the description. It is protected.
           </p>
-
-          {/* Existing number saved — show masked view unless editing */}
           {item?.has_account_number && !showAcctInput && (
             <div className="space-y-2">
               {showRevealed ? (
@@ -163,13 +392,9 @@ export default function AssetItemForm({ caseId, clientState, item, onSaved, onCa
                     {revealedNumber}
                   </span>
                   <button type="button" onClick={() => { setShowRevealed(false); setRevealedNumber(""); }}
-                    className="text-sm text-[#64748B] underline min-h-[44px] px-2" data-testid="account-number-hide-btn">
-                    Hide
-                  </button>
+                    className="text-sm text-[#64748B] underline min-h-[44px] px-2" data-testid="account-number-hide-btn">Hide</button>
                   <button type="button" onClick={() => { setShowAcctInput(true); setShowRevealed(false); setRevealedNumber(""); }}
-                    className="text-sm text-bronze underline min-h-[44px] px-2" data-testid="account-number-change-btn">
-                    Change
-                  </button>
+                    className="text-sm text-bronze underline min-h-[44px] px-2" data-testid="account-number-change-btn">Change</button>
                 </div>
               ) : (
                 <div className="flex items-center gap-3 flex-wrap">
@@ -181,15 +406,11 @@ export default function AssetItemForm({ caseId, clientState, item, onSaved, onCa
                     <Eye className="h-4 w-4" /> {revealing ? "Loading" : "Show"}
                   </button>
                   <button type="button" onClick={() => setShowAcctInput(true)}
-                    className="text-sm text-[#64748B] underline min-h-[44px] px-2" data-testid="account-number-change-btn">
-                    Change
-                  </button>
+                    className="text-sm text-[#64748B] underline min-h-[44px] px-2" data-testid="account-number-change-btn">Change</button>
                 </div>
               )}
             </div>
           )}
-
-          {/* Input — show when no existing number, or when user taps Change */}
           {(!item?.has_account_number || showAcctInput) && (
             <div className="space-y-1">
               <input
@@ -260,14 +481,19 @@ export default function AssetItemForm({ caseId, clientState, item, onSaved, onCa
           </>
         )}
       </div>
-      <div>
-        <label className={lab}>Have a copy of the paperwork? Upload it here.</label>
-        <label className="inline-flex items-center gap-2 px-4 py-3 rounded-md border border-bronze/50 text-bronze cursor-pointer min-h-[48px]">
-          <Upload className="h-5 w-5" /> {f.attachment_doc_id ? "Uploaded. Tap to change." : "Upload a PDF or photo"}
-          <input type="file" accept="application/pdf,image/*" className="hidden" onChange={(e) => upload(e.target.files?.[0])} data-testid="asset-attachment" />
-        </label>
-        <p className="text-sm text-[#64748B] mt-1">Not required.</p>
-      </div>
+
+      {/* File upload — hidden for business items */}
+      {!isBusiness && (
+        <div>
+          <label className={lab}>Have a copy of the paperwork? Upload it here.</label>
+          <label className="inline-flex items-center gap-2 px-4 py-3 rounded-md border border-bronze/50 text-bronze cursor-pointer min-h-[48px]">
+            <Upload className="h-5 w-5" /> {f.attachment_doc_id ? "Uploaded. Tap to change." : "Upload a PDF or photo"}
+            <input type="file" accept="application/pdf,image/*" className="hidden" onChange={(e) => upload(e.target.files?.[0])} data-testid="asset-attachment" />
+          </label>
+          <p className="text-sm text-[#64748B] mt-1">Not required.</p>
+        </div>
+      )}
+
       {unsureAny && <p className="text-base text-emerald-800 bg-emerald-50 rounded p-3" data-testid="asset-unsure-msg">{COPY.unsure}</p>}
       <p className="text-sm text-[#64748B]">{COPY.initials}</p>
       <p className="text-xs text-[#94A3B8]">{COPY.infoOnly}</p>

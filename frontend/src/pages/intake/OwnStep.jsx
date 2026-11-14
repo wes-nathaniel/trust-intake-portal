@@ -3,10 +3,20 @@ import { toast } from "sonner";
 import { Pencil, Plus, Trash2, Sparkles, Info, Lock } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 import AssetItemForm from "@/components/AssetItemForm";
-import { COPY, KIND_OPTIONS, KIND_LABEL, STATUS_LABEL, OTHER_KINDS } from "@/lib/assetCopy";
+import { BIZ_TYPE_OPTIONS, bizNeedsMoreInfo } from "@/components/AssetItemForm";
+import { COPY, KIND_OPTIONS, KIND_LABEL, STATUS_LABEL, OTHER_KINDS, US_STATES } from "@/lib/assetCopy";
 
 const ACCT_KINDS = new Set(["bank", "investment", "life_insurance"]);
 const big = "w-full min-h-[56px] rounded-xl border-2 text-base font-semibold flex items-center justify-center gap-2 px-4";
+const minInp = "w-full border border-[#E2E0DA] rounded-md px-3 py-2 text-base bg-white focus:outline-none focus:ring-2 focus:ring-bronze/40";
+
+function NeedsMoreInfoBadge() {
+  return (
+    <span className="inline-block text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300" data-testid="needs-more-info-badge">
+      Needs more info
+    </span>
+  );
+}
 
 function JustTypeIt({ caseId, onDone }) {
   const [text, setText] = useState("");
@@ -24,7 +34,24 @@ function JustTypeIt({ caseId, onDone }) {
     finally { setBusy(false); }
   };
   const edit = (i, patch) => setFound(found.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+  const editBi = (i, biPatch) => setFound(found.map((x, j) => j === i ? { ...x, business_info: { ...(x.business_info || {}), ...biPatch } } : x));
+
   const confirm = async () => {
+    // Validate business items before saving
+    for (const it of found) {
+      if (it.kind === "business") {
+        const bi = it.business_info || {};
+        const missing = [];
+        if (!bi.legal_name?.trim()) missing.push("Business name");
+        if (!bi.biz_type?.trim()) missing.push("Type of business");
+        if (!bi.state_formed?.trim()) missing.push("State it was formed in");
+        if (!bi.ownership_pct?.trim()) missing.push("Percent you own");
+        if (missing.length > 0) {
+          toast.error(`Please fill in these fields to continue: ${missing.join(", ")}.`);
+          return;
+        }
+      }
+    }
     setBusy(true);
     try {
       await api.post(`/trust-cases/${caseId}/asset-items/confirm`, { text, items: found });
@@ -62,6 +89,35 @@ function JustTypeIt({ caseId, onDone }) {
                 <select className="w-full border rounded px-3 py-2 text-base" value={it.other_kind || "Something Else"} onChange={(e) => edit(i, { other_kind: e.target.value })}>
                   {OTHER_KINDS.map((o) => <option key={o}>{o}</option>)}
                 </select>
+              )}
+              {/* Business mini-form for required fields */}
+              {it.kind === "business" && (
+                <div className="space-y-2 mt-2 p-3 bg-[#F8F7F4] rounded-lg border border-navy/10" data-testid={`organized-biz-fields-${i}`}>
+                  <p className="text-sm font-semibold text-navy">Business details (required)</p>
+                  <input className={minInp} placeholder="Business legal name *"
+                    value={it.business_info?.legal_name || ""}
+                    onChange={(e) => editBi(i, { legal_name: e.target.value })}
+                    data-testid={`org-biz-name-${i}`} />
+                  <select className={minInp}
+                    value={it.business_info?.biz_type || ""}
+                    onChange={(e) => editBi(i, { biz_type: e.target.value })}
+                    data-testid={`org-biz-type-${i}`}>
+                    <option value="">Type of business *</option>
+                    {BIZ_TYPE_OPTIONS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                  </select>
+                  <select className={minInp}
+                    value={it.business_info?.state_formed || ""}
+                    onChange={(e) => editBi(i, { state_formed: e.target.value })}
+                    data-testid={`org-biz-state-${i}`}>
+                    <option value="">State it was formed in *</option>
+                    {US_STATES.map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                  <input className={minInp} placeholder="Percent you own (e.g. 50) *"
+                    value={it.business_info?.ownership_pct || ""}
+                    onChange={(e) => editBi(i, { ownership_pct: e.target.value })}
+                    inputMode="decimal"
+                    data-testid={`org-biz-pct-${i}`} />
+                </div>
               )}
               <button type="button" onClick={() => setFound(found.filter((_, j) => j !== i))} className="text-sm text-red-700 underline min-h-[40px]">Remove this one</button>
             </div>
@@ -124,6 +180,7 @@ export default function OwnStep({ caseId, reload }) {
                   )}
                   <div className="flex flex-wrap gap-2 mt-2">
                     <span className={`inline-block text-sm px-3 py-1 rounded-full ${it.status === "moved" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}>{STATUS_LABEL[it.status]}</span>
+                    {bizNeedsMoreInfo(it) && <NeedsMoreInfoBadge />}
                     {it.post_completion && (
                       <span className="inline-block text-xs px-3 py-1 rounded-full bg-blue-50 text-blue-800 border border-blue-200" data-testid={`pending-review-${it.id}`}>Pending team review</span>
                     )}

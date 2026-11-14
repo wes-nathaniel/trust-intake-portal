@@ -1,13 +1,64 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Download, Pencil, ArrowRightLeft, AlertTriangle, Lock, Eye, EyeOff } from "lucide-react";
+import { Download, Pencil, ArrowRightLeft, AlertTriangle, Lock, Eye } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 import AssetItemForm from "@/components/AssetItemForm";
+import { bizNeedsMoreInfo } from "@/components/AssetItemForm";
 import { KIND_LABEL, STATUS_LABEL, METHOD_OTHER, METHOD_UNSURE } from "@/lib/assetCopy";
 
 const ACCT_KINDS = new Set(["bank", "investment", "life_insurance"]);
 const TABS = [["summary", "Summary"], ["items", "Items"], ["schedule", "Schedule A"]];
 const badge = "text-xs font-semibold px-2 py-1 rounded-full";
+
+function NeedsMoreInfoBadge({ itemId }) {
+  return (
+    <span className={`${badge} bg-amber-100 text-amber-900 border border-amber-300`} data-testid={`needs-more-info-${itemId}`}>
+      Needs more info
+    </span>
+  );
+}
+
+function EinReveal({ caseId, item }) {
+  const [revealed, setRevealed] = useState("");
+  const [revealing, setRevealing] = useState(false);
+  const [show, setShow] = useState(false);
+  if (item.kind !== "business") return null;
+  const bi = item.business_info || {};
+
+  const reveal = async () => {
+    if (revealed) { setShow(true); return; }
+    setRevealing(true);
+    try {
+      const { data } = await api.get(`/admin/trust-cases/${caseId}/asset-items/${item.id}/ein`);
+      setRevealed(data.ein || "");
+      setShow(true);
+    } catch { toast.error("Could not load EIN."); }
+    finally { setRevealing(false); }
+  };
+
+  if (!bi.has_ein) {
+    return <span className={`${badge} bg-orange-100 text-orange-900 border border-orange-300`} data-testid={`ein-missing-badge-${item.id}`}>EIN not provided</span>;
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs" data-testid={`ein-reveal-${item.id}`}>
+      <Lock className="h-3 w-3 text-bronze" />
+      {show && revealed ? (
+        <>
+          <span className="font-mono font-semibold">{revealed}</span>
+          <button type="button" onClick={() => setShow(false)} className="underline text-[#64748B] min-h-[32px] px-1" data-testid={`ein-hide-${item.id}`}>Hide</button>
+        </>
+      ) : (
+        <>
+          <span className="text-navy">EIN ••••{bi.ein_last4}</span>
+          <button type="button" onClick={reveal} disabled={revealing}
+            className="underline text-bronze inline-flex items-center gap-0.5 min-h-[32px] px-1" data-testid={`ein-reveal-btn-${item.id}`}>
+            <Eye className="h-3 w-3" />{revealing ? "Loading" : "Reveal"}
+          </button>
+        </>
+      )}
+    </span>
+  );
+}
 
 function Badges({ f }) {
   return (
@@ -288,10 +339,20 @@ export default function AdminAssetsPanel({ caseId }) {
                       <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-300" data-testid={`post-completion-badge-${i.id}`}>Added after signing</span>
                     )}
                     {i.has_unreleased_edits && <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-900">Edit not visible to client</span>}
+                    {bizNeedsMoreInfo(i) && <NeedsMoreInfoBadge itemId={i.id} />}
                     <AccountNumberReveal caseId={caseId} item={i} />
+                    <EinReveal caseId={caseId} item={i} />
                   </div>
                   <p className="font-semibold text-navy break-words">{i.description}</p>
                   <p className="text-[#64748B]">{KIND_LABEL[i.kind]}{i.other_kind ? ` (${i.other_kind === "Something Else" ? i.other_text : i.other_kind})` : ""}{i.state ? `, ${i.state}` : ""}</p>
+                  {i.kind === "business" && i.business_info && (
+                    <div className="text-xs text-[#64748B] mt-0.5 space-y-0.5" data-testid={`biz-info-summary-${i.id}`}>
+                      {i.business_info.legal_name && <span className="mr-3">Name: {i.business_info.legal_name}</span>}
+                      {i.business_info.biz_type && <span className="mr-3">Type: {i.business_info.biz_type}</span>}
+                      {i.business_info.state_formed && <span className="mr-3">Formed in: {i.business_info.state_formed}</span>}
+                      {i.business_info.ownership_pct && <span>Owned: {i.business_info.ownership_pct}%</span>}
+                    </div>
+                  )}
                   <p className="mt-1">Status: <b>{STATUS_LABEL[i.status]}</b>{i.date_delivered ? `, ${i.date_delivered}` : ""}</p>
                   {methodLabel(i) && <p className="break-words text-[#64748B]">Method: {methodLabel(i)}</p>}
                   <div className="flex flex-wrap gap-2 mt-2">
