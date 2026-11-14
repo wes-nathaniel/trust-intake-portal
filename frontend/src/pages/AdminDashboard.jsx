@@ -6,6 +6,7 @@ import { Search, Users, FileClock, ArrowRight, UserPlus, Trash2, Archive, X, Che
 import { Input } from "@/components/ui/input";
 import InviteClientDialog from "@/components/InviteClientDialog";
 import DiagnosticsPanel from "@/components/DiagnosticsPanel";
+import ClientActivityTag from "@/components/ClientActivityTag";
 import StorageRollupCard from "@/components/StorageRollupCard";
 import ExportCsvControl from "@/components/ExportCsvControl";
 import TempPasswordDialog from "@/components/TempPasswordDialog";
@@ -207,24 +208,60 @@ export default function AdminDashboard() {
       <DiagnosticsPanel />
 
       {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10" data-testid="admin-stats">
-          <div className="bg-white border border-[#E2E0DA] rounded-xl p-5">
-            <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Total Cases</p>
-            <p className="font-serif text-3xl text-navy mt-1">{stats.total_cases}</p>
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4" data-testid="admin-stats">
+            <div className="bg-white border border-[#E2E0DA] rounded-xl p-5">
+              <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Total Cases</p>
+              <p className="font-serif text-3xl text-navy mt-1">{stats.total_cases}</p>
+            </div>
+            <div className="bg-white border border-[#E2E0DA] rounded-xl p-5">
+              <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Clients</p>
+              <p className="font-serif text-3xl text-navy mt-1">{stats.total_clients}</p>
+            </div>
+            <div className="bg-white border border-[#E2E0DA] rounded-xl p-5">
+              <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">In Review</p>
+              <p className="font-serif text-3xl text-navy mt-1">{stats.by_status["In Review"] || 0}</p>
+            </div>
+            <div className="bg-white border border-[#E2E0DA] rounded-xl p-5">
+              <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Completed</p>
+              <p className="font-serif text-3xl text-navy mt-1">{stats.by_status["Completed"] || 0}</p>
+            </div>
           </div>
-          <div className="bg-white border border-[#E2E0DA] rounded-xl p-5">
-            <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Clients</p>
-            <p className="font-serif text-3xl text-navy mt-1">{stats.total_clients}</p>
+
+          {/* Clients online now panel */}
+          <div className="mb-10 bg-white border border-[#E2E0DA] rounded-xl p-5" data-testid="clients-online-panel">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+              <p className="text-sm font-semibold text-navy">
+                Clients online now — {stats.clients_online?.length || 0}
+              </p>
+            </div>
+            {(!stats.clients_online || stats.clients_online.length === 0) ? (
+              <p className="text-sm text-[#94A3B8]" data-testid="no-clients-online">No clients are online right now.</p>
+            ) : (
+              <ul className="space-y-1" data-testid="clients-online-list">
+                {stats.clients_online.map((u, i) => (
+                  <li key={i} className="text-sm">
+                    {u.case_id ? (
+                      <Link to={`/admin/cases/${u.case_id}`}
+                        className="text-navy hover:text-bronze underline flex items-center gap-1.5"
+                        data-testid={`online-client-link-${i}`}>
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
+                        {u.name || "(no name)"}
+                        <ArrowRight className="h-3 w-3 text-[#94A3B8]" />
+                      </Link>
+                    ) : (
+                      <span className="text-navy flex items-center gap-1.5">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
+                        {u.name || "(no name)"}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-          <div className="bg-white border border-[#E2E0DA] rounded-xl p-5">
-            <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">In Review</p>
-            <p className="font-serif text-3xl text-navy mt-1">{stats.by_status["In Review"] || 0}</p>
-          </div>
-          <div className="bg-white border border-[#E2E0DA] rounded-xl p-5">
-            <p className="text-xs uppercase tracking-wide text-[#64748B] font-semibold">Completed</p>
-            <p className="font-serif text-3xl text-navy mt-1">{stats.by_status["Completed"] || 0}</p>
-          </div>
-        </div>
+        </>
       )}
 
       <StorageRollupCard />
@@ -396,6 +433,9 @@ export default function AdminDashboard() {
                       </p>
                     )}
                     {c.trust_name && <p className="text-xs text-[#94A3B8] truncate max-w-xs italic">{c.trust_name}</p>}
+                    <p className="text-xs mt-1" data-testid={`admin-list-activity-${c.id}`}>
+                      <ClientActivityTag c={c} compact />
+                    </p>
                   </td>
                   <td className="px-5 py-3 capitalize">
                     {(() => {

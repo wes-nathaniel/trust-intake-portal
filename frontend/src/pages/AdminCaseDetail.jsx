@@ -13,6 +13,7 @@ import { displaySSN } from "@/pages/intake/_shared";
 import DocRequestsPanel from "@/components/DocRequestsPanel";
 import SSNReveal from "@/components/SSNReveal";
 import TempPasswordDialog from "@/components/TempPasswordDialog";
+import ClientActivityTag from "@/components/ClientActivityTag";
 import PasswordHistory from "@/components/PasswordHistory";
 import AdminCaseFieldsEditor from "@/components/AdminCaseFieldsEditor";
 import AdminAssetsPanel from "@/components/AdminAssetsPanel";
@@ -447,24 +448,16 @@ export default function AdminCaseDetail() {
             {" · "}{(c.intake_path || "new") === "review" ? "Existing Trust Review" : (c.trust_type === "joint" ? "Joint Trust" : "Single Trust")}
           </p>
           <p className="text-[#64748B] mt-1 text-sm" data-testid="admin-client-last-login">
+            <ClientActivityTag c={c} />
+          </p>
+          <p className="text-[#64748B] mt-0.5 text-xs">
             <button
               type="button"
               onClick={toggleLogins}
-              className="text-left text-[#64748B] hover:text-navy"
+              className="text-left text-[#64748B] hover:text-navy underline decoration-dotted underline-offset-4"
               data-testid="admin-client-logins-toggle"
               aria-expanded={loginsOpen}>
-              <span className="underline decoration-dotted underline-offset-4">Last login:</span>{" "}
-              {c.client_last_login_at ? (
-                <span className="text-navy font-medium" title={c.client_last_login_at}>
-                  {new Date(c.client_last_login_at).toLocaleString()}
-                </span>
-              ) : (
-                <span className="text-[#94A3B8] italic">never</span>
-              )}
-              {c.client_last_logout_at && (
-                <span className="text-[#94A3B8]"> · last logout {new Date(c.client_last_logout_at).toLocaleString()}</span>
-              )}
-              <span className="ml-1 text-[#94A3B8]">({loginsOpen ? "hide" : "show last 5"})</span>
+              Login history ({loginsOpen ? "hide" : "show last 5"})
             </button>
           </p>
           {loginsOpen && (

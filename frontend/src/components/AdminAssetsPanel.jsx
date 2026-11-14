@@ -207,6 +207,8 @@ export default function AdminAssetsPanel({ caseId }) {
   const [togglingPart, setTogglingPart] = useState(null);
   const [alertEmail, setAlertEmail] = useState("");
   const [alertEmailSaving, setAlertEmailSaving] = useState(false);
+  const [loginAlertEnabled, setLoginAlertEnabled] = useState(false);
+  const [loginAlertSaving, setLoginAlertSaving] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -218,6 +220,7 @@ export default function AdminAssetsPanel({ caseId }) {
       ]);
       setD({ items: items.data, summary: summary.data, sa: sa.data });
       setAlertEmail(notif.data.admin_alert_email || "");
+      setLoginAlertEnabled(!!notif.data.login_alert_enabled);
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
   }, [caseId]);
   useEffect(() => { load(); }, [load]);
@@ -229,6 +232,16 @@ export default function AdminAssetsPanel({ caseId }) {
       toast.success("Alert email saved.");
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
     finally { setAlertEmailSaving(false); }
+  };
+
+  const toggleLoginAlert = async (enabled) => {
+    setLoginAlertSaving(true);
+    try {
+      await api.patch("/admin/notification-settings", { login_alert_enabled: enabled });
+      setLoginAlertEnabled(enabled);
+      toast.success(enabled ? "Login alerts turned on." : "Login alerts turned off.");
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+    finally { setLoginAlertSaving(false); }
   };
 
   const togglePart = async (itemId, currentPart) => {
@@ -278,29 +291,50 @@ export default function AdminAssetsPanel({ caseId }) {
         <div className="space-y-5">
           <Summary s={d.summary} />
           {/* Editable alert email */}
-          <div className="border-t border-[#E2E0DA] pt-4">
-            <p className="text-sm font-semibold text-navy mb-1">Alert email for asset changes</p>
-            <p className="text-xs text-[#64748B] mb-2">You receive an email here whenever a client adds, changes, or removes an asset.</p>
-            <div className="flex gap-2">
-              <input
-                type="email"
-                className="flex-1 border border-[#E2E0DA] rounded-md px-3 py-2 text-sm"
-                value={alertEmail}
-                onChange={(e) => setAlertEmail(e.target.value)}
-                placeholder="wes@igchq.com"
-                data-testid="alert-email-input"
-              />
-              <button
-                onClick={saveAlertEmail}
-                disabled={alertEmailSaving}
-                className="px-4 py-2 bg-navy text-white rounded-md text-sm font-semibold min-h-[44px] disabled:opacity-50"
-                data-testid="alert-email-save-btn"
+          <div className="border-t border-[#E2E0DA] pt-4 space-y-4">
+            <div>
+              <p className="text-sm font-semibold text-navy mb-1">Alert email for asset changes</p>
+              <p className="text-xs text-[#64748B] mb-2">You receive an email here whenever a client adds, changes, or removes an asset.</p>
+              <div className="flex gap-2">
+                <input
+                  type="email"
+                  className="flex-1 border border-[#E2E0DA] rounded-md px-3 py-2 text-sm"
+                  value={alertEmail}
+                  onChange={(e) => setAlertEmail(e.target.value)}
+                  placeholder="wes@igchq.com"
+                  data-testid="alert-email-input"
+                />
+                <button
+                  onClick={saveAlertEmail}
+                  disabled={alertEmailSaving}
+                  className="px-4 py-2 bg-navy text-white rounded-md text-sm font-semibold min-h-[44px] disabled:opacity-50"
+                  data-testid="alert-email-save-btn"
               >
                 {alertEmailSaving ? "Saving" : "Save"}
               </button>
             </div>
+
+            {/* Login alert toggle */}
+            <div className="pt-3 border-t border-[#E2E0DA]">
+              <p className="text-sm font-semibold text-navy mb-1">Alert me when a client logs in</p>
+              <p className="text-xs text-[#64748B] mb-2">Sends one email per client per hour to the alert email above. Default is off.</p>
+              <label className="inline-flex items-center gap-3 cursor-pointer min-h-[44px]" data-testid="login-alert-toggle-label">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={loginAlertEnabled}
+                  disabled={loginAlertSaving}
+                  onClick={() => toggleLoginAlert(!loginAlertEnabled)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-bronze/40 disabled:opacity-50 ${loginAlertEnabled ? "bg-emerald-500" : "bg-[#CBD5E1]"}`}
+                  data-testid="login-alert-toggle">
+                  <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${loginAlertEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
+                </button>
+                <span className="text-sm text-navy">{loginAlertEnabled ? "On" : "Off"}</span>
+              </label>
+            </div>
           </div>
         </div>
+      </div>
       )}
       {tab === "schedule" && <ScheduleA caseId={caseId} sa={d.sa} />}
       {tab === "items" && (

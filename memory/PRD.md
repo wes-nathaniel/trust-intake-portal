@@ -5,10 +5,8 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 
 ## Project Health (2026-11-14 — latest)
 - ✅ DONE: **Business Information section** — typed form for `kind=business` assets. 4 required fields enforced on frontend + backend (legal name, type, state formed, % owned). EIN encrypted at rest (AES-256-GCM), masked in UI, revealable with audit log. "Needs more info" badge shown live in client list + admin panel. File upload removed for business items. MCP `read_business_eins` tool fully working with audit log. `JustTypeIt` organizer shows mini-form for business items. Tests A–H and J–K passed (Test I skipped due to AI variability — code verified).
-- ✅ FIXED: `AdminCaseDetail.jsx` — `Lock` and `Unlock` added to lucide-react import. Blank-screen crash on cases with a released trust_draft resolved.
-- ✅ FIXED: `AdminErrorBoundary.jsx` — class Error Boundary wrapping entire AdminCaseDetail.
-- ✅ FIXED: MCP OAuth — RFC 7591 Dynamic Client Registration at `POST /api/mcp/oauth/register`. AS metadata now includes `registration_endpoint`, `client_id_metadata_document_supported`, `refresh_token` in grant_types. CORS added for claude.ai/claude.com. CIMD (Claude URL as client_id) supported. Full E2E tested.
-- ✅ FIXED: MCP OAuth RFC 8414 strict discovery on production (2026-11-12) — All 7 production curl checks pass.
+- ✅ DONE: **Client Activity Tracking** — `last_active_at` heartbeat (POST /api/auth/heartbeat, 60s, stops on tab hidden). `GET /api/admin/stats` includes `clients_online` list. Admin case detail + case list show "Online now" (green) / "Last seen ET" / "Never logged in" via `ClientActivityTag`. Login-alert email toggle in admin assets panel (default OFF, 1-hour dedup per client). MCP `read_client_activity` with audit log. Never exposed to clients. All Tests A–H PASS (17/17 backend, 100% frontend).
+- ✅ FIXED: MCP OAuth RFC 8414 strict discovery on production — All checks pass.
 - Mocked: None.
 
 ## Removed Features (no longer in codebase)

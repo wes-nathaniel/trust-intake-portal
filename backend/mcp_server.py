@@ -104,9 +104,24 @@ TOOLS = [
         },
     },
     {
+        "name": "read_client_activity",
+        "description": (
+            "Return client login and activity status for one case or all active cases. "
+            "Fields: last_login_at, last_active_at, online_now (true if active within 5 min), active_case_id. "
+            "Useful for knowing when it is safe to publish or when to call a client. "
+            "Every call is written to the audit log."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "case_id": {"type": "string", "description": "Full UUID case_id — omit to get all cases"},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "propose_field_change",
         "description": (
-            "Propose a change to a case field. Admin must approve before it takes effect. "
             "Use dot notation for nested fields (e.g. 'trust_name', 'grantors.0.full_legal_name'). "
             "Blocked fields: status, payment, release, client_email, trust_unlocked, and IDs."
         ),
@@ -228,6 +243,8 @@ async def _call_tool(name: str, args: dict, db, audit_key_id: str) -> dict:
         return await _read_asset_account_numbers(args, db, audit_key_id)
     if name == "read_business_eins":
         return await _read_business_eins(args, db, audit_key_id)
+    if name == "read_client_activity":
+        return await _read_client_activity(args, db, audit_key_id)
     if name == "propose_field_change":
         return await _propose_field_change(args, db, audit_key_id)
     if name == "propose_client_message":
@@ -368,6 +385,71 @@ async def _read_business_eins(args: dict, db, actor_key_id: str = "") -> dict:
         pass
     result = f"Full EINs for {case.get('client_name','?')} ({cid[:8]}):\n" + "\n".join(lines)
     return _text(result)
+
+
+async def _read_client_activity(args: dict, db, actor_key_id: str = "") -> dict:
+    """Return last_login_at, last_active_at, online_now for one case or all cases.
+    Every call is written to the audit log."""
+    import sys, os, uuid as _uuid, datetime as _dt
+    sys.path.insert(0, os.path.dirname(__file__))
+
+    cid = (args.get("case_id") or "").strip()
+    _now = _dt.datetime.now(_dt.timezone.utc)
+    _five_ago = (_now - _dt.timedelta(minutes=5)).isoformat()
+
+    # Fetch case(s) and join with users
+    if cid:
+        case = await db.trust_cases.find_one({"id": cid}, {"_id": 0, "id": 1, "client_id": 1, "client_name": 1, "client_email": 1})
+        if not case:
+            return _text(f"Case not found: {cid}")
+        cases_to_check = [case]
+    else:
+        cases_to_check = await db.trust_cases.find(
+            {"deleted": {"$ne": True}},
+            {"_id": 0, "id": 1, "client_id": 1, "client_name": 1, "client_email": 1}
+        ).sort("created_at", -1).to_list(100)
+
+    # Collect user IDs
+    user_ids = list({c.get("client_id") for c in cases_to_check if c.get("client_id")})
+    users_map = {}
+    if user_ids:
+        async for u in db.users.find(
+            {"id": {"$in": user_ids}},
+            {"_id": 0, "id": 1, "last_login_at": 1, "last_active_at": 1, "active_case_id": 1}
+        ):
+            users_map[u["id"]] = u
+
+    lines = []
+    for c in cases_to_check:
+        u = users_map.get(c.get("client_id") or "", {})
+        last_active = u.get("last_active_at", "")
+        online = False
+        if last_active:
+            try:
+                _last_dt = _dt.datetime.fromisoformat(last_active.replace("Z", "+00:00"))
+                online = (_now - _last_dt).total_seconds() < 300
+            except Exception:
+                pass
+        name = (c.get("client_name") or c.get("client_email") or "?").strip()
+        lines.append(
+            f"- {name} (case {c['id'][:8]}):\n"
+            f"  last_login_at: {u.get('last_login_at') or 'never'}\n"
+            f"  last_active_at: {last_active or 'never'}\n"
+            f"  online_now: {online}"
+        )
+
+    # Audit log
+    try:
+        await db.account_number_audit_log.insert_one({
+            "id": str(_uuid.uuid4()), "action": "mcp_read_client_activity",
+            "case_id": cid or "all", "mcp_key_id": actor_key_id,
+            "at": _now.isoformat()
+        })
+    except Exception:
+        pass
+
+    header = f"Client activity ({len(lines)} case{'s' if len(lines) != 1 else ''}):"
+    return _text(header + "\n" + "\n".join(lines))
 
 
 async def _propose_field_change(args: dict, db, audit_key_id: str) -> dict:

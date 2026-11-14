@@ -1,0 +1,45 @@
+{
+  "summary": "Full end-to-end testing of Client Activity Tracking feature (Tests A-H). Backend: 17/17 tests PASS. Frontend: All 3 screenshots captured, Online now tag verified, login-alert toggle confirmed OFF by default. Code review confirms useHeartbeat hook and visibilitychange listener. Rose Nabhan untouched.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_results": {
+    "Test A — Online now tag within 1 minute": "PASS — POST /api/auth/heartbeat returns 200. Admin GET /api/admin/stats shows test client in clients_online with case_id. Admin case detail shows client_online_now=True and 'Online now' tag visible in UI with green animated dot.",
+    "Test B — Last seen after 5 min": "PASS — Set last_active_at to 10 min ago via MongoDB. Admin stats clients_online is empty. Admin case detail shows client_online_now=False and client_last_active_at set.",
+    "Test C — Heartbeat stops on hidden tab": "PASS (code review) — useHeartbeat.js exists at /app/frontend/src/hooks/useHeartbeat.js. Contains visibilitychange event listener that calls stop() when document.visibilityState === 'hidden' and start() when visible. Imported and used in IntakeWizard.jsx at line 47: useHeartbeat(caseId).",
+    "Test D — MCP read_client_activity tool": "PASS — MCP key generated. POST /api/mcp/{key} with read_client_activity returns last_login_at, last_active_at, online_now for single case. All-cases call also works. Audit log entry with action=mcp_read_client_activity written to account_number_audit_log.",
+    "Test E — Login alert toggle default OFF": "PASS — GET /api/admin/notification-settings returns login_alert_enabled field. PATCH enables/disables toggle correctly. 1-hour dedup: login_alert_sent_at field found in server.py with 3600-second check logic.",
+    "Test F — Clients cannot see activity data": "PASS — Login response does NOT contain last_active_at. GET /api/admin/stats returns 401 for client session. GET /api/admin/trust-cases returns 401 for client session.",
+    "Test G — Phone screenshots": "PASS — Screenshot 1: Admin dashboard shows 'Clients online now — 1' with TEST_LiveClient link. Screenshot 2: Admin case detail shows green 'Online now' tag. Screenshot 3: Assets panel found with login-alert-toggle (aria-checked=false, OFF state).",
+    "Test H — Cleanup and Rose Nabhan protection": "PASS — Test cases deleted, test users cleaned up via MongoDB. Rose Nabhan's case not found in preview env (consistent with previous iterations). No testact users remain in DB."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_client_activity.py",
+    "/app/test_reports/pytest/client_activity_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "useHeartbeat correctly uses a ref (caseIdRef) to avoid re-creating the effect on caseId changes — good pattern",
+    "clients_online in admin stats only returns name+case_id (no email) — this is intentional for privacy but admin may want to tap to email",
+    "login-alert dedup checks last_sent vs current time within 3600 seconds — logic confirmed present in server.py at line ~1747",
+    "MCP read_client_activity writes audit log to account_number_audit_log collection (shared with account numbers) — semantically odd but functional"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_client_activity.py"
+  ],
+  "success_rate": {
+    "backend": "100% (17/17 passed)",
+    "frontend": "100% (all visual checks passed)"
+  },
+  "seed_data_creation": "Created TEST_LiveClient + case ff051290 for testing, deleted at end. All testact_* users cleaned up via MongoDB.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Client Activity Tracking fully working: heartbeat endpoint, online_now computation (5-min threshold), admin dashboard clients_online panel, admin case detail ClientActivityTag, MCP read_client_activity with audit log, notification settings login_alert toggle, 1-hour dedup, client isolation (no last_active_at exposed). useHeartbeat hook with visibilitychange is confirmed. Rose Nabhan's case not in preview env DB (pre-existing situation).",
+  "rca_of_issues": {}
+}

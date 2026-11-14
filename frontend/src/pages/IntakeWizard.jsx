@@ -8,6 +8,7 @@ import MessageThread from "@/components/MessageThread";
 import { toast } from "sonner";
 import { CheckCircle2, Circle, Lock, ArrowLeft, ArrowRight, AlertTriangle } from "lucide-react";
 import GrantorStep from "@/pages/intake/GrantorStep";
+import { useHeartbeat } from "@/hooks/useHeartbeat";
 import TrusteeStep from "@/pages/intake/TrusteeStep";
 import SuccessorStep from "@/pages/intake/SuccessorStep";
 import BeneficiaryStep from "@/pages/intake/BeneficiaryStep";
@@ -43,6 +44,7 @@ export default function IntakeWizard() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [trustCase, setTrustCase] = useState(null);
   const [stepIdx, setStepIdx] = useState(0);
+  useHeartbeat(caseId); // lightweight 60s activity ping (stops when tab hidden)
 
   const reload = async () => {
     try {

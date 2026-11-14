@@ -1740,8 +1740,39 @@ async def _log_login_activity(user: dict, request: Request, kind: str):
     except Exception as e:
         logger.error(f"login_activity admin email failed: {e}")
 
-
-# ---------- AUTH ENDPOINTS ----------
+    # --- Login-alert with 1-hour dedup (independent of whatsapp/email toggle) ---
+    if kind == "login" and user.get("role") != "admin":
+        try:
+            la_s = await db.settings.find_one({"id": "notifications"}, {"_id": 0}) or {}
+            if la_s.get("login_alert_enabled"):
+                la_email = (la_s.get("admin_alert_email") or "").strip() or ADMIN_NOTIFY_EMAIL
+                last_alert_ts = user.get("login_alert_sent_at", "")
+                should_send = True
+                if last_alert_ts:
+                    try:
+                        _last_alert_dt = datetime.fromisoformat(last_alert_ts.replace("Z", "+00:00"))
+                        _now_dt = datetime.now(timezone.utc)
+                        if (_now_dt - _last_alert_dt).total_seconds() < 3600:
+                            should_send = False
+                    except Exception:
+                        pass
+                if should_send:
+                    la_branding = await _branding_doc()
+                    la_biz = la_branding.get("business_name", "Trust Portal")
+                    la_accent = la_branding.get("accent_color", "#C5A880")
+                    la_primary = la_branding.get("primary_color", "#1C252E")
+                    la_client = user.get("name") or user.get("email") or "(unnamed client)"
+                    la_case = case_label if "case_label" in dir() else "(case unknown)"
+                    la_inner = f"""<p style="font-size:18px;margin:0 0 12px 0;font-family:Georgia,serif;">Client logged in</p>
+<p><b>{la_client}</b> &lt;{user.get("email","")}&gt;</p>
+<p>Case: <b>{la_case}</b></p>
+<p>Time: <b>{ts_iso}</b></p>
+<p style="color:#64748B;font-size:12px;">IP {ip or "unknown"} · {user_agent[:120]}</p>"""
+                    la_html = _email_shell(la_biz, la_primary, la_accent, la_inner)
+                    await send_email_notification(la_email, f"Client logged in — {la_client}", la_html)
+                    await db.users.update_one({"id": user["id"]}, {"$set": {"login_alert_sent_at": ts_iso}})
+        except Exception as e:
+            logger.error(f"login_alert failed: {e}")
 def _first_name(full_name: str) -> str:
     return (full_name or "").strip().split(" ")[0] if (full_name or "").strip() else ""
 
@@ -1826,8 +1857,25 @@ async def logout(request: Request, response: Response, user: dict = Depends(get_
         await _log_login_activity(user, request, "logout")
     return {"ok": True}
 
-@api_router.get("/auth/me")
-async def me(user: dict = Depends(get_current_user)):
+
+class HeartbeatReq(BaseModel):
+    case_id: Optional[str] = None
+
+
+@api_router.post("/auth/heartbeat", status_code=200)
+async def client_heartbeat(body: HeartbeatReq, user: dict = Depends(get_current_user)):
+    """Lightweight activity ping. Called ~every 60s while the client portal tab is
+    visible. Updates last_active_at (and optionally active_case_id) on the user record.
+    Admin-only users are silently ignored."""
+    if user.get("role") == "admin":
+        return {"ok": True}
+    upd: dict = {"last_active_at": now_iso()}
+    if body.case_id:
+        upd["active_case_id"] = body.case_id
+    await db.users.update_one({"id": user["id"]}, {"$set": upd})
+    return {"ok": True}
+
+
     return public_user(user)
 
 
@@ -2462,6 +2510,7 @@ class NotificationSettingsReq(BaseModel):
     admin_email_alerts_enabled: Optional[bool] = None
     admin_alert_template: Optional[str] = Field(default=None, max_length=100)
     admin_alert_email: Optional[str] = Field(default=None, max_length=200)
+    login_alert_enabled: Optional[bool] = None
 
 
 @api_router.get("/admin/notification-settings")
@@ -2475,6 +2524,7 @@ async def get_notification_settings(_: dict = Depends(require_admin)):
         "whatsapp_configured": whatsapp_utils.is_configured(),
         "admin_alert_email": effective_email,
         "admin_alert_email_default": ADMIN_NOTIFY_EMAIL,
+        "login_alert_enabled": bool(portal_s.get("login_alert_enabled", False)),
     }
 
 
@@ -3967,6 +4017,31 @@ async def admin_list_cases(
             {"trust_name": {"$regex": q, "$options": "i"}},
         ]
     cases = await db.trust_cases.find(flt, {"_id": 0}).sort("updated_at", -1).to_list(500)
+
+    # Batch-fetch user activity data so the list shows online status without N+1 queries
+    client_ids = list({c.get("client_id") for c in cases if c.get("client_id")})
+    users_activity: dict = {}
+    if client_ids:
+        async for u in db.users.find(
+            {"id": {"$in": client_ids}},
+            {"_id": 0, "id": 1, "last_active_at": 1, "last_login_at": 1, "last_logout_at": 1}
+        ):
+            users_activity[u["id"]] = u
+    _now_utc = datetime.now(timezone.utc)
+    for c in cases:
+        u = users_activity.get(c.get("client_id") or "", {})
+        c.setdefault("client_last_login_at", u.get("last_login_at"))
+        c.setdefault("client_last_logout_at", u.get("last_logout_at"))
+        c["client_last_active_at"] = u.get("last_active_at")
+        _la = u.get("last_active_at", "")
+        c["client_online_now"] = False
+        if _la:
+            try:
+                _la_dt = datetime.fromisoformat(_la.replace("Z", "+00:00"))
+                c["client_online_now"] = (_now_utc - _la_dt).total_seconds() < 300
+            except Exception:
+                pass
+
     return [_response_case(c) for c in cases]
 
 
@@ -4266,13 +4341,27 @@ async def admin_get_case(case_id: str, _: dict = Depends(require_admin)):
     try:
         client_user = await db.users.find_one(
             {"id": case.get("client_id")},
-            {"_id": 0, "last_login_at": 1, "last_logout_at": 1},
+            {"_id": 0, "last_login_at": 1, "last_logout_at": 1, "last_active_at": 1},
         )
-        case["client_last_login_at"] = (client_user or {}).get("last_login_at")
-        case["client_last_logout_at"] = (client_user or {}).get("last_logout_at")
+        cu = client_user or {}
+        case["client_last_login_at"] = cu.get("last_login_at")
+        case["client_last_logout_at"] = cu.get("last_logout_at")
+        case["client_last_active_at"] = cu.get("last_active_at")
+        # Compute online_now: last_active_at within 5 minutes
+        _last_active = cu.get("last_active_at", "")
+        case["client_online_now"] = False
+        if _last_active:
+            try:
+                _last_dt = datetime.fromisoformat(_last_active.replace("Z", "+00:00"))
+                _now_dt = datetime.now(timezone.utc)
+                case["client_online_now"] = (_now_dt - _last_dt).total_seconds() < 300
+            except Exception:
+                pass
     except Exception:
         case["client_last_login_at"] = None
         case["client_last_logout_at"] = None
+        case["client_last_active_at"] = None
+        case["client_online_now"] = False
     return _attach_pending(case)
 
 @api_router.get("/admin/trust-cases/{case_id}/login-activity")
@@ -5623,7 +5712,32 @@ async def admin_stats(_: dict = Depends(require_admin)):
     for s in STATUSES:
         by_status[s] = await db.trust_cases.count_documents({"status": s})
     clients = await db.users.count_documents({"role": "client"})
-    return {"total_cases": total, "total_clients": clients, "by_status": by_status}
+
+    # Online clients: last_active_at within 5 minutes
+    _now_stats = datetime.now(timezone.utc)
+    five_min_ago = (_now_stats - timedelta(minutes=5)).isoformat()
+    online_users = await db.users.find(
+        {"role": "client", "last_active_at": {"$gte": five_min_ago}},
+        {"_id": 0, "id": 1, "name": 1, "email": 1, "active_case_id": 1}
+    ).to_list(50)
+
+    clients_online = []
+    for u in online_users:
+        c_id = u.get("active_case_id") or None
+        if not c_id:
+            c_lookup = await db.trust_cases.find_one(
+                {"client_id": u["id"]}, {"_id": 0, "id": 1}, sort=[("created_at", -1)]
+            )
+            c_id = c_lookup["id"] if c_lookup else None
+        clients_online.append({
+            "name": (u.get("name") or u.get("email") or "").strip(),
+            "case_id": c_id,
+        })
+
+    return {
+        "total_cases": total, "total_clients": clients,
+        "by_status": by_status, "clients_online": clients_online,
+    }
 
 
 # --- Admin notifications: unread messages grouped by case ---
