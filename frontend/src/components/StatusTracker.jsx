@@ -14,11 +14,19 @@ const STEPS = [
   "Completed",
 ];
 
-export default function StatusTracker({ status }) {
+export default function StatusTracker({ status, wizardStep, wizardTotal }) {
   const idx = STEPS.indexOf(status);
   const total = STEPS.length;
   const current = idx >= 0 ? idx + 1 : 0;
   const pct = idx >= 0 ? Math.round((current / total) * 100) : 0;
+
+  // On mobile, show the client's wizard step (which the client controls)
+  // rather than the admin-workflow step (which only the admin changes)
+  const mobStep  = wizardStep  != null ? wizardStep  : current;
+  const mobTotal = wizardTotal != null ? wizardTotal : total;
+  const mobPct   = wizardTotal != null
+    ? Math.round((wizardStep / wizardTotal) * 100)
+    : pct;
 
   return (
     <div className="bg-white border border-[#E2E0DA] rounded-xl p-4 sm:p-6 lg:p-8" data-testid="status-tracker">
@@ -32,13 +40,13 @@ export default function StatusTracker({ status }) {
       {/* ----- MOBILE: progress bar + step number ----- */}
       <div className="sm:hidden" data-testid="status-tracker-mobile">
         <div className="flex items-center justify-between text-xs text-[#64748B] mb-2">
-          <span>Step {current} of {total}</span>
-          <span>{pct}%</span>
+          <span>Step {mobStep} of {mobTotal}</span>
+          <span>{mobPct}%</span>
         </div>
         <div className="h-2 bg-sand-200 rounded-full overflow-hidden">
           <div
             className="h-full bg-bronze rounded-full transition-all duration-500"
-            style={{ width: `${pct}%` }}
+            style={{ width: `${mobPct}%` }}
             data-testid="status-tracker-progress-bar"
           />
         </div>

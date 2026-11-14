@@ -10,7 +10,7 @@ import { missingSteps, STEP_LABELS } from "@/lib/intakeProgress";
 const LINE = ({ l, v }) => (
   <div className="flex justify-between border-b border-dashed border-[#E2E0DA] py-1.5 text-sm">
     <span className="text-[#64748B]">{l}</span>
-    <span className="text-navy font-medium text-right">{v || "—"}</span>
+    <span className="text-navy font-medium text-right">{v || ""}</span>
   </div>
 );
 
@@ -109,8 +109,8 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
       <SectionHeader num={isReviewPath ? 2 : 8} total={isReviewPath ? 2 : 8}
         title="Review & Submit"
         subtitle={isReviewPath
-          ? "Confirm the trust name, acknowledge the legal disclosures below, then complete your review."
-          : "Review all the information you've provided, then acknowledge the legal disclosures and complete your review."} />
+          ? "Confirm the trust name, read and agree to the notices below, then complete your review."
+          : "Review all the information you've provided, read and agree to the notices below, then complete your review."} />
 
       {/* ===== Existing Trust Review path: program note (no price — admin sets at payment time) ===== */}
       {isReviewPath && (
@@ -133,7 +133,7 @@ export default function ReviewStep({ trustCase, caseId, reload }) {
           <ShieldCheck className="h-5 w-5 text-bronze" />
           <div>
             <p className="font-semibold text-navy">{missing.length ? "Some required sections still need attention." : isReviewPath ? "Your existing trust is uploaded." : "All required intake sections are complete."}</p>
-            <p className="text-sm text-[#64748B]">{isReviewPath ? "Acknowledge the legal disclosures below to complete your review." : "Please review the summary below and acknowledge the legal disclosures."}</p>
+            <p className="text-sm text-[#64748B]">{isReviewPath ? "Read and agree to the notices below to complete your review." : "Please review the summary below and read the notices."}</p>
           </div>
         </div>
         <div className="flex gap-2 shrink-0">

@@ -85,7 +85,7 @@ export default function ClientPortal() {
                   <div className="flex items-start gap-3">
                     <AlertTriangle className="h-5 w-5 text-amber-800 mt-0.5 shrink-0" />
                     <div className="flex-1">
-                      <p className="font-semibold text-amber-900">Action required — {(c.pending_items || []).length} item(s) still needed</p>
+                      <p className="font-semibold text-amber-900">{(c.pending_items || []).length} item{(c.pending_items || []).length !== 1 ? 's' : ''} still needed</p>
                       <ul className="mt-2 space-y-1 text-sm text-amber-900/90">
                         {(c.pending_items || []).map((p, i) => (
                           <li key={i} className="flex items-start gap-2">

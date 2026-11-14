@@ -6,6 +6,12 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 ## Project Health (2026-11-14 — latest)
 - ✅ DONE: **Business Information section** — typed form for `kind=business` assets. 4 required fields enforced on frontend + backend (legal name, type, state formed, % owned). EIN encrypted at rest (AES-256-GCM), masked in UI, revealable with audit log. "Needs more info" badge shown live in client list + admin panel. File upload removed for business items. MCP `read_business_eins` tool fully working with audit log. `JustTypeIt` organizer shows mini-form for business items. Tests A–H and J–K passed (Test I skipped due to AI variability — code verified).
 - ✅ DONE: **Client Activity Tracking** — `last_active_at` heartbeat (POST /api/auth/heartbeat, 60s, stops on tab hidden). `GET /api/admin/stats` includes `clients_online` list. Admin case detail + case list show "Online now" (green) / "Last seen ET" / "Never logged in" via `ClientActivityTag`. Login-alert email toggle in admin assets panel (default OFF, 1-hour dedup per client). MCP `read_client_activity` with audit log. Never exposed to clients. All Tests A–H PASS (17/17 backend, 100% frontend).
+- ✅ DONE: **UX Copy Fixes (2026-11-14)** — 4 fixes applied and verified A–W (22/23 PASS):
+  1. Document-pending banner: em-dash removed ("Action required —" → "X documents still needed")
+  2. Review step Trustee table: empty-field placeholder dash removed ({v||"—"} → {v||""})
+  3. Step counter: mobile "Step X of Y" now tracks actual wizard step (1–8) not admin status
+  4. Review step "acknowledge the legal disclosures" replaced with "read and agree to the notices below" (2 locations)
+- ✅ DONE: **Test data cleanup (2026-11-14)** — 197 test users + 357 test cases deleted. 11 accounts remain (2 admins, 2 real clients, 1 safe test client, 6 flagged pending decision). Database: 1.45 MB data, 3.57 MB total.
 - ✅ FIXED: MCP OAuth RFC 8414 strict discovery on production — All checks pass.
 - Mocked: None.
 

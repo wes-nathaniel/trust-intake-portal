@@ -99,17 +99,17 @@ export default function IntakeWizard() {
       </div>
 
       <div className="mb-6">
-        <StatusTracker status={trustCase.status} />
+        <StatusTracker status={trustCase.status} wizardStep={safeStepIdx + 1} wizardTotal={steps.length} />
       </div>
 
       {(trustCase.pending_items || []).length > 0 && stepKey !== "documents" && (
         <div className="mb-6 bg-amber-50 border border-amber-300 rounded-xl p-4 flex flex-col sm:flex-row items-start gap-3" data-testid="wizard-pending-banner">
           <AlertTriangle className="h-5 w-5 text-amber-800 shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
-            <p className="font-semibold text-amber-900">Action required — {(trustCase.pending_items || []).length} document(s) still needed</p>
+            <p className="font-semibold text-amber-900">{(trustCase.pending_items || []).length} document{(trustCase.pending_items || []).length !== 1 ? 's' : ''} still needed</p>
             <ul className="text-sm text-amber-900/90 mt-1 space-y-0.5">
               {(trustCase.pending_items || []).map((p, i) => (
-                <li key={i}>• <b>{p.label}</b>{p.note && <span className="text-amber-800/80"> — {p.note}</span>}</li>
+                <li key={i}>• <b>{p.label}</b>{p.note && <span className="text-amber-800/80"> {p.note}</span>}</li>
               ))}
             </ul>
           </div>
