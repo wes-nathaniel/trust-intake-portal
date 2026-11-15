@@ -9,6 +9,8 @@ Claude cannot release, delete, approve, or touch payments.
 from __future__ import annotations
 import json
 import logging
+import os
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -161,6 +163,27 @@ TOOLS = [
         },
     },
     {
+        "name": "send_client_message",
+        "description": (
+            "Send a message directly to the client via email — no admin approval step. "
+            "Use ONLY when Wes has explicitly authorised the send in this conversation. "
+            "5th grade reading level. No dashes of any kind. "
+            "Returns confirmation with message_id once delivered."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "case_id": {"type": "string", "description": "Full UUID case_id"},
+                "subject": {"type": "string", "description": "Email subject line"},
+                "message": {
+                    "type": "string",
+                    "description": "Full message text. Plain sentences. No dashes. 5th grade level.",
+                },
+            },
+            "required": ["case_id", "subject", "message"],
+        },
+    },
+    {
         "name": "propose_admin_note",
         "description": (
             "Propose an admin note to add to a case. Admin must approve it before it appears. "
@@ -249,6 +272,8 @@ async def _call_tool(name: str, args: dict, db, audit_key_id: str) -> dict:
         return await _propose_field_change(args, db, audit_key_id)
     if name == "propose_client_message":
         return await _propose_client_message(args, db, audit_key_id)
+    if name == "send_client_message":
+        return await _send_client_message(args, db, audit_key_id)
     if name == "propose_admin_note":
         return await _propose_admin_note(args, db, audit_key_id)
     raise ValueError(f"Unknown tool: {name}")
@@ -320,7 +345,7 @@ async def _read_intake_summary(args: dict, db) -> dict:
 
 async def _read_asset_account_numbers(args: dict, db, actor_key_id: str = "") -> dict:
     """Return full decrypted account numbers for ACCT_KINDS items. Writes audit log every call."""
-    import sys, os, uuid as _uuid, datetime as _dt
+    import sys, uuid as _uuid, datetime as _dt
     sys.path.insert(0, os.path.dirname(__file__))
     import crypto as _crypto
     from asset_items import ACCT_KINDS
@@ -354,7 +379,7 @@ async def _read_asset_account_numbers(args: dict, db, actor_key_id: str = "") ->
 
 async def _read_business_eins(args: dict, db, actor_key_id: str = "") -> dict:
     """Return full decrypted EINs for business ownership items. Writes audit log every call."""
-    import sys, os, uuid as _uuid, datetime as _dt
+    import sys, uuid as _uuid, datetime as _dt
     sys.path.insert(0, os.path.dirname(__file__))
     import crypto as _crypto
     cid = args.get("case_id", "")
@@ -390,7 +415,7 @@ async def _read_business_eins(args: dict, db, actor_key_id: str = "") -> dict:
 async def _read_client_activity(args: dict, db, actor_key_id: str = "") -> dict:
     """Return last_login_at, last_active_at, online_now for one case or all cases.
     Every call is written to the audit log."""
-    import sys, os, uuid as _uuid, datetime as _dt
+    import sys, uuid as _uuid, datetime as _dt
     sys.path.insert(0, os.path.dirname(__file__))
 
     cid = (args.get("case_id") or "").strip()
@@ -515,4 +540,100 @@ async def _propose_admin_note(args: dict, db, audit_key_id: str) -> dict:
     await db.mcp_proposals.insert_one(proposal)
     return _text(
         f"Note proposal created (ID: {proposal['id'][:8]}). Admin will review before it's added."
+    )
+
+
+async def _send_client_message(args: dict, db, audit_key_id: str) -> dict:
+    """Send a message directly to the client via email without admin approval.
+    Logs to db.messages with sent_by='admin_api'."""
+    cid     = (args.get("case_id") or "").strip()
+    subject = (args.get("subject") or "").strip()
+    message = (args.get("message") or "").strip()
+
+    if not cid:
+        return _text("Error: case_id is required.")
+    if not subject:
+        return _text("Error: subject is required.")
+    if not message:
+        return _text("Error: message is required.")
+
+    # Look up case
+    case = await db.trust_cases.find_one(
+        {"id": cid},
+        {"_id": 0, "id": 1, "client_name": 1, "client_email": 1}
+    )
+    if not case:
+        return _text(f"Case not found: {cid}")
+
+    to_email = (case.get("client_email") or "").strip()
+    if not to_email:
+        return _text(f"Case {cid[:8]} has no client email address.")
+
+    # Build HTML
+    frontend_url = os.environ.get("FRONTEND_URL", "https://trust.igchq.com")
+    sender_display = os.environ.get("SENDER_DISPLAY", "Iron Gate Consulting")
+    sender_email = os.environ.get("SENDER_EMAIL", "support@igchq.com")
+    reply_to = os.environ.get("REPLY_TO_EMAIL", "wes@igchq.com")
+
+    paragraphs = "".join(
+        f"<p style='margin:0 0 12px 0;line-height:1.7;color:#334155;'>{p.strip()}</p>"
+        for p in message.split("\n") if p.strip()
+    )
+    html_body = (
+        f"<div style='font-family:Georgia,serif;max-width:600px;margin:0 auto;padding:24px;'>"
+        f"<h2 style='font-family:Georgia,serif;color:#1a1a2e;margin:0 0 20px 0;'>{subject}</h2>"
+        f"{paragraphs}"
+        f"<hr style='border:none;border-top:1px solid #e2e0da;margin:28px 0 16px;'>"
+        f"<p style='color:#94a3b8;font-size:12px;margin:0;'>"
+        f"{sender_display} &middot; "
+        f"<a href='{frontend_url}/portal' style='color:#94a3b8;'>Open your portal</a>"
+        f"</p></div>"
+    )
+
+    # Send via Resend
+    resend_key = os.environ.get("RESEND_API_KEY", "").strip()
+    sent_ok = False
+    email_id = ""
+    if resend_key:
+        try:
+            import resend as _resend
+            _resend.api_key = resend_key
+            result = _resend.Emails.send({
+                "from": f"{sender_display} <{sender_email}>",
+                "to": [to_email],
+                "subject": subject,
+                "html": html_body,
+                "text": message,
+                "reply_to": reply_to,
+            })
+            email_id = getattr(result, "id", "") or (result.get("id", "") if isinstance(result, dict) else "")
+            sent_ok = True
+        except Exception as exc:
+            logger.error(f"[send_client_message] Resend error: {exc}")
+            return _text(f"Email delivery failed: {exc}")
+    else:
+        return _text("Email is not configured on this server (RESEND_API_KEY missing).")
+
+    # Log to messages collection
+    msg_id = str(uuid.uuid4()).replace("-", "")
+    await db.messages.insert_one({
+        "id": msg_id,
+        "case_id": cid,
+        "sender_id": "admin_api",
+        "sender_name": "Iron Gate Team",
+        "sender_role": "admin",
+        "body": message,
+        "subject": subject,
+        "channel": "email",
+        "sent_by": "admin_api",
+        "sent_by_key_id": audit_key_id,
+        "section": None,
+        "read": False,
+        "created_at": _now(),
+    })
+
+    logger.info(f"[send_client_message] case={cid} to={to_email} subject='{subject}' key={audit_key_id[:8]}")
+    return _text(
+        f"Sent. Subject: '{subject}'. Delivered to {to_email} (case {cid[:8]}). "
+        f"Message ID: {msg_id[:8]}. Logged to case message history."
     )

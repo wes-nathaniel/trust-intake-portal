@@ -17,7 +17,7 @@ Full Trust Intake & Client Portal web app for Iron Gate Consulting: client-facin
 - ✅ DONE: **Word-level copy** — "trust intake" → "trust setup" on Register + StartNew; "initial each line" → "sign next to each line" in assetCopy.js + AdminAssetsPanel
 - ✅ DONE: **Fix N** — ReviewStep now reads both `trustCase.assets` (Schedule A) AND `trustCase.asset_items` (OwnStep) combined. Count and display both. Test N PASS (Assets(3) confirmed with house+business+bank).
 - ✅ DONE: **Test data cleanup (2026-11-14)** — 203 test users + 361 test cases deleted total (across 2 cleanup passes). Final state: 5 users (2 admins, 2 real clients, 1 safe test client), 4 cases.
-- ✅ FIXED: MCP OAuth RFC 8414 strict discovery on production — All checks pass.
+- ✅ DONE: **Direct Send Endpoint + MCP Tool (2026-11-15)** — `POST /api/admin/cases/{case_id}/send-message`. Auth: `X-Api-Key` header validated against `mcp_keys` collection. Sends via Resend, logs to `db.messages` with `sent_by: "admin_api"`. Returns `{status, message_id, to}`. MCP tool `send_client_message` added to `mcp_server.py` — calls Resend directly (no server.py import). `propose_client_message` unchanged.
 - Mocked: None.
 
 ## Removed Features (no longer in codebase)

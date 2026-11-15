@@ -3737,6 +3737,90 @@ async def unread_count(user: dict = Depends(get_current_user)):
         count = await db.messages.count_documents({"case_id": {"$in": case_ids}, "sender_role": "admin", "read": False})
     return {"unread": count}
 
+# --- Direct send (admin API key — no session required) ---
+
+class SendMessageDirectBody(BaseModel):
+    subject: str
+    message: str
+    channel: str = "email"
+
+
+@api_router.post("/admin/cases/{case_id}/send-message")
+async def admin_send_message_direct(
+    case_id: str,
+    body: SendMessageDirectBody,
+    x_api_key: str = Header(default="", alias="X-Api-Key"),
+    request: Request = None,
+):
+    """Send a message directly to the client without requiring a portal session.
+    Auth: X-Api-Key header validated against mcp_keys collection.
+    Logs the send to db.messages with sent_by='admin_api'.
+    """
+    # Auth: validate against existing mcp_keys
+    key_doc = await db.mcp_keys.find_one({"key": x_api_key, "revoked": False}, {"_id": 0})
+    if not key_doc:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+
+    # Lookup case
+    case = await db.trust_cases.find_one(
+        {"id": case_id},
+        {"_id": 0, "id": 1, "client_name": 1, "client_email": 1}
+    )
+    if not case:
+        raise HTTPException(status_code=404, detail=f"Case not found: {case_id}")
+
+    to_email = case.get("client_email", "")
+    if not to_email:
+        raise HTTPException(status_code=422, detail="Case has no client email address.")
+
+    # Only email channel supported
+    if body.channel.lower() != "email":
+        raise HTTPException(status_code=422, detail=f"Channel '{body.channel}' is not supported. Use 'email'.")
+
+    # Build HTML body
+    paragraphs = "".join(
+        f"<p style='margin:0 0 12px 0;line-height:1.7;color:#334155;'>{p.strip()}</p>"
+        for p in body.message.split("\n") if p.strip()
+    )
+    html_body = (
+        f"<div style='font-family:Georgia,serif;max-width:600px;margin:0 auto;padding:24px;'>"
+        f"<h2 style='font-family:Georgia,serif;color:#1a1a2e;margin:0 0 20px 0;'>{body.subject}</h2>"
+        f"{paragraphs}"
+        f"<hr style='border:none;border-top:1px solid #e2e0da;margin:28px 0 16px;'>"
+        f"<p style='color:#94a3b8;font-size:12px;margin:0;'>"
+        f"Iron Gate Consulting &middot; "
+        f"<a href='{FRONTEND_URL}/portal' style='color:#94a3b8;'>Open your portal</a>"
+        f"</p></div>"
+    )
+
+    # Send
+    sent_ok = await send_email_notification(to_email, body.subject, html_body)
+    if not sent_ok:
+        raise HTTPException(status_code=502, detail="Email send failed. Check server logs for details.")
+
+    # Log to messages collection
+    msg_id = new_id()
+    msg_doc = {
+        "id": msg_id,
+        "case_id": case_id,
+        "sender_id": "admin_api",
+        "sender_name": "Iron Gate Team",
+        "sender_role": "admin",
+        "body": body.message,
+        "subject": body.subject,
+        "channel": body.channel,
+        "sent_by": "admin_api",
+        "sent_by_key_id": key_doc.get("id", ""),
+        "section": None,
+        "read": False,
+        "created_at": now_iso(),
+    }
+    await db.messages.insert_one(msg_doc)
+
+    logger.info(f"[admin-api-send] case={case_id} to={to_email} subject='{body.subject}' key={key_doc.get('id','')[:8]}")
+    return {"status": "sent", "message_id": msg_id, "to": to_email}
+
+
 # --- Status (client-visible) ---
 @api_router.get("/trust-cases/{case_id}/status")
 async def status_get(case_id: str, user: dict = Depends(get_current_user)):
